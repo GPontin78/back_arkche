@@ -7,8 +7,6 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from flask_bcrypt import check_password_hash
-import qrcode
-import os
 
 def gerar_token(id_usuario, tipo):
     payload = {
@@ -70,22 +68,3 @@ def enviando_email(destinatario, assunto, html):
 
     except Exception as e:
         print("ERRO:", e)
-
-def senha_repetida(id_usuario, nova_senha):
-    cursor = con.cursor()
-
-    cursor.execute("""
-        SELECT FIRST 3 senha_anterior
-        FROM historico_senha
-        WHERE id_usuario = ?
-        ORDER BY id_historico_senha DESC
-    """, (id_usuario,))
-
-    ultimas = cursor.fetchall()
-
-    cursor.close()
-
-    for senha in ultimas:
-        if check_password_hash(senha[0], nova_senha):
-            return True
-    return False

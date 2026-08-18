@@ -1,0 +1,28 @@
+<component name="InspectionProjectProfileManager">
+  <profile version="1.0">
+    <option name="myName" value="Project Default" />
+    <inspection_tool class="PyInterpreterInspection" enabled="false" level="WARNING" enabled_by_default="false" />
+    <inspection_tool class="PyPackageRequirementsInspection" enabled="true" level="WARNING" enabled_by_default="true">
+      <option name="ignoredPackages">
+        <list>
+          <option value="bcrypt" />
+          <option value="blinker" />
+          <option value="click" />
+          <option value="colorama" />
+          <option value="fdb" />
+          <option value="Flask" />
+          <option value="Flask-Bcrypt" />
+          <option value="flask-cors" />
+          <option value="importlib_metadata" />
+          <option value="itsdangerous" />
+          <option value="Jinja2" />
+          <option value="MarkupSafe" />
+          <option value="pygal" />
+          <option value="PyJWT" />
+          <option value="Werkzeug" />
+          <option value="zipp" />
+        </list>
+      </option>
+    </inspection_tool>
+  </profile>
+</component>

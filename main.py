@@ -2,7 +2,6 @@ from flask import Flask
 from flask_cors import CORS
 import fdb
 
-
 app = Flask(__name__)
 
 CORS(
@@ -25,7 +24,6 @@ con = fdb.connect(
 )
 
 from usuario import *
-
 
 if __name__ == "__main__":
     app.run(debug=True)
