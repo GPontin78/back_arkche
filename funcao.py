@@ -19,22 +19,29 @@ def gerar_token(id_usuario, tipo):
 
 def descobre_tipo_usuario():
     token = request.cookies.get('access_token')
-    print("TOKEN RECEBIDO:", token)
+
+    if not token:
+        autorizacao = request.headers.get('Authorization', '')
+        if autorizacao.lower().startswith('bearer '):
+            token = autorizacao[7:].strip()
 
     if not token:
         return None
 
     try:
         payload = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
-        print("PAYLOAD:", payload)
-        print("TIPO:", payload['tipo'])
         return payload['tipo']
-    except Exception as e:
-        print("ERRO TOKEN:", e)
+    except Exception:
         return None
 
 def descobre_id_usuario():
     token = request.cookies.get('access_token')
+
+    if not token:
+        autorizacao = request.headers.get('Authorization', '')
+        if autorizacao.lower().startswith('bearer '):
+            token = autorizacao[7:].strip()
+
     if not token:
         return None
     try:

@@ -5,6 +5,43 @@ import bcrypt
 import threading
 
 
+@app.route('/verificar_email_cadastro', methods=['POST'])
+def verificar_email_cadastro():
+    dados = request.get_json(silent=True) or {}
+    email = str(dados.get('email') or '').strip().lower()
+
+    if not email:
+        return jsonify({
+            'mensagem': 'E-mail é obrigatório'
+        }), 400
+
+    cursor = None
+    try:
+        cursor = con.cursor()
+        cursor.execute(
+            "SELECT 1 FROM USUARIO WHERE LOWER(TRIM(EMAIL)) = ?",
+            (email,)
+        )
+
+        if cursor.fetchone():
+            return jsonify({
+                'disponivel': False,
+                'mensagem': 'Email já cadastrado'
+            }), 409
+
+        return jsonify({
+            'disponivel': True,
+            'mensagem': 'E-mail disponível'
+        }), 200
+    except Exception:
+        return jsonify({
+            'mensagem': 'Não foi possível verificar o e-mail'
+        }), 500
+    finally:
+        if cursor:
+            cursor.close()
+
+
 @app.route('/adicionar_usuario', methods=['POST'])
 def adicionar_usuario():
     nome = request.form.get('nome')
@@ -362,50 +399,52 @@ def trocar_senha():
         if cursor:
             cursor.close()
 
-
 @app.route('/edicao_usuario/<int:id_usuario>', methods=['PUT'])
 def edicao_usuario(id_usuario):
+
     tipo_usuario = descobre_tipo_usuario()
     id_usuario_logado = descobre_id_usuario()
 
-    if tipo_usuario is None or id_usuario_logado is None:
-        return jsonify({'mensagem': 'Usuário não logado'}), 403
+    if tipo_usuario is None:
+        return jsonify({'mensagem': 'usuario nao logado'}), 403
 
     if tipo_usuario != 0:
         if id_usuario_logado != id_usuario:
-            return jsonify({'mensagem': 'Usuário não pertence a essa conta'}), 403
+            return jsonify({'mensagem': 'usuario nao pertence a essa conta'}), 403
 
-    cursor = None
+    cursor = con.cursor()
 
     try:
-        cursor = con.cursor()
+        cursor.execute("""
+            SELECT NOME, EMAIL, CPF, CNPJ, TELEFONE, CEP, RUA, BAIRRO,
+                   NUMERO, NOME_MAE, NOME_PAI, CIDADE, ESTADO,
+                   COMPLEMENTO, NOME_FANTASIA, RAZAO_SOCIAL, REPRESENTANTE
+            FROM USUARIO
+            WHERE ID_USUARIO = ?
+        """, (id_usuario,))
 
-        cursor.execute("SELECT NOME, EMAIL, CPF, CNPJ, TELEFONE, CEP, RUA, BAIRRO, NUMERO, NOME_MAE, NOME_PAI, CIDADE, ESTADO, COMPLEMENTO, NOME_FANTASIA, RAZAO_SOCIAL, REPRESENTANTE FROM USUARIO WHERE ID_USUARIO = ?", (id_usuario,))
-        usuario = cursor.fetchone()
+        existe_usuario = cursor.fetchone()
 
-        if not usuario:
+        if not existe_usuario:
             return jsonify({'mensagem': 'Usuário não encontrado'}), 404
 
-        nome = request.form.get('nome', usuario[0])
-        email = request.form.get('email', usuario[1])
-        cpf = request.form.get('cpf', usuario[2])
-        cnpj = request.form.get('cnpj', usuario[3])
-        telefone = request.form.get('telefone', usuario[4])
-        cep = request.form.get('cep', usuario[5])
-        rua = request.form.get('rua', usuario[6])
-        bairro = request.form.get('bairro', usuario[7])
-        numero = request.form.get('numero', usuario[8])
-        nome_mae = request.form.get('nome_mae', usuario[9])
-        nome_pai = request.form.get('nome_pai', usuario[10])
-        cidade = request.form.get('cidade', usuario[11])
-        estado = request.form.get('estado', usuario[12])
-        complemento = request.form.get('complemento', usuario[13])
-        nome_fantasia = request.form.get('nome_fantasia', usuario[14])
-        razao_social = request.form.get('razao_social', usuario[15])
-        representante = request.form.get('representante', usuario[16])
-
-        if email:
-            email = email.strip().lower()
+        nome = request.form.get('nome')
+        email = request.form.get('email')
+        cpf = request.form.get('cpf')
+        cnpj = request.form.get('cnpj')
+        telefone = request.form.get('telefone')
+        cep = request.form.get('cep')
+        rua = request.form.get('rua')
+        bairro = request.form.get('bairro')
+        numero = request.form.get('numero')
+        nome_mae = request.form.get('nome_mae')
+        nome_pai = request.form.get('nome_pai')
+        cidade = request.form.get('cidade')
+        estado = request.form.get('estado')
+        complemento = request.form.get('complemento')
+        nome_fantasia = request.form.get('nome_fantasia')
+        razao_social = request.form.get('razao_social')
+        representante = request.form.get('representante')
 
         if not nome or not nome.strip():
             return jsonify({'mensagem': 'Nome é obrigatório'}), 400
@@ -416,49 +455,88 @@ def edicao_usuario(id_usuario):
         if not cpf or not cpf.strip():
             return jsonify({'mensagem': 'CPF é obrigatório'}), 400
 
-        if cnpj is not None:
-            cnpj = cnpj.strip()
-
-            if cnpj == "":
-                cnpj = None
-
-        conta_pj = cnpj is not None
-
-        if not conta_pj:
-            nome_fantasia = None
-            razao_social = None
-            representante = None
-
-        cursor.execute("SELECT 1 FROM USUARIO WHERE EMAIL = ? AND ID_USUARIO != ?", (email, id_usuario))
+        cursor.execute("""
+            SELECT 1
+            FROM USUARIO
+            WHERE EMAIL = ?
+            AND ID_USUARIO != ?
+        """, (email, id_usuario))
 
         if cursor.fetchone():
             return jsonify({'mensagem': 'Email já cadastrado'}), 400
 
-        cursor.execute("SELECT 1 FROM USUARIO WHERE CPF = ? AND ID_USUARIO != ?", (cpf, id_usuario))
+        cursor.execute("""
+            SELECT 1
+            FROM USUARIO
+            WHERE CPF = ?
+            AND ID_USUARIO != ?
+        """, (cpf, id_usuario))
 
         if cursor.fetchone():
             return jsonify({'mensagem': 'CPF já cadastrado'}), 400
 
-        if conta_pj:
-            cursor.execute("SELECT 1 FROM USUARIO WHERE CNPJ = ? AND ID_USUARIO != ?", (cnpj, id_usuario))
+        if cnpj:
+            cursor.execute("""
+                SELECT 1
+                FROM USUARIO
+                WHERE CNPJ = ?
+                AND ID_USUARIO != ?
+            """, (cnpj, id_usuario))
 
             if cursor.fetchone():
                 return jsonify({'mensagem': 'CNPJ já cadastrado'}), 400
 
-        cursor.execute("UPDATE USUARIO SET NOME = ?, EMAIL = ?, CPF = ?, CNPJ = ?, TELEFONE = ?, CEP = ?, RUA = ?, BAIRRO = ?, NUMERO = ?, NOME_MAE = ?, NOME_PAI = ?, CIDADE = ?, ESTADO = ?, COMPLEMENTO = ?, NOME_FANTASIA = ?, RAZAO_SOCIAL = ?, REPRESENTANTE = ? WHERE ID_USUARIO = ?", (nome, email, cpf, cnpj, telefone, cep, rua, bairro, numero, nome_mae, nome_pai, cidade, estado, complemento, nome_fantasia, razao_social, representante, id_usuario))
+        cursor.execute("""
+            UPDATE USUARIO
+            SET NOME = ?,
+                EMAIL = ?,
+                CPF = ?,
+                CNPJ = ?,
+                TELEFONE = ?,
+                CEP = ?,
+                RUA = ?,
+                BAIRRO = ?,
+                NUMERO = ?,
+                NOME_MAE = ?,
+                NOME_PAI = ?,
+                CIDADE = ?,
+                ESTADO = ?,
+                COMPLEMENTO = ?,
+                NOME_FANTASIA = ?,
+                RAZAO_SOCIAL = ?,
+                REPRESENTANTE = ?
+            WHERE ID_USUARIO = ?
+        """, (
+            nome,
+            email,
+            cpf,
+            cnpj,
+            telefone,
+            cep,
+            rua,
+            bairro,
+            numero,
+            nome_mae,
+            nome_pai,
+            cidade,
+            estado,
+            complemento,
+            nome_fantasia,
+            razao_social,
+            representante,
+            id_usuario
+        ))
 
         con.commit()
 
         return jsonify({
             'mensagem': 'Usuário atualizado com sucesso',
-            'id_usuario': id_usuario,
-            'tipo_conta': 'PJ' if conta_pj else 'PF'
+            'id_usuario': id_usuario
         }), 200
 
     except Exception as e:
         con.rollback()
-        return jsonify({'mensagem': f'Erro ao editar usuário: {e}'}), 500
+        return jsonify({'mensagem': f'erro ao editar: {e}'}), 500
 
     finally:
-        if cursor:
-            cursor.close()
+        cursor.close()
