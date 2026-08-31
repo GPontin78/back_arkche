@@ -4,44 +4,6 @@ from funcao import gerar_token, descobre_tipo_usuario, descobre_id_usuario, gera
 import bcrypt
 import threading
 
-
-@app.route('/verificar_email_cadastro', methods=['POST'])
-def verificar_email_cadastro():
-    dados = request.get_json(silent=True) or {}
-    email = str(dados.get('email') or '').strip().lower()
-
-    if not email:
-        return jsonify({
-            'mensagem': 'E-mail é obrigatório'
-        }), 400
-
-    cursor = None
-    try:
-        cursor = con.cursor()
-        cursor.execute(
-            "SELECT 1 FROM USUARIO WHERE LOWER(TRIM(EMAIL)) = ?",
-            (email,)
-        )
-
-        if cursor.fetchone():
-            return jsonify({
-                'disponivel': False,
-                'mensagem': 'Email já cadastrado'
-            }), 409
-
-        return jsonify({
-            'disponivel': True,
-            'mensagem': 'E-mail disponível'
-        }), 200
-    except Exception:
-        return jsonify({
-            'mensagem': 'Não foi possível verificar o e-mail'
-        }), 500
-    finally:
-        if cursor:
-            cursor.close()
-
-
 @app.route('/adicionar_usuario', methods=['POST'])
 def adicionar_usuario():
     nome = request.form.get('nome')
@@ -118,6 +80,45 @@ def adicionar_usuario():
             nome,email,telefone,cpf,cnpj,senha_hash,tipo,cep,rua,numero,bairro,cidade,estado,complemento,nome_fantasia,razao_social,representante))
 
         id_usuario = cursor.fetchone()[0]
+
+        cursor.execute("""
+            SELECT MAX(NUMERO_CONTA)
+            FROM CONTA
+        """)
+
+        numero_conta = cursor.fetchone()[0]
+
+        if numero_conta is None:
+            numero_conta = 0
+
+        numero_conta = numero_conta + 1
+
+        cursor.execute("""
+            INSERT INTO CONTA (
+                ID_USUARIO, NUMERO_CONTA, AGENCIA, BANCO, TIPO_CONTA
+            ) VALUES (?, ?, ?, ?, ?)
+        """, (
+            id_usuario,
+            numero_conta,
+            '0001',
+            248,
+            0
+        ))
+
+        if cnpj:
+            numero_conta = numero_conta + 1
+
+            cursor.execute("""
+                INSERT INTO CONTA (
+                    ID_USUARIO, NUMERO_CONTA, AGENCIA, BANCO, TIPO_CONTA
+                ) VALUES (?, ?, ?, ?, ?)
+            """, (
+                id_usuario,
+                numero_conta,
+                '0001',
+                248,
+                1
+            ))
 
         con.commit()
 

@@ -24,6 +24,8 @@ con = fdb.connect(
 )
 
 from usuario import *
+from pagamento import *
+from chave_pix import *
 
 if __name__ == "__main__":
     app.run(debug=True)
