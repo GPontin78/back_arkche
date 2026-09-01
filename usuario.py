@@ -147,7 +147,7 @@ def login():
 
     cadastro_facial = dados.get('cadastro_facial', False)
 
-
+    cursor = None
     try:
         cursor = con.cursor()
 
@@ -236,9 +236,10 @@ def login():
 
         return resposta
 
-    except Exception as e:
+    except Exception:
+        app.logger.exception('Falha no banco de dados durante o login')
         return jsonify({
-            'mensagem': f'Erro no login: {e}'
+            'mensagem': 'Não foi possível realizar o login. Tente novamente.'
         }), 500
 
     finally:
