@@ -7,6 +7,7 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from flask_bcrypt import check_password_hash
+from datetime import datetime
 
 def gerar_token(id_usuario, tipo):
     payload = {
@@ -75,3 +76,30 @@ def enviando_email(destinatario, assunto, html):
 
     except Exception as e:
         print("ERRO:", e)
+
+
+def calcular_saldo():
+    id_usuario = descobre_id_usuario()
+    cursor = con.cursor()
+    cursor.execute("""SELECT SUM(M.VALOR )
+                    FROM MOVIMENTACAO m
+                    WHERE M.ID_RECEBEDOR = ? """, (id_usuario,))
+    receita = cursor.fetchone()[0]
+
+    cursor.execute("""SELECT SUM(M.VALOR)
+                        FROM MOVIMENTACAO m
+                        WHERE M.ID_PAGADOR = ? """, (id_usuario,))
+    despesa = cursor.fetchone()[0]
+
+    saldo = receita - despesa
+
+    return saldo
+
+
+
+def data_atual():
+    agora = datetime.now()
+
+    data_atual = agora.strftime("%d/%m/%Y %H:%M:%S")
+
+    return data_atual
