@@ -1,5 +1,6 @@
 from flask import jsonify, request, make_response, render_template
-from main import app, con
+from main import app
+from banco import con
 from funcao import gerar_token, descobre_tipo_usuario, descobre_id_usuario, gerar_codigo, enviando_email, data_atual, calcular_saldo
 import bcrypt
 import threading

@@ -1,5 +1,6 @@
 from flask import jsonify, request
-from main import app, con
+from main import app
+from banco import con
 from funcao import descobre_id_usuario
 import uuid
 
