@@ -1,7 +1,7 @@
 from flask import jsonify, request, make_response
 from main import app
 from banco import con
-from funcao import gerar_token, descobre_id_usuario, criptografar_pin, verificar_pin
+from funcao import gerar_token, descobre_id_usuario, criptografar_pin, verificar_pin, dados_usuario, dados_conta
 
 
 @app.route('/login', methods=['POST'])
@@ -156,3 +156,13 @@ def logout():
     resposta.delete_cookie('access_token', path='/')
 
     return resposta
+
+@app.route('/sessao', methods=['GET'])
+def sessao():
+    usuario = dados_usuario()
+    conta = dados_conta()
+
+    if not usuario or not conta:
+        return jsonify({'mensagem': 'Sessão inválida ou expirada.'}), 401
+
+    return jsonify({'usuario': usuario, 'conta': conta}), 200
