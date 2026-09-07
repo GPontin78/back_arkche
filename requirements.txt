@@ -4,3 +4,4 @@ flask-cors==6.0.5
 fdb==2.0.4
 PyJWT==2.13.0
 bcrypt==5.0.0
+gunicorn
