@@ -9,6 +9,7 @@ from banco import con
 from flask import request, current_app
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+import uuid
 
 
 def obter_token():
@@ -270,5 +271,39 @@ def calcular_saldo(id_conta=None):
     finally:
         if cursor:
             cursor.close()
+
+def gerar_chave_pix():
+    return str(uuid.uuid4())
+
+def validar_chave_pix(chave_pix, chave, acao, id_conta=None):
+    if acao ==1:
+        cursor = None
+        filtro = 'WHERE ' + chave + ' = ?'
+        try:
+                cursor = con.cursor()
+        
+                cursor.execute("""SELECT 1 FROM CHAVE_PIX """ + filtro, (chave_pix,))
+                chavona = cursor.fetchone()[0]
+        except Exception as e:
+                print("ERRO:", e)
+
+        finally:
+                if cursor:
+                    cursor.close()
+        return chavona
+    elif acao == 2:
+        filtro = chave +  ' WHERE ' + chave + ' = ? AND id_conta = ?'
+        cursor = None
+        try:
+            cursor.execute("""
+                        update chave_pix set """ + filtro, (chave, chave_pix, id_conta))
+        except Exception as e:
+                        print("ERRO:", e)
+        
+        finally:
+                        if cursor:
+                            cursor.close()
+
+
 def data_atual():
     return datetime.datetime.now()
