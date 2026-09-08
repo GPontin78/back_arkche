@@ -3,15 +3,12 @@ from main import app
 from banco import con
 from funcao import descobre_id_conta, data_atual, calcular_saldo
 
-
 @app.route('/adicionar_cobranca', methods=['POST'])
 def adicionar_cobranca():
     dados = request.get_json()
+    id_pagador = dados.get('id_pagador')
     valor = dados.get('valor')
     data_vencimento = dados.get('data_vencimento')
-    agencia = dados.get('agencia')
-    banco = dados.get('banco')
-    numero_conta = dados.get('numero_conta')
 
     id_recebedor = descobre_id_conta()
 
@@ -20,21 +17,45 @@ def adicionar_cobranca():
 
     cursor = con.cursor()
 
-    cursor.execute("""SELECT ID_CONTA FROM CONTA WHERE AGENCIA = ? AND BANCO = ? AND NUMERO_CONTA = ?""", (agencia, banco, numero_conta))
+    cursor.execute("""SELECT TIPO_CONTA FROM CONTA WHERE ID_CONTA = ?""", (id_recebedor,))
+    conta_recebedor = cursor.fetchone()
+
+    if not conta_recebedor:
+        cursor.close()
+        return jsonify({'mensagem': 'Conta recebedora nao encontrada'}), 404
+
+    if conta_recebedor[0] != 1:
+        cursor.close()
+        return jsonify({'mensagem': 'Apenas contas PJ podem criar boletos'}), 403
+
+    cursor.execute("""SELECT ID_CONTA FROM CONTA WHERE ID_CONTA = ?""", (id_pagador,))
     conta_pagador = cursor.fetchone()
 
     if not conta_pagador:
         cursor.close()
-        return jsonify({'mensagem': 'Conta nao encontrada'}), 404
+        return jsonify({'mensagem': 'Conta pagadora nao encontrada'}), 404
 
-    id_pagador = conta_pagador[0]
+    cursor.execute("""INSERT INTO COBRANCA (ID_PAGADOR, ID_RECEBEDOR, VALOR, DATA_VENCIMENTO, STATUS)
+                      VALUES (?, ?, ?, ?, ?) RETURNING ID_COBRANCA""",
+                   (id_pagador, id_recebedor, valor, data_vencimento, 0))
 
-    cursor.execute("""INSERT INTO COBRANCA (ID_PAGADOR, ID_RECEBEDOR, VALOR, DATA_VENCIMENTO, STATUS) VALUES (?, ?, ?, ?, ?)""", (id_pagador, id_recebedor, valor, data_vencimento, 0))
+    id_cobranca = cursor.fetchone()[0]
+
+    codigo_pagamento = '248' + str(id_cobranca).zfill(10)
+
+    cursor.execute("""UPDATE COBRANCA SET CODIGO_PAGAMENTO = ? WHERE ID_COBRANCA = ?""",
+                   (codigo_pagamento, id_cobranca))
 
     con.commit()
     cursor.close()
 
-    return jsonify({'mensagem': 'Cobranca adicionada com sucesso'}), 201
+    return jsonify({
+        'mensagem': 'Boleto criado com sucesso',
+        'id_cobranca': id_cobranca,
+        'codigo_pagamento': codigo_pagamento,
+        'valor': valor,
+        'data_vencimento': data_vencimento
+    }), 201
 
 
 @app.route('/baixar_cobranca', methods=['POST'])
