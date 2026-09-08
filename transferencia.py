@@ -89,6 +89,7 @@ def baixar_cobranca():
 @app.route('/adicionar_pix', methods=['POST'])
 def adicionar_pix():
     dados = request.get_json()
+    tipo_chave = dados.get('tipo_chave')
     chave_pix = dados.get('chave_pix')
     valor = dados.get('valor')
 
@@ -99,7 +100,25 @@ def adicionar_pix():
 
     cursor = con.cursor()
 
-    cursor.execute("""SELECT ID_CONTA FROM CHAVE_PIX WHERE CHAVE_PIX_EMAIL = ? OR CHAVE_PIX_TELEFONE = ? OR CHAVE_PIX_CPF = ? OR CHAVE_PIX_ALEATORIA = ? OR CHAVE_PIX_CNPJ = ?""", (chave_pix, chave_pix, chave_pix, chave_pix, chave_pix))
+    if tipo_chave == 'email':
+        cursor.execute("""SELECT ID_CONTA FROM CHAVE_PIX WHERE CHAVE_PIX_EMAIL = ?""", (chave_pix,))
+
+    elif tipo_chave == 'telefone':
+        cursor.execute("""SELECT ID_CONTA FROM CHAVE_PIX WHERE CHAVE_PIX_TELEFONE = ?""", (chave_pix,))
+
+    elif tipo_chave == 'cpf':
+        cursor.execute("""SELECT ID_CONTA FROM CHAVE_PIX WHERE CHAVE_PIX_CPF = ?""", (chave_pix,))
+
+    elif tipo_chave == 'cnpj':
+        cursor.execute("""SELECT ID_CONTA FROM CHAVE_PIX WHERE CHAVE_PIX_CNPJ = ?""", (chave_pix,))
+
+    elif tipo_chave == 'aleatoria':
+        cursor.execute("""SELECT ID_CONTA FROM CHAVE_PIX WHERE CHAVE_PIX_ALEATORIA = ?""", (chave_pix,))
+
+    else:
+        cursor.close()
+        return jsonify({'mensagem': 'Tipo de chave Pix invalido'}), 400
+
     conta_recebedor = cursor.fetchone()
 
     if not conta_recebedor:
@@ -120,7 +139,9 @@ def adicionar_pix():
 
     data_movimentacao = data_atual()
 
-    cursor.execute("""INSERT INTO MOVIMENTACAO (ID_PAGADOR, ID_RECEBEDOR, VALOR, DATA_MOVIMENTACAO) VALUES (?, ?, ?, ?)""", (id_pagador, id_recebedor, valor, data_movimentacao))
+    cursor.execute("""INSERT INTO MOVIMENTACAO (ID_PAGADOR, ID_RECEBEDOR, VALOR, DATA_MOVIMENTACAO)
+                      VALUES (?, ?, ?, ?)""",
+                   (id_pagador, id_recebedor, valor, data_movimentacao))
 
     con.commit()
     cursor.close()
