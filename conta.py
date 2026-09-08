@@ -154,7 +154,7 @@ def adicionar_conta():
         if cursor:
             cursor.close()
 
-            
+
 @app.route('/logout', methods=['POST'])
 def logout():
     resposta = make_response(jsonify({'mensagem': 'Logout realizado com sucesso'}), 200)
@@ -279,3 +279,75 @@ def trocar_pin():
     finally:
         if cursor:
             cursor.close()
+
+
+@app.route('/buscar_contas_usuario', methods=['POST'])
+def buscar_contas_usuario():
+    dados = request.get_json()
+    busca = dados.get('busca')
+
+    id_conta = descobre_id_conta()
+
+    if not id_conta:
+        return jsonify({'mensagem': 'Usuario nao logado'}), 403
+
+    cursor = con.cursor()
+
+    cursor.execute("""SELECT C.ID_CONTA, C.NUMERO_CONTA, C.AGENCIA, C.BANCO, C.TIPO_CONTA,
+                      U.NOME, U.EMAIL, U.TELEFONE, U.CPF, U.CNPJ, U.NOME_FANTASIA, U.RAZAO_SOCIAL,
+                      P.CHAVE_PIX_EMAIL, P.CHAVE_PIX_TELEFONE, P.CHAVE_PIX_CPF, P.CHAVE_PIX_ALEATORIA, P.CHAVE_PIX_CNPJ
+                      FROM USUARIO U
+                      INNER JOIN CONTA C ON C.ID_USUARIO = U.ID_USUARIO
+                      LEFT JOIN CHAVE_PIX P ON P.ID_CONTA = C.ID_CONTA
+                      WHERE CAST(U.CPF AS VARCHAR(255)) = ?
+                      OR CAST(U.CNPJ AS VARCHAR(255)) = ?
+                      OR CAST(U.EMAIL AS VARCHAR(255)) = ?
+                      OR CAST(U.TELEFONE AS VARCHAR(255)) = ?
+                      OR UPPER(CAST(U.NOME AS VARCHAR(255))) LIKE UPPER(?)
+                      OR UPPER(CAST(U.NOME_FANTASIA AS VARCHAR(255))) LIKE UPPER(?)
+                      OR UPPER(CAST(U.RAZAO_SOCIAL AS VARCHAR(255))) LIKE UPPER(?)""",
+                   (busca, busca, busca, busca, '%' + busca + '%', '%' + busca + '%', '%' + busca + '%'))
+
+    contas_banco = cursor.fetchall()
+    cursor.close()
+
+    if not contas_banco:
+        return jsonify({'mensagem': 'Nenhuma conta encontrada'}), 404
+
+    contas = []
+
+    for conta in contas_banco:
+        chaves_pix = []
+
+        if conta[12]:
+            chaves_pix.append({'tipo': 'email', 'valor': conta[12]})
+
+        if conta[13]:
+            chaves_pix.append({'tipo': 'telefone', 'valor': conta[13]})
+
+        if conta[14]:
+            chaves_pix.append({'tipo': 'cpf', 'valor': conta[14]})
+
+        if conta[15]:
+            chaves_pix.append({'tipo': 'aleatoria', 'valor': conta[15]})
+
+        if conta[16]:
+            chaves_pix.append({'tipo': 'cnpj', 'valor': conta[16]})
+
+        contas.append({
+            'id_conta': conta[0],
+            'numero_conta': conta[1],
+            'agencia': conta[2],
+            'banco': conta[3],
+            'tipo_conta': conta[4],
+            'nome': conta[5],
+            'email': conta[6],
+            'telefone': conta[7],
+            'cpf': conta[8],
+            'cnpj': conta[9],
+            'nome_fantasia': conta[10],
+            'razao_social': conta[11],
+            'chaves_pix': chaves_pix
+        })
+
+    return jsonify({'contas': contas}), 200
