@@ -1,8 +1,7 @@
 from flask import jsonify, request, make_response, render_template
 from main import app
 from banco import con
-from funcao import gerar_token, descobre_id_usuario, criptografar_pin, verificar_pin, dados_usuario, dados_conta, gerar_codigo, enviando_email,data_atual
-
+from funcao import gerar_token, descobre_id_usuario, descobre_id_conta, criptografar_pin, verificar_pin, dados_usuario, dados_conta, gerar_codigo, enviando_email,data_atual
 @app.route('/login', methods=['POST'])
 def login():
     dados = request.get_json()
