@@ -1,7 +1,7 @@
 from flask import jsonify, request
 from main import app
 from banco import con
-from funcao import descobre_id_usuario
+from funcao import descobre_id_conta
 import uuid
 
 
@@ -22,9 +22,9 @@ def adicionar_chave_pix():
     if chave_pix_aleatoria:
         chave_pix_aleatoria = gerar_chave_pix()
 
-    id_usuario = descobre_id_usuario()
+    id_conta = descobre_id_conta()
 
-    if id_usuario is None:
+    if id_conta is None:
         return jsonify({'mensagem': 'Usuario nao logado'}), 403
 
     chave_informada = chave_pix_email or chave_pix_telefone or chave_pix_cpf or chave_pix_aleatoria or chave_pix_cnpj
@@ -35,28 +35,7 @@ def adicionar_chave_pix():
     cursor = con.cursor()
 
     try:
-        cursor.execute("""
-            select id_conta
-            from conta
-            where id_usuario = ?
-        """, (id_usuario,))
-
-        conta = cursor.fetchone()
-
-        if not conta:
-            return jsonify({'mensagem': 'Conta nao encontrada'}), 403
-
-        cursor.execute("""
-            select id_chave_pix,
-                   chave_pix_email,
-                   chave_pix_telefone,
-                   chave_pix_cpf,
-                   chave_pix_aleatoria,
-                   chave_pix_cnpj
-            from chave_pix
-            where id_usuario = ?
-        """, (id_usuario,))
-
+        cursor.execute("SELECT ID_CHAVE_PIX, CHAVE_PIX_EMAIL, CHAVE_PIX_TELEFONE, CHAVE_PIX_CPF, CHAVE_PIX_ALEATORIA, CHAVE_PIX_CNPJ FROM CHAVE_PIX WHERE ID_CONTA = ?", (id_conta,))
         existe_chave_pix = cursor.fetchone()
 
         if existe_chave_pix:
@@ -76,69 +55,29 @@ def adicionar_chave_pix():
                 return jsonify({'mensagem': 'Chave Pix de CNPJ ja cadastrada'}), 400
 
         if chave_pix_email:
-            cursor.execute("""
-                select id_usuario
-                from chave_pix
-                where chave_pix_email = ?
-            """, (chave_pix_email,))
-
-            chave_existente = cursor.fetchone()
-
-            if chave_existente:
-                if chave_existente[0] != id_usuario:
-                    return jsonify({'mensagem': 'Chave Pix ja cadastrada'}), 400
+            cursor.execute("SELECT ID_CHAVE_PIX FROM CHAVE_PIX WHERE CHAVE_PIX_EMAIL = ?", (chave_pix_email,))
+            if cursor.fetchone():
+                return jsonify({'mensagem': 'Chave Pix ja cadastrada'}), 400
 
         if chave_pix_telefone:
-            cursor.execute("""
-                select id_usuario
-                from chave_pix
-                where chave_pix_telefone = ?
-            """, (chave_pix_telefone,))
-
-            chave_existente = cursor.fetchone()
-
-            if chave_existente:
-                if chave_existente[0] != id_usuario:
-                    return jsonify({'mensagem': 'Chave Pix ja cadastrada'}), 400
+            cursor.execute("SELECT ID_CHAVE_PIX FROM CHAVE_PIX WHERE CHAVE_PIX_TELEFONE = ?", (chave_pix_telefone,))
+            if cursor.fetchone():
+                return jsonify({'mensagem': 'Chave Pix ja cadastrada'}), 400
 
         if chave_pix_cpf:
-            cursor.execute("""
-                select id_usuario
-                from chave_pix
-                where chave_pix_cpf = ?
-            """, (chave_pix_cpf,))
-
-            chave_existente = cursor.fetchone()
-
-            if chave_existente:
-                if chave_existente[0] != id_usuario:
-                    return jsonify({'mensagem': 'Chave Pix ja cadastrada'}), 400
+            cursor.execute("SELECT ID_CHAVE_PIX FROM CHAVE_PIX WHERE CHAVE_PIX_CPF = ?", (chave_pix_cpf,))
+            if cursor.fetchone():
+                return jsonify({'mensagem': 'Chave Pix ja cadastrada'}), 400
 
         if chave_pix_aleatoria:
-            cursor.execute("""
-                select id_usuario
-                from chave_pix
-                where chave_pix_aleatoria = ?
-            """, (chave_pix_aleatoria,))
-
-            chave_existente = cursor.fetchone()
-
-            if chave_existente:
-                if chave_existente[0] != id_usuario:
-                    return jsonify({'mensagem': 'Chave Pix ja cadastrada'}), 400
+            cursor.execute("SELECT ID_CHAVE_PIX FROM CHAVE_PIX WHERE CHAVE_PIX_ALEATORIA = ?", (chave_pix_aleatoria,))
+            if cursor.fetchone():
+                return jsonify({'mensagem': 'Chave Pix ja cadastrada'}), 400
 
         if chave_pix_cnpj:
-            cursor.execute("""
-                select id_usuario
-                from chave_pix
-                where chave_pix_cnpj = ?
-            """, (chave_pix_cnpj,))
-
-            chave_existente = cursor.fetchone()
-
-            if chave_existente:
-                if chave_existente[0] != id_usuario:
-                    return jsonify({'mensagem': 'Chave Pix ja cadastrada'}), 400
+            cursor.execute("SELECT ID_CHAVE_PIX FROM CHAVE_PIX WHERE CHAVE_PIX_CNPJ = ?", (chave_pix_cnpj,))
+            if cursor.fetchone():
+                return jsonify({'mensagem': 'Chave Pix ja cadastrada'}), 400
 
         if existe_chave_pix:
             id_chave_pix = existe_chave_pix[0]
@@ -158,25 +97,7 @@ def adicionar_chave_pix():
             if not chave_pix_cnpj:
                 chave_pix_cnpj = existe_chave_pix[5]
 
-            cursor.execute("""
-                update chave_pix
-                set chave_pix_email = ?,
-                    chave_pix_telefone = ?,
-                    chave_pix_cpf = ?,
-                    chave_pix_aleatoria = ?,
-                    chave_pix_cnpj = ?
-                where id_chave_pix = ?
-                and id_usuario = ?
-            """, (
-                chave_pix_email,
-                chave_pix_telefone,
-                chave_pix_cpf,
-                chave_pix_aleatoria,
-                chave_pix_cnpj,
-                id_chave_pix,
-                id_usuario
-            ))
-
+            cursor.execute("UPDATE CHAVE_PIX SET CHAVE_PIX_EMAIL = ?, CHAVE_PIX_TELEFONE = ?, CHAVE_PIX_CPF = ?, CHAVE_PIX_ALEATORIA = ?, CHAVE_PIX_CNPJ = ? WHERE ID_CHAVE_PIX = ? AND ID_CONTA = ?", (chave_pix_email, chave_pix_telefone, chave_pix_cpf, chave_pix_aleatoria, chave_pix_cnpj, id_chave_pix, id_conta))
             con.commit()
 
             return jsonify({
@@ -185,25 +106,7 @@ def adicionar_chave_pix():
                 'chave_pix_aleatoria': chave_pix_aleatoria
             }), 201
 
-        cursor.execute("""
-            insert into chave_pix (
-                id_usuario,
-                chave_pix_email,
-                chave_pix_telefone,
-                chave_pix_cpf,
-                chave_pix_aleatoria,
-                chave_pix_cnpj
-            ) values (?, ?, ?, ?, ?, ?)
-            returning id_chave_pix
-        """, (
-            id_usuario,
-            chave_pix_email,
-            chave_pix_telefone,
-            chave_pix_cpf,
-            chave_pix_aleatoria,
-            chave_pix_cnpj
-        ))
-
+        cursor.execute("INSERT INTO CHAVE_PIX (ID_CONTA, CHAVE_PIX_EMAIL, CHAVE_PIX_TELEFONE, CHAVE_PIX_CPF, CHAVE_PIX_ALEATORIA, CHAVE_PIX_CNPJ) VALUES (?, ?, ?, ?, ?, ?) RETURNING ID_CHAVE_PIX", (id_conta, chave_pix_email, chave_pix_telefone, chave_pix_cpf, chave_pix_aleatoria, chave_pix_cnpj))
         id_chave_pix = cursor.fetchone()[0]
 
         con.commit()
@@ -224,26 +127,15 @@ def adicionar_chave_pix():
 
 @app.route('/edicao_chave_pix/<int:id_chave_pix>', methods=['PUT'])
 def edicao_chave_pix(id_chave_pix):
-    id_usuario = descobre_id_usuario()
+    id_conta = descobre_id_conta()
 
-    if id_usuario is None:
+    if id_conta is None:
         return jsonify({'mensagem': 'Usuario nao logado'}), 403
 
     cursor = con.cursor()
 
     try:
-        cursor.execute("""
-            select id_chave_pix,
-                   chave_pix_email,
-                   chave_pix_telefone,
-                   chave_pix_cpf,
-                   chave_pix_aleatoria,
-                   chave_pix_cnpj
-            from chave_pix
-            where id_chave_pix = ?
-            and id_usuario = ?
-        """, (id_chave_pix, id_usuario))
-
+        cursor.execute("SELECT ID_CHAVE_PIX, CHAVE_PIX_EMAIL, CHAVE_PIX_TELEFONE, CHAVE_PIX_CPF, CHAVE_PIX_ALEATORIA, CHAVE_PIX_CNPJ FROM CHAVE_PIX WHERE ID_CHAVE_PIX = ? AND ID_CONTA = ?", (id_chave_pix, id_conta))
         existe_chave_pix = cursor.fetchone()
 
         if not existe_chave_pix:
@@ -251,30 +143,11 @@ def edicao_chave_pix(id_chave_pix):
 
         dados = request.get_json()
 
-        chave_pix_email = dados.get(
-            'chave_pix_email',
-            existe_chave_pix[1]
-        )
-
-        chave_pix_telefone = dados.get(
-            'chave_pix_telefone',
-            existe_chave_pix[2]
-        )
-
-        chave_pix_cpf = dados.get(
-            'chave_pix_cpf',
-            existe_chave_pix[3]
-        )
-
-        chave_pix_aleatoria = dados.get(
-            'chave_pix_aleatoria',
-            existe_chave_pix[4]
-        )
-
-        chave_pix_cnpj = dados.get(
-            'chave_pix_cnpj',
-            existe_chave_pix[5]
-        )
+        chave_pix_email = dados.get('chave_pix_email', existe_chave_pix[1])
+        chave_pix_telefone = dados.get('chave_pix_telefone', existe_chave_pix[2])
+        chave_pix_cpf = dados.get('chave_pix_cpf', existe_chave_pix[3])
+        chave_pix_aleatoria = dados.get('chave_pix_aleatoria', existe_chave_pix[4])
+        chave_pix_cnpj = dados.get('chave_pix_cnpj', existe_chave_pix[5])
 
         chave_informada = chave_pix_email or chave_pix_telefone or chave_pix_cpf or chave_pix_aleatoria or chave_pix_cnpj
 
@@ -282,84 +155,34 @@ def edicao_chave_pix(id_chave_pix):
             return jsonify({'mensagem': 'Informe uma chave Pix'}), 400
 
         if chave_pix_email:
-            cursor.execute("""
-                select 1
-                from chave_pix
-                where chave_pix_email = ?
-                and id_chave_pix != ?
-            """, (chave_pix_email, id_chave_pix))
-
+            cursor.execute("SELECT ID_CHAVE_PIX FROM CHAVE_PIX WHERE CHAVE_PIX_EMAIL = ? AND ID_CHAVE_PIX != ?", (chave_pix_email, id_chave_pix))
             if cursor.fetchone():
                 return jsonify({'mensagem': 'Chave Pix ja cadastrada'}), 400
 
         if chave_pix_telefone:
-            cursor.execute("""
-                select 1
-                from chave_pix
-                where chave_pix_telefone = ?
-                and id_chave_pix != ?
-            """, (chave_pix_telefone, id_chave_pix))
-
+            cursor.execute("SELECT ID_CHAVE_PIX FROM CHAVE_PIX WHERE CHAVE_PIX_TELEFONE = ? AND ID_CHAVE_PIX != ?", (chave_pix_telefone, id_chave_pix))
             if cursor.fetchone():
                 return jsonify({'mensagem': 'Chave Pix ja cadastrada'}), 400
 
         if chave_pix_cpf:
-            cursor.execute("""
-                select 1
-                from chave_pix
-                where chave_pix_cpf = ?
-                and id_chave_pix != ?
-            """, (chave_pix_cpf, id_chave_pix))
-
+            cursor.execute("SELECT ID_CHAVE_PIX FROM CHAVE_PIX WHERE CHAVE_PIX_CPF = ? AND ID_CHAVE_PIX != ?", (chave_pix_cpf, id_chave_pix))
             if cursor.fetchone():
                 return jsonify({'mensagem': 'Chave Pix ja cadastrada'}), 400
 
         if chave_pix_aleatoria:
-            cursor.execute("""
-                select 1
-                from chave_pix
-                where chave_pix_aleatoria = ?
-                and id_chave_pix != ?
-            """, (chave_pix_aleatoria, id_chave_pix))
-
+            cursor.execute("SELECT ID_CHAVE_PIX FROM CHAVE_PIX WHERE CHAVE_PIX_ALEATORIA = ? AND ID_CHAVE_PIX != ?", (chave_pix_aleatoria, id_chave_pix))
             if cursor.fetchone():
                 return jsonify({'mensagem': 'Chave Pix ja cadastrada'}), 400
 
         if chave_pix_cnpj:
-            cursor.execute("""
-                select 1
-                from chave_pix
-                where chave_pix_cnpj = ?
-                and id_chave_pix != ?
-            """, (chave_pix_cnpj, id_chave_pix))
-
+            cursor.execute("SELECT ID_CHAVE_PIX FROM CHAVE_PIX WHERE CHAVE_PIX_CNPJ = ? AND ID_CHAVE_PIX != ?", (chave_pix_cnpj, id_chave_pix))
             if cursor.fetchone():
                 return jsonify({'mensagem': 'Chave Pix ja cadastrada'}), 400
 
-        cursor.execute("""
-            update chave_pix
-            set chave_pix_email = ?,
-                chave_pix_telefone = ?,
-                chave_pix_cpf = ?,
-                chave_pix_aleatoria = ?,
-                chave_pix_cnpj = ?
-            where id_chave_pix = ?
-            and id_usuario = ?
-        """, (
-            chave_pix_email,
-            chave_pix_telefone,
-            chave_pix_cpf,
-            chave_pix_aleatoria,
-            chave_pix_cnpj,
-            id_chave_pix,
-            id_usuario
-        ))
-
+        cursor.execute("UPDATE CHAVE_PIX SET CHAVE_PIX_EMAIL = ?, CHAVE_PIX_TELEFONE = ?, CHAVE_PIX_CPF = ?, CHAVE_PIX_ALEATORIA = ?, CHAVE_PIX_CNPJ = ? WHERE ID_CHAVE_PIX = ? AND ID_CONTA = ?", (chave_pix_email, chave_pix_telefone, chave_pix_cpf, chave_pix_aleatoria, chave_pix_cnpj, id_chave_pix, id_conta))
         con.commit()
 
-        return jsonify({
-            'mensagem': 'Chave Pix atualizada com sucesso'
-        }), 200
+        return jsonify({'mensagem': 'Chave Pix atualizada com sucesso'}), 200
 
     except Exception:
         con.rollback()
@@ -371,9 +194,9 @@ def edicao_chave_pix(id_chave_pix):
 
 @app.route('/deletar_chave_pix/<int:id_chave_pix>', methods=['DELETE'])
 def deletar_chave_pix(id_chave_pix):
-    id_usuario = descobre_id_usuario()
+    id_conta = descobre_id_conta()
 
-    if id_usuario is None:
+    if id_conta is None:
         return jsonify({'mensagem': 'Usuario nao logado'}), 403
 
     dados = request.get_json()
@@ -385,18 +208,7 @@ def deletar_chave_pix(id_chave_pix):
     cursor = con.cursor()
 
     try:
-        cursor.execute("""
-            select id_chave_pix,
-                   chave_pix_email,
-                   chave_pix_telefone,
-                   chave_pix_cpf,
-                   chave_pix_aleatoria,
-                   chave_pix_cnpj
-            from chave_pix
-            where id_chave_pix = ?
-            and id_usuario = ?
-        """, (id_chave_pix, id_usuario))
-
+        cursor.execute("SELECT ID_CHAVE_PIX, CHAVE_PIX_EMAIL, CHAVE_PIX_TELEFONE, CHAVE_PIX_CPF, CHAVE_PIX_ALEATORIA, CHAVE_PIX_CNPJ FROM CHAVE_PIX WHERE ID_CHAVE_PIX = ? AND ID_CONTA = ?", (id_chave_pix, id_conta))
         existe_chave_pix = cursor.fetchone()
 
         if not existe_chave_pix:
@@ -406,65 +218,38 @@ def deletar_chave_pix(id_chave_pix):
             if not existe_chave_pix[1]:
                 return jsonify({'mensagem': 'Chave Pix nao encontrada'}), 404
 
-            cursor.execute("""
-                update chave_pix
-                set chave_pix_email = ?
-                where id_chave_pix = ?
-                and id_usuario = ?
-            """, (None, id_chave_pix, id_usuario))
+            cursor.execute("UPDATE CHAVE_PIX SET CHAVE_PIX_EMAIL = ? WHERE ID_CHAVE_PIX = ? AND ID_CONTA = ?", (None, id_chave_pix, id_conta))
 
         elif tipo == 'telefone':
             if not existe_chave_pix[2]:
                 return jsonify({'mensagem': 'Chave Pix nao encontrada'}), 404
 
-            cursor.execute("""
-                update chave_pix
-                set chave_pix_telefone = ?
-                where id_chave_pix = ?
-                and id_usuario = ?
-            """, (None, id_chave_pix, id_usuario))
+            cursor.execute("UPDATE CHAVE_PIX SET CHAVE_PIX_TELEFONE = ? WHERE ID_CHAVE_PIX = ? AND ID_CONTA = ?", (None, id_chave_pix, id_conta))
 
         elif tipo == 'cpf':
             if not existe_chave_pix[3]:
                 return jsonify({'mensagem': 'Chave Pix nao encontrada'}), 404
 
-            cursor.execute("""
-                update chave_pix
-                set chave_pix_cpf = ?
-                where id_chave_pix = ?
-                and id_usuario = ?
-            """, (None, id_chave_pix, id_usuario))
+            cursor.execute("UPDATE CHAVE_PIX SET CHAVE_PIX_CPF = ? WHERE ID_CHAVE_PIX = ? AND ID_CONTA = ?", (None, id_chave_pix, id_conta))
 
         elif tipo == 'aleatoria':
             if not existe_chave_pix[4]:
                 return jsonify({'mensagem': 'Chave Pix nao encontrada'}), 404
 
-            cursor.execute("""
-                update chave_pix
-                set chave_pix_aleatoria = ?
-                where id_chave_pix = ?
-                and id_usuario = ?
-            """, (None, id_chave_pix, id_usuario))
+            cursor.execute("UPDATE CHAVE_PIX SET CHAVE_PIX_ALEATORIA = ? WHERE ID_CHAVE_PIX = ? AND ID_CONTA = ?", (None, id_chave_pix, id_conta))
 
         elif tipo == 'cnpj':
             if not existe_chave_pix[5]:
                 return jsonify({'mensagem': 'Chave Pix nao encontrada'}), 404
 
-            cursor.execute("""
-                update chave_pix
-                set chave_pix_cnpj = ?
-                where id_chave_pix = ?
-                and id_usuario = ?
-            """, (None, id_chave_pix, id_usuario))
+            cursor.execute("UPDATE CHAVE_PIX SET CHAVE_PIX_CNPJ = ? WHERE ID_CHAVE_PIX = ? AND ID_CONTA = ?", (None, id_chave_pix, id_conta))
 
         else:
             return jsonify({'mensagem': 'Tipo de chave Pix invalido'}), 400
 
         con.commit()
 
-        return jsonify({
-            'mensagem': 'Chave Pix deletada com sucesso'
-        }), 200
+        return jsonify({'mensagem': 'Chave Pix deletada com sucesso'}), 200
 
     except Exception:
         con.rollback()
@@ -476,26 +261,15 @@ def deletar_chave_pix(id_chave_pix):
 
 @app.route('/chaves_pix', methods=['GET'])
 def chaves_pix():
-    id_usuario = descobre_id_usuario()
+    id_conta = descobre_id_conta()
 
-    if id_usuario is None:
+    if id_conta is None:
         return jsonify({'mensagem': 'Usuário não logado'}), 403
 
     cursor = con.cursor()
 
     try:
-        cursor.execute("""
-            SELECT
-                id_chave_pix,
-                chave_pix_email,
-                chave_pix_telefone,
-                chave_pix_cpf,
-                chave_pix_aleatoria,
-                chave_pix_cnpj
-            FROM chave_pix
-            WHERE id_usuario = ?
-        """, (id_usuario,))
-
+        cursor.execute("SELECT ID_CHAVE_PIX, CHAVE_PIX_EMAIL, CHAVE_PIX_TELEFONE, CHAVE_PIX_CPF, CHAVE_PIX_ALEATORIA, CHAVE_PIX_CNPJ FROM CHAVE_PIX WHERE ID_CONTA = ?", (id_conta,))
         registros = cursor.fetchall()
 
         lista_chaves = []
@@ -543,14 +317,10 @@ def chaves_pix():
                     'valor': chave_pix_cnpj
                 })
 
-        return jsonify({
-            'chaves': lista_chaves
-        }), 200
+        return jsonify({'chaves': lista_chaves}), 200
 
     except Exception:
-        return jsonify({
-            'mensagem': 'Erro ao buscar chaves Pix'
-        }), 500
+        return jsonify({'mensagem': 'Erro ao buscar chaves Pix'}), 500
 
     finally:
         cursor.close()
