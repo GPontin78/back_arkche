@@ -253,19 +253,15 @@ def calcular_saldo(id_conta=None):
     try:
         cursor = con.cursor()
 
-        cursor.execute("""
-            SELECT COALESCE(SUM(M.VALOR), 0)
-            FROM MOVIMENTACAO M
-            WHERE M.ID_RECEBEDOR = ?
-        """, (id_conta,))
+        cursor.execute("""SELECT CAST(COALESCE(SUM(M.VALOR), 0) AS DECIMAL(18,2))
+                          FROM MOVIMENTACAO M
+                          WHERE M.ID_RECEBEDOR = ?""", (id_conta,))
 
         receita = cursor.fetchone()[0]
 
-        cursor.execute("""
-            SELECT COALESCE(SUM(M.VALOR), 0)
-            FROM MOVIMENTACAO M
-            WHERE M.ID_PAGADOR = ?
-        """, (id_conta,))
+        cursor.execute("""SELECT CAST(COALESCE(SUM(M.VALOR), 0) AS DECIMAL(18,2))
+                          FROM MOVIMENTACAO M
+                          WHERE M.ID_PAGADOR = ?""", (id_conta,))
 
         despesa = cursor.fetchone()[0]
 
@@ -274,8 +270,6 @@ def calcular_saldo(id_conta=None):
     finally:
         if cursor:
             cursor.close()
-
-
 def data_atual():
     agora = datetime.datetime.now()
 
