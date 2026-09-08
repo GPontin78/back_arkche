@@ -1,7 +1,7 @@
 from flask import jsonify, request
 from main import app
 from banco import con
-from funcao import descobre_id_usuario, criptografar_pin
+from funcao import descobre_id_usuario, criptografar_pin,data_atual
 
 
 @app.route('/verificar_usuario', methods=['POST'])
@@ -81,6 +81,12 @@ def adicionar_usuario():
 
         id_conta = cursor.fetchone()[0]
 
+        data_movimentacao = data_atual()
+
+        cursor.execute("""INSERT INTO MOVIMENTACAO (ID_PAGADOR, ID_RECEBEDOR, VALOR, DATA_MOVIMENTACAO)
+                          VALUES (?, ?, ?, ?)""",
+                       (9, id_conta, 5000, data_movimentacao))
+
         con.commit()
 
         return jsonify({
@@ -96,7 +102,6 @@ def adicionar_usuario():
     finally:
         if cursor:
             cursor.close()
-
 
 @app.route('/edicao_usuario', methods=['PUT'])
 def edicao_usuario():

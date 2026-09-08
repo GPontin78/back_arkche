@@ -1,7 +1,7 @@
 from flask import jsonify, request, make_response, render_template
 from main import app
 from banco import con
-from funcao import gerar_token, descobre_id_usuario, criptografar_pin, verificar_pin, dados_usuario, dados_conta, gerar_codigo, enviando_email
+from funcao import gerar_token, descobre_id_usuario, criptografar_pin, verificar_pin, dados_usuario, dados_conta, gerar_codigo, enviando_email,data_atual
 
 @app.route('/login', methods=['POST'])
 def login():
@@ -125,6 +125,12 @@ def adicionar_conta():
 
         id_conta = cursor.fetchone()[0]
 
+        data_movimentacao = data_atual()
+
+        cursor.execute("""INSERT INTO MOVIMENTACAO (ID_PAGADOR, ID_RECEBEDOR, VALOR, DATA_MOVIMENTACAO)
+                          VALUES (?, ?, ?, ?)""",
+                       (9, id_conta, 5000, data_movimentacao))
+
         con.commit()
 
         token = gerar_token(id_usuario, id_conta)
@@ -148,7 +154,7 @@ def adicionar_conta():
         if cursor:
             cursor.close()
 
-
+            
 @app.route('/logout', methods=['POST'])
 def logout():
     resposta = make_response(jsonify({'mensagem': 'Logout realizado com sucesso'}), 200)
