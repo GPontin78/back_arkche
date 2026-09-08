@@ -271,6 +271,4 @@ def calcular_saldo(id_conta=None):
         if cursor:
             cursor.close()
 def data_atual():
-    agora = datetime.datetime.now()
-
-    return agora.strftime("%d/%m/%Y %H:%M:%S")
+    return datetime.datetime.now()
