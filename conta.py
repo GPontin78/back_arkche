@@ -1,8 +1,7 @@
-from flask import jsonify, request, make_response
+from flask import jsonify, request, make_response, render_template
 from main import app
 from banco import con
-from funcao import gerar_token, descobre_id_usuario, criptografar_pin, verificar_pin, dados_usuario, dados_conta
-
+from funcao import gerar_token, descobre_id_usuario, criptografar_pin, verificar_pin, dados_usuario, dados_conta, gerar_codigo, enviando_email
 
 @app.route('/login', methods=['POST'])
 def login():
@@ -166,3 +165,111 @@ def sessao():
         return jsonify({'mensagem': 'Sessão inválida ou expirada.'}), 401
 
     return jsonify({'usuario': usuario, 'conta': conta}), 200
+
+@app.route('/esqueci_pin', methods=['POST'])
+def esqueci_pin():
+    dados = request.get_json()
+    email = dados.get('email')
+
+    try:
+        cursor = con.cursor()
+
+        cursor.execute("SELECT ID_USUARIO FROM USUARIO WHERE EMAIL = ?", (email,))
+        usuario = cursor.fetchone()
+
+        if not usuario:
+            return jsonify({'mensagem': 'Email não encontrado'}), 404
+
+        id_usuario = usuario[0]
+        codigo = gerar_codigo()
+
+        cursor.execute("DELETE FROM RECUPERACAO_SENHA WHERE ID_USUARIO = ?", (id_usuario,))
+        cursor.execute("INSERT INTO RECUPERACAO_SENHA (ID_USUARIO, CODIGO) VALUES (?, ?)", (id_usuario, codigo))
+
+        con.commit()
+
+        html = render_template('codigo_verificacao.html', codigo=codigo)
+        enviando_email(email, 'Código de Recuperação de PIN - Banco Arkhé', html)
+
+        return jsonify({'mensagem': 'Código enviado com sucesso'}), 200
+
+    except Exception as e:
+        con.rollback()
+        return jsonify({'mensagem': f'Erro ao enviar código: {e}'}), 500
+
+    finally:
+        if cursor:
+            cursor.close()
+
+
+@app.route('/verificar_codigo', methods=['POST'])
+def verificar_codigo():
+    dados = request.get_json()
+    email = dados.get('email')
+    codigo = dados.get('codigo')
+
+    try:
+        cursor = con.cursor()
+
+        cursor.execute("""SELECT R.CODIGO FROM USUARIO U INNER JOIN RECUPERACAO_SENHA R ON U.ID_USUARIO = R.ID_USUARIO WHERE U.EMAIL = ?""", (email,))
+        resultado = cursor.fetchone()
+
+        if not resultado:
+            return jsonify({'mensagem': 'Código inválido'}), 400
+
+        codigo_banco = str(resultado[0])
+
+        if str(codigo) != codigo_banco:
+            return jsonify({'mensagem': 'Código inválido'}), 400
+
+        return jsonify({'mensagem': 'Código válido'}), 200
+
+    except Exception as e:
+        return jsonify({'mensagem': f'Erro ao verificar código: {e}'}), 500
+
+    finally:
+        if cursor:
+            cursor.close()
+
+
+@app.route('/trocar_pin', methods=['POST'])
+def trocar_pin():
+    dados = request.get_json()
+
+    email = dados.get('email')
+    codigo = dados.get('codigo')
+    tipo_conta = dados.get('tipo_conta')
+    novo_pin = dados.get('novo_pin')
+
+    try:
+        cursor = con.cursor()
+
+        cursor.execute("""SELECT U.ID_USUARIO, C.ID_CONTA, C.PIN_HASH FROM USUARIO U INNER JOIN RECUPERACAO_SENHA R ON U.ID_USUARIO = R.ID_USUARIO INNER JOIN CONTA C ON C.ID_USUARIO = U.ID_USUARIO WHERE U.EMAIL = ? AND R.CODIGO = ? AND C.TIPO_CONTA = ?""", (email, codigo, tipo_conta))
+        conta = cursor.fetchone()
+
+        if not conta:
+            return jsonify({'mensagem': 'Código inválido'}), 400
+
+        id_usuario = conta[0]
+        id_conta = conta[1]
+        pin_atual = conta[2]
+
+        if verificar_pin(novo_pin, pin_atual):
+            return jsonify({'mensagem': 'O novo PIN não pode ser igual ao PIN atual'}), 400
+
+        novo_pin_hash = criptografar_pin(novo_pin)
+
+        cursor.execute("UPDATE CONTA SET PIN_HASH = ? WHERE ID_CONTA = ?", (novo_pin_hash, id_conta))
+        cursor.execute("DELETE FROM RECUPERACAO_SENHA WHERE ID_USUARIO = ?", (id_usuario,))
+
+        con.commit()
+
+        return jsonify({'mensagem': 'PIN alterado com sucesso'}), 200
+
+    except Exception as e:
+        con.rollback()
+        return jsonify({'mensagem': f'Erro ao trocar PIN: {e}'}), 500
+
+    finally:
+        if cursor:
+            cursor.close()
