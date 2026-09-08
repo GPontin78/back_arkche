@@ -303,6 +303,18 @@ def validar_chave_pix(chave_pix, chave, acao, id_conta=None):
         finally:
                         if cursor:
                             cursor.close()
+    elif acao == 3:
+        filtro = chave +  ' WHERE ' + chave + ' = ? AND id_conta = ?'
+        cursor = None
+        try:
+            cursor.execute("""
+                        delete from chave_pix """ + filtro, (chave, chave_pix, id_conta))
+        except Exception as e:
+                        print("ERRO:", e)
+        
+        finally:
+                        if cursor:
+                            cursor.close()
 
 
 def data_atual():

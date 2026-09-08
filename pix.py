@@ -79,6 +79,7 @@ def adicionar_chave_pix():
 
         if chave_pix_cnpj:
             validar_chave_pix(chave_pix_cnpj, 'chave_pix_cnpj',id_conta, 2)
+        
 
         con.commit()
 
@@ -94,3 +95,119 @@ def adicionar_chave_pix():
     finally:
         if cursor:
             cursor.close()
+
+@app.route('/deletar_chave_pix', methods=['POST'])
+def deletar_chave_pix():
+    dados = request.get_json()
+    chave_pix_email = dados.get('chave_pix_email')
+    chave_pix_telefone = dados.get('chave_pix_telefone')
+    chave_pix_cpf = dados.get('chave_pix_cpf')
+    chave_pix_aleatoria = dados.get('chave_pix_aleatoria')
+    chave_pix_cnpj = dados.get('chave_pix_cnpj')
+
+    id_conta = descobre_id_conta()
+
+    if id_conta is None:
+        return jsonify({'mensagem': 'Usuario nao logado'}), 403
+
+    cursor = None
+
+    try:
+        cursor = con.cursor()
+
+        if chave_pix_email:
+            validar_chave_pix(chave_pix_email, 'chave_pix_email',id_conta, 3)
+
+        if chave_pix_telefone:
+            validar_chave_pix(chave_pix_telefone, 'chave_pix_telefone',id_conta, 3)
+           
+        if chave_pix_cpf:
+            validar_chave_pix(chave_pix_cpf, 'chave_pix_cpf',id_conta, 3)
+
+        if chave_pix_aleatoria:
+            validar_chave_pix(chave_pix_aleatoria, 'chave_pix_aleatoria',id_conta, 3)
+
+        if chave_pix_cnpj:
+            validar_chave_pix(chave_pix_cnpj, 'chave_pix_cnpj',id_conta, 3)
+        
+
+        con.commit()
+
+        return jsonify({
+            'mensagem': 'Chave Pix deletada com sucesso'
+        }), 201
+
+    except Exception:
+        con.rollback()
+        return jsonify({'mensagem': 'Erro ao deletar chave Pix'}), 500
+
+    finally:
+        if cursor:
+            cursor.close()
+
+
+@app.route('/chaves_pix', methods=['GET'])
+def chaves_pix():
+    id_conta = descobre_id_conta()
+
+    if id_conta is None:
+        return jsonify({'mensagem': 'Usuário não logado'}), 403
+
+    cursor = con.cursor()
+
+    try:
+        cursor.execute("SELECT ID_CHAVE_PIX, CHAVE_PIX_EMAIL, CHAVE_PIX_TELEFONE, CHAVE_PIX_CPF, CHAVE_PIX_ALEATORIA, CHAVE_PIX_CNPJ FROM CHAVE_PIX WHERE ID_CONTA = ?", (id_conta,))
+        registros = cursor.fetchall()
+
+        lista_chaves = []
+
+        for registro in registros:
+            id_chave_pix = registro[0]
+            chave_pix_email = registro[1]
+            chave_pix_telefone = registro[2]
+            chave_pix_cpf = registro[3]
+            chave_pix_aleatoria = registro[4]
+            chave_pix_cnpj = registro[5]
+
+            if chave_pix_email:
+                lista_chaves.append({
+                    'id_chave_pix': id_chave_pix,
+                    'tipo': 'email',
+                    'valor': chave_pix_email
+                })
+
+            if chave_pix_telefone:
+                lista_chaves.append({
+                    'id_chave_pix': id_chave_pix,
+                    'tipo': 'telefone',
+                    'valor': chave_pix_telefone
+                })
+
+            if chave_pix_cpf:
+                lista_chaves.append({
+                    'id_chave_pix': id_chave_pix,
+                    'tipo': 'cpf',
+                    'valor': chave_pix_cpf
+                })
+
+            if chave_pix_aleatoria:
+                lista_chaves.append({
+                    'id_chave_pix': id_chave_pix,
+                    'tipo': 'aleatoria',
+                    'valor': chave_pix_aleatoria
+                })
+
+            if chave_pix_cnpj:
+                lista_chaves.append({
+                    'id_chave_pix': id_chave_pix,
+                    'tipo': 'cnpj',
+                    'valor': chave_pix_cnpj
+                })
+
+        return jsonify({'chaves': lista_chaves}), 200
+
+    except Exception:
+        return jsonify({'mensagem': 'Erro ao buscar chaves Pix'}), 500
+
+    finally:
+        cursor.close()
