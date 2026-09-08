@@ -276,47 +276,32 @@ def gerar_chave_pix():
     return str(uuid.uuid4())
 
 def validar_chave_pix(chave_pix, chave, acao, id_conta=None):
-    if acao ==1:
-        cursor = None
-        filtro = 'WHERE ' + chave + ' = ?'
-        try:
-                cursor = con.cursor()
-        
-                cursor.execute("""SELECT 1 FROM CHAVE_PIX """ + filtro, (chave_pix,))
-                chavona = cursor.fetchone()[0]
-        except Exception as e:
-                print("ERRO:", e)
+    cursor = None
 
-        finally:
-                if cursor:
-                    cursor.close()
-        return chavona
-    elif acao == 2:
-        filtro = chave +  ' WHERE ' + chave + ' = ? AND id_conta = ?'
-        cursor = None
-        try:
-            cursor = con.cursor()
-            cursor.execute("""
-                        update chave_pix set """ + filtro, (chave, chave_pix, id_conta))
-        except Exception as e:
-                        print("ERRO:", e)
-        
-        finally:
-                        if cursor:
-                            cursor.close()
-    elif acao == 3:
-        filtro = chave +  ' WHERE ' + chave + ' = ? AND id_conta = ?'
-        cursor = None
-        try:
-            cursor = con.cursor()
-            cursor.execute("""
-                        delete from chave_pix """ + filtro, (chave, chave_pix, id_conta))
-        except Exception as e:
-                        print("ERRO:", e)
-        
-        finally:
-                        if cursor:
-                            cursor.close()
+    try:
+        cursor = con.cursor()
+
+        if acao == 1:
+            cursor.execute("SELECT 1 FROM CHAVE_PIX WHERE " + chave + " = ?", (chave_pix,))
+            resultado = cursor.fetchone()
+
+            if resultado:
+                return True
+
+            return False
+
+        elif acao == 2:
+            cursor.execute("UPDATE CHAVE_PIX SET " + chave + " = ? WHERE ID_CONTA = ?", (chave_pix, id_conta))
+
+        elif acao == 3:
+            cursor.execute("UPDATE CHAVE_PIX SET " + chave + " = NULL WHERE ID_CONTA = ?", (id_conta,))
+
+    except Exception as e:
+        print("ERRO:", e)
+
+    finally:
+        if cursor:
+            cursor.close()
 
 
 def data_atual():
