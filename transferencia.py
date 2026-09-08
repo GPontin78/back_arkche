@@ -1,83 +1,193 @@
-from flask import jsonify, request, make_response, render_template
+from flask import jsonify, request
 from main import app
 from banco import con
-from funcao import gerar_token, descobre_tipo_usuario, descobre_id_usuario, gerar_codigo, enviando_email, data_atual, calcular_saldo
-import bcrypt
-import threading
+from funcao import descobre_id_conta, data_atual, calcular_saldo
+
 
 @app.route('/adicionar_cobranca', methods=['POST'])
 def adicionar_cobranca():
-    dados = request.json
+    dados = request.get_json()
     valor = dados.get('valor')
     data_vencimento = dados.get('data_vencimento')
     agencia = dados.get('agencia')
     banco = dados.get('banco')
     numero_conta = dados.get('numero_conta')
 
-    id_usuario_criador = descobre_id_usuario()
+    id_recebedor = descobre_id_conta()
 
-    if not id_usuario_criador:
-        return jsonify({"message": "Usuario nao logado"}), 403
-    
+    if not id_recebedor:
+        return jsonify({'mensagem': 'Usuario nao logado'}), 403
+
     cursor = con.cursor()
-    cursor.execute(""" SELECT c.ID_CONTA , c.AGENCIA , c.BANCO , c.NUMERO_CONTA, c.ID_USUARIO 
-                        FROM CONTA c 
-                        WHERE c.AGENCIA = ? and c.BANCO = ? AND c.NUMERO_CONTA = ?""", 
-                        (agencia, banco, numero_conta))
-    
-    conta_recebedor = cursor.fetchone()
-    id_usuario_conta_pagador = conta_recebedor[4]
-    
-    cursor.execute(""" select id_conta from conta where id_usuario = ?""", 
-                   (id_usuario_criador,))
-    conta = cursor.fetchone()
-    conta_criador = conta[0]
 
-    cursor.execute(""" select id_conta from conta where id_usuario = ?""",
-                   (id_usuario_conta_pagador,))
-    conta = cursor.fetchone()
-    conta_pagador = conta[0]
+    cursor.execute("""SELECT ID_CONTA FROM CONTA WHERE AGENCIA = ? AND BANCO = ? AND NUMERO_CONTA = ?""", (agencia, banco, numero_conta))
+    conta_pagador = cursor.fetchone()
 
-    cursor.execute(""" insert into cobranca (valor, data_vencimento, id_conta_pagador, id_conta_criador) values (?, ?, ?, ?)""",
-                   (valor, data_vencimento, conta_pagador, conta_criador))
+    if not conta_pagador:
+        cursor.close()
+        return jsonify({'mensagem': 'Conta nao encontrada'}), 404
+
+    id_pagador = conta_pagador[0]
+
+    cursor.execute("""INSERT INTO COBRANCA (ID_PAGADOR, ID_RECEBEDOR, VALOR, DATA_VENCIMENTO, STATUS) VALUES (?, ?, ?, ?, ?)""", (id_pagador, id_recebedor, valor, data_vencimento, 0))
+
     con.commit()
+    cursor.close()
 
-    return jsonify({"message": "Cobrança adicionada com sucesso!"}), 200
+    return jsonify({'mensagem': 'Cobranca adicionada com sucesso'}), 201
+
 
 @app.route('/baixar_cobranca', methods=['POST'])
 def baixar_cobranca():
-    dados = request.json
+    dados = request.get_json()
     id_cobranca = dados.get('id_cobranca')
+
+    id_conta = descobre_id_conta()
+
+    if not id_conta:
+        return jsonify({'mensagem': 'Usuario nao logado'}), 403
+
     cursor = con.cursor()
 
-    cursor.execute("""select id_cobranca, id_pagador, id_recebedor, 
-    valor, status from cobranca where id_cobranca = ?""",
-                   (id_cobranca,))
+    cursor.execute("""SELECT ID_COBRANCA, ID_PAGADOR, ID_RECEBEDOR, VALOR, STATUS FROM COBRANCA WHERE ID_COBRANCA = ?""", (id_cobranca,))
     cobranca = cursor.fetchone()
-    id_cobranca = cobranca[0]
+
+    if not cobranca:
+        cursor.close()
+        return jsonify({'mensagem': 'Cobranca nao encontrada'}), 404
+
     id_pagador = cobranca[1]
     id_recebedor = cobranca[2]
     valor = cobranca[3]
     status = cobranca[4]
 
-    saldo = calcular_saldo()
-    if saldo < valor:
-        return jsonify({"message": "Saldo insuficiente para baixar a cobrança!"}), 400
-    data_atual = data_atual()
+    if id_pagador != id_conta:
+        cursor.close()
+        return jsonify({'mensagem': 'Essa cobranca nao pertence a esta conta'}), 403
 
     if status == 1:
-        return jsonify({"message": "Cobrança já foi baixada!"}), 400
-    
-    cursor.execute(""" update cobranca set status = 1 where id_cobranca = ?""",
-                   (id_cobranca,))
-    
-    cursor.execute(""" insert into movimentacao (valor, 
-                                                data_movimentacao,
-                                                id_cobranca,
-                                                id_pagador,
-                                                id_recebedor)
-                        values (?, ?, ?, ?, ?)""",
-                        (valor, data_atual, id_cobranca, id_pagador, id_recebedor))
-    con.commit()
+        cursor.close()
+        return jsonify({'mensagem': 'Cobranca ja foi paga'}), 400
 
-    return jsonify({"message": "Cobrança baixada com sucesso!"}), 200
+    saldo = calcular_saldo(id_conta)
+
+    if saldo < valor:
+        cursor.close()
+        return jsonify({'mensagem': 'Saldo insuficiente para pagar a cobranca'}), 400
+
+    data_movimentacao = data_atual()
+
+    cursor.execute("""UPDATE COBRANCA SET STATUS = 1 WHERE ID_COBRANCA = ?""", (id_cobranca,))
+    cursor.execute("""INSERT INTO MOVIMENTACAO (ID_PAGADOR, ID_RECEBEDOR, VALOR, DATA_MOVIMENTACAO, ID_COBRANCA) VALUES (?, ?, ?, ?, ?)""", (id_pagador, id_recebedor, valor, data_movimentacao, id_cobranca))
+
+    con.commit()
+    cursor.close()
+
+    return jsonify({'mensagem': 'Cobranca paga com sucesso'}), 200
+
+
+@app.route('/adicionar_pix', methods=['POST'])
+def adicionar_pix():
+    dados = request.get_json()
+    chave_pix = dados.get('chave_pix')
+    valor = dados.get('valor')
+
+    id_pagador = descobre_id_conta()
+
+    if not id_pagador:
+        return jsonify({'mensagem': 'Usuario nao logado'}), 403
+
+    cursor = con.cursor()
+
+    cursor.execute("""SELECT ID_CONTA FROM CHAVE_PIX WHERE CHAVE_PIX_EMAIL = ? OR CHAVE_PIX_TELEFONE = ? OR CHAVE_PIX_CPF = ? OR CHAVE_PIX_ALEATORIA = ? OR CHAVE_PIX_CNPJ = ?""", (chave_pix, chave_pix, chave_pix, chave_pix, chave_pix))
+    conta_recebedor = cursor.fetchone()
+
+    if not conta_recebedor:
+        cursor.close()
+        return jsonify({'mensagem': 'Chave Pix nao encontrada'}), 404
+
+    id_recebedor = conta_recebedor[0]
+
+    if id_pagador == id_recebedor:
+        cursor.close()
+        return jsonify({'mensagem': 'Nao e possivel fazer Pix para a mesma conta'}), 400
+
+    saldo = calcular_saldo(id_pagador)
+
+    if saldo < valor:
+        cursor.close()
+        return jsonify({'mensagem': 'Saldo insuficiente para realizar o Pix'}), 400
+
+    data_movimentacao = data_atual()
+
+    cursor.execute("""INSERT INTO MOVIMENTACAO (ID_PAGADOR, ID_RECEBEDOR, VALOR, DATA_MOVIMENTACAO) VALUES (?, ?, ?, ?)""", (id_pagador, id_recebedor, valor, data_movimentacao))
+
+    con.commit()
+    cursor.close()
+
+    return jsonify({'mensagem': 'Pix realizado com sucesso'}), 201
+
+
+@app.route('/buscar_movimentacoes', methods=['GET'])
+def buscar_movimentacoes():
+    id_conta = descobre_id_conta()
+
+    if not id_conta:
+        return jsonify({'mensagem': 'Usuario nao logado'}), 403
+
+    cursor = con.cursor()
+
+    cursor.execute("""SELECT ID_COBRANCA, ID_PAGADOR, ID_RECEBEDOR, VALOR, DATA_VENCIMENTO, STATUS FROM COBRANCA WHERE ID_PAGADOR = ? OR ID_RECEBEDOR = ? ORDER BY DATA_VENCIMENTO DESC""", (id_conta, id_conta))
+    cobrancas_banco = cursor.fetchall()
+
+    cobrancas = []
+
+    for cobranca in cobrancas_banco:
+        if cobranca[1] == id_conta:
+            tipo = 'pagar'
+        else:
+            tipo = 'receber'
+
+        cobrancas.append({
+            'id_cobranca': cobranca[0],
+            'id_pagador': cobranca[1],
+            'id_recebedor': cobranca[2],
+            'valor': float(cobranca[3]),
+            'data_vencimento': str(cobranca[4]),
+            'status': cobranca[5],
+            'tipo': tipo
+        })
+
+    cursor.execute("""SELECT ID_MOVIMENTACAO, ID_PAGADOR, ID_RECEBEDOR, VALOR, DATA_MOVIMENTACAO, ID_COBRANCA FROM MOVIMENTACAO WHERE ID_PAGADOR = ? OR ID_RECEBEDOR = ? ORDER BY DATA_MOVIMENTACAO DESC""", (id_conta, id_conta))
+    movimentacoes_banco = cursor.fetchall()
+
+    movimentacoes = []
+
+    for movimentacao in movimentacoes_banco:
+        if movimentacao[1] == id_conta:
+            tipo = 'saida'
+        else:
+            tipo = 'entrada'
+
+        if movimentacao[5] is None:
+            origem = 'pix'
+        else:
+            origem = 'cobranca'
+
+        movimentacoes.append({
+            'id_movimentacao': movimentacao[0],
+            'id_pagador': movimentacao[1],
+            'id_recebedor': movimentacao[2],
+            'valor': float(movimentacao[3]),
+            'data_movimentacao': str(movimentacao[4]),
+            'id_cobranca': movimentacao[5],
+            'tipo': tipo,
+            'origem': origem
+        })
+
+    cursor.close()
+
+    return jsonify({
+        'cobrancas': cobrancas,
+        'movimentacoes': movimentacoes
+    }), 200
