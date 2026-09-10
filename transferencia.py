@@ -68,45 +68,59 @@ def baixar_cobranca():
     if not id_conta:
         return jsonify({'mensagem': 'Usuario nao logado'}), 403
 
-    cursor = con.cursor()
+    cursor = None
 
-    cursor.execute("""SELECT ID_COBRANCA, ID_PAGADOR, ID_RECEBEDOR, VALOR, STATUS FROM COBRANCA WHERE ID_COBRANCA = ?""", (id_cobranca,))
-    cobranca = cursor.fetchone()
+    try:
+        cursor = con.cursor()
 
-    if not cobranca:
-        cursor.close()
-        return jsonify({'mensagem': 'Cobranca nao encontrada'}), 404
+        cursor.execute("""SELECT ID_COBRANCA, ID_PAGADOR, ID_RECEBEDOR, VALOR, STATUS
+                          FROM COBRANCA
+                          WHERE ID_COBRANCA = ?""",
+                       (id_cobranca,))
 
-    id_pagador = cobranca[1]
-    id_recebedor = cobranca[2]
-    valor = cobranca[3]
-    status = cobranca[4]
+        cobranca = cursor.fetchone()
 
-    if id_pagador != id_conta:
-        cursor.close()
-        return jsonify({'mensagem': 'Essa cobranca nao pertence a esta conta'}), 403
+        if not cobranca:
+            return jsonify({'mensagem': 'Cobranca nao encontrada'}), 404
 
-    if status == 1:
-        cursor.close()
-        return jsonify({'mensagem': 'Cobranca ja foi paga'}), 400
+        id_recebedor = cobranca[2]
+        valor = cobranca[3]
+        status = cobranca[4]
 
-    saldo = calcular_saldo(id_conta)
+        if status == 1:
+            return jsonify({'mensagem': 'Cobranca ja foi paga'}), 400
 
-    if saldo < valor:
-        cursor.close()
-        return jsonify({'mensagem': 'Saldo insuficiente para pagar a cobranca'}), 400
+        if id_conta == id_recebedor:
+            return jsonify({'mensagem': 'A conta recebedora nao pode pagar o proprio boleto'}), 400
 
-    data_movimentacao = data_atual()
+        saldo = calcular_saldo(id_conta)
 
-    cursor.execute("""UPDATE COBRANCA SET STATUS = 1 WHERE ID_COBRANCA = ?""", (id_cobranca,))
-    cursor.execute("""INSERT INTO MOVIMENTACAO (ID_PAGADOR, ID_RECEBEDOR, VALOR, DATA_MOVIMENTACAO, ID_COBRANCA) VALUES (?, ?, ?, ?, ?)""", (id_pagador, id_recebedor, valor, data_movimentacao, id_cobranca))
+        if saldo < valor:
+            return jsonify({'mensagem': 'Saldo insuficiente para pagar a cobranca'}), 400
 
-    con.commit()
-    cursor.close()
+        data_movimentacao = data_atual()
 
-    return jsonify({'mensagem': 'Cobranca paga com sucesso'}), 200
+        cursor.execute("""UPDATE COBRANCA SET STATUS = 1 WHERE ID_COBRANCA = ?""",
+                       (id_cobranca,))
 
+        cursor.execute("""INSERT INTO MOVIMENTACAO (ID_PAGADOR, ID_RECEBEDOR, VALOR, DATA_MOVIMENTACAO, ID_COBRANCA)
+                          VALUES (?, ?, ?, ?, ?)""",
+                       (id_conta, id_recebedor, valor, data_movimentacao, id_cobranca))
 
+        con.commit()
+
+        return jsonify({'mensagem': 'Cobranca paga com sucesso'}), 200
+
+    except Exception as e:
+        con.rollback()
+        print("ERRO:", e)
+        return jsonify({'mensagem': 'Erro ao pagar cobranca'}), 500
+
+    finally:
+        if cursor:
+            cursor.close()
+
+            
 @app.route('/adicionar_pix', methods=['POST'])
 def adicionar_pix():
     dados = request.get_json()
@@ -233,3 +247,56 @@ def buscar_movimentacoes():
         'cobrancas': cobrancas,
         'movimentacoes': movimentacoes
     }), 200
+
+
+@app.route('/buscar_cobranca_codigo', methods=['POST'])
+def buscar_cobranca_codigo():
+    dados = request.get_json()
+    codigo_pagamento = dados.get('codigo_pagamento')
+
+    id_conta = descobre_id_conta()
+
+    if not id_conta:
+        return jsonify({'mensagem': 'Usuario nao logado'}), 403
+
+    if not codigo_pagamento:
+        return jsonify({'mensagem': 'Codigo de pagamento nao informado'}), 400
+
+    cursor = None
+
+    try:
+        cursor = con.cursor()
+
+        cursor.execute("""SELECT COB.ID_COBRANCA, COB.ID_PAGADOR, COB.ID_RECEBEDOR, COB.VALOR, COB.DATA_VENCIMENTO, COB.CODIGO_PAGAMENTO, COB.STATUS,
+                          U.NOME, U.NOME_FANTASIA, U.RAZAO_SOCIAL
+                          FROM COBRANCA COB
+                          INNER JOIN CONTA C ON C.ID_CONTA = COB.ID_RECEBEDOR
+                          INNER JOIN USUARIO U ON U.ID_USUARIO = C.ID_USUARIO
+                          WHERE COB.CODIGO_PAGAMENTO = ?""",
+                       (codigo_pagamento,))
+
+        cobranca = cursor.fetchone()
+
+        if not cobranca:
+            return jsonify({'mensagem': 'Boleto nao encontrado'}), 404
+
+        nome_recebedor = cobranca[8] or cobranca[9] or cobranca[7]
+
+        return jsonify({
+            'id_cobranca': cobranca[0],
+            'id_pagador': cobranca[1],
+            'id_recebedor': cobranca[2],
+            'valor': float(cobranca[3]),
+            'data_vencimento': str(cobranca[4]),
+            'codigo_pagamento': cobranca[5],
+            'status': cobranca[6],
+            'recebedor': nome_recebedor
+        }), 200
+
+    except Exception as e:
+        print("ERRO:", e)
+        return jsonify({'mensagem': 'Erro ao buscar boleto'}), 500
+
+    finally:
+        if cursor:
+            cursor.close()
