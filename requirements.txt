@@ -5,3 +5,4 @@ fdb==2.0.4
 PyJWT==2.13.0
 bcrypt==5.0.0
 gunicorn
+reportlab==4.4.3
