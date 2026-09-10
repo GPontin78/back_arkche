@@ -778,3 +778,474 @@ def boleto_pdf(id_cobranca):
         as_attachment=False,
         download_name=f'boleto_arkhe_{id_cobranca}.pdf'
     )
+
+def formatar_data_hora(valor):
+    if not valor:
+        return '-'
+
+    if hasattr(valor, 'strftime'):
+        return valor.strftime('%d/%m/%Y as %H:%M:%S')
+
+    texto = str(valor)
+
+    for formato in ['%Y-%m-%d %H:%M:%S.%f', '%Y-%m-%d %H:%M:%S', '%Y-%m-%d']:
+        try:
+            return datetime.strptime(texto, formato).strftime('%d/%m/%Y as %H:%M:%S')
+        except ValueError:
+            pass
+
+    return texto
+
+
+def descobrir_tipo_movimentacao(id_pagador, valor, id_cobranca):
+    if id_cobranca is not None:
+        return 'Pagamento de boleto'
+
+    if id_pagador == 9 and float(valor) == 5000:
+        return 'Credito inicial'
+
+    return 'Pix'
+
+
+def linha_comprovante(pdf, y, titulo, valor):
+    pdf.setFont('Helvetica', 7)
+    pdf.setFillColor(HexColor('#666666'))
+    pdf.drawString(25 * mm, y, titulo.upper())
+
+    pdf.setFont('Helvetica-Bold', 10)
+    pdf.setFillColor(black)
+    pdf.drawString(25 * mm, y - 5 * mm, texto_limitado(valor, 75))
+
+    pdf.setStrokeColor(HexColor('#E5E5E5'))
+    pdf.setLineWidth(0.4)
+    pdf.line(25 * mm, y - 9 * mm, 185 * mm, y - 9 * mm)
+
+
+@app.route('/comprovante/<int:id_movimentacao>', methods=['GET'])
+def comprovante(id_movimentacao):
+    id_conta = descobre_id_conta()
+
+    if not id_conta:
+        return jsonify({'mensagem': 'Usuario nao logado'}), 403
+
+    cursor = None
+
+    try:
+        cursor = con.cursor()
+
+        cursor.execute("""SELECT
+                          M.ID_MOVIMENTACAO,
+                          M.ID_PAGADOR,
+                          M.ID_RECEBEDOR,
+                          M.VALOR,
+                          M.DATA_MOVIMENTACAO,
+                          M.ID_COBRANCA,
+
+                          CP.NUMERO_CONTA,
+                          CP.AGENCIA,
+                          CP.BANCO,
+                          CP.TIPO_CONTA,
+
+                          UP.NOME,
+                          UP.CPF,
+                          UP.CNPJ,
+                          UP.NOME_FANTASIA,
+                          UP.RAZAO_SOCIAL,
+
+                          CR.NUMERO_CONTA,
+                          CR.AGENCIA,
+                          CR.BANCO,
+                          CR.TIPO_CONTA,
+
+                          UR.NOME,
+                          UR.CPF,
+                          UR.CNPJ,
+                          UR.NOME_FANTASIA,
+                          UR.RAZAO_SOCIAL,
+
+                          COB.CODIGO_PAGAMENTO
+
+                          FROM MOVIMENTACAO M
+                          INNER JOIN CONTA CP ON CP.ID_CONTA = M.ID_PAGADOR
+                          INNER JOIN USUARIO UP ON UP.ID_USUARIO = CP.ID_USUARIO
+                          INNER JOIN CONTA CR ON CR.ID_CONTA = M.ID_RECEBEDOR
+                          INNER JOIN USUARIO UR ON UR.ID_USUARIO = CR.ID_USUARIO
+                          LEFT JOIN COBRANCA COB ON COB.ID_COBRANCA = M.ID_COBRANCA
+                          WHERE M.ID_MOVIMENTACAO = ?""",
+                       (id_movimentacao,))
+
+        movimentacao = cursor.fetchone()
+
+        if not movimentacao:
+            return jsonify({'mensagem': 'Movimentacao nao encontrada'}), 404
+
+        id_pagador = movimentacao[1]
+
+        if id_pagador != id_conta:
+            return jsonify({'mensagem': 'Este comprovante pertence a outra conta'}), 403
+
+        id_recebedor = movimentacao[2]
+        valor = movimentacao[3]
+        data_movimentacao = movimentacao[4]
+        id_cobranca = movimentacao[5]
+
+        numero_conta_pagador = movimentacao[6]
+        agencia_pagador = movimentacao[7]
+        banco_pagador = movimentacao[8]
+        tipo_conta_pagador = movimentacao[9]
+
+        nome_pagador = movimentacao[10]
+        cpf_pagador = movimentacao[11]
+        cnpj_pagador = movimentacao[12]
+        nome_fantasia_pagador = movimentacao[13]
+        razao_social_pagador = movimentacao[14]
+
+        numero_conta_recebedor = movimentacao[15]
+        agencia_recebedor = movimentacao[16]
+        banco_recebedor = movimentacao[17]
+        tipo_conta_recebedor = movimentacao[18]
+
+        nome_recebedor = movimentacao[19]
+        cpf_recebedor = movimentacao[20]
+        cnpj_recebedor = movimentacao[21]
+        nome_fantasia_recebedor = movimentacao[22]
+        razao_social_recebedor = movimentacao[23]
+
+        codigo_pagamento = movimentacao[24]
+
+        pagador = nome_cliente(
+            nome_pagador,
+            nome_fantasia_pagador,
+            razao_social_pagador,
+            tipo_conta_pagador
+        )
+
+        recebedor = nome_cliente(
+            nome_recebedor,
+            nome_fantasia_recebedor,
+            razao_social_recebedor,
+            tipo_conta_recebedor
+        )
+
+        documento_pagador = formatar_documento(
+            cpf_pagador,
+            cnpj_pagador
+        )
+
+        documento_recebedor = formatar_documento(
+            cpf_recebedor,
+            cnpj_recebedor
+        )
+
+        tipo_movimentacao = descobrir_tipo_movimentacao(
+            id_pagador,
+            valor,
+            id_cobranca
+        )
+
+        memoria = BytesIO()
+
+        pdf = canvas.Canvas(
+            memoria,
+            pagesize=A4
+        )
+
+        pdf.setTitle(
+            f'Comprovante Arkhé #{id_movimentacao}'
+        )
+
+        pdf.setAuthor('Banco Arkhé')
+
+        pdf.setFillColor(HexColor('#073E3E'))
+        pdf.rect(
+            0,
+            240 * mm,
+            210 * mm,
+            57 * mm,
+            stroke=0,
+            fill=1
+        )
+
+        pdf.setFillColor(HexColor('#FFFFFF'))
+
+        pdf.setFont(
+            'Helvetica-Bold',
+            24
+        )
+
+        pdf.drawString(
+            25 * mm,
+            277 * mm,
+            'ARKHÉ'
+        )
+
+        pdf.setFont(
+            'Helvetica',
+            8
+        )
+
+        pdf.drawString(
+            25 * mm,
+            270 * mm,
+            'BANCO DIGITAL DIDATICO'
+        )
+
+        pdf.setFont(
+            'Helvetica-Bold',
+            13
+        )
+
+        pdf.drawRightString(
+            185 * mm,
+            277 * mm,
+            'COMPROVANTE'
+        )
+
+        pdf.setFillColor(
+            HexColor('#147D64')
+        )
+
+        pdf.circle(
+            105 * mm,
+            228 * mm,
+            12 * mm,
+            stroke=0,
+            fill=1
+        )
+
+        pdf.setFillColor(
+            HexColor('#FFFFFF')
+        )
+
+        pdf.setFont(
+            'Helvetica-Bold',
+            12
+        )
+
+        pdf.drawCentredString(
+            105 * mm,
+            226 * mm,
+            'OK'
+        )
+
+        pdf.setFillColor(
+            HexColor('#147D64')
+        )
+
+        pdf.setFont(
+            'Helvetica-Bold',
+            10
+        )
+
+        pdf.drawCentredString(
+            105 * mm,
+            209 * mm,
+            'PAGAMENTO CONCLUIDO'
+        )
+
+        pdf.setFillColor(
+            HexColor('#111111')
+        )
+
+        pdf.setFont(
+            'Helvetica-Bold',
+            25
+        )
+
+        pdf.drawCentredString(
+            105 * mm,
+            194 * mm,
+            formatar_moeda(valor)
+        )
+
+        pdf.setFont(
+            'Helvetica',
+            8
+        )
+
+        pdf.setFillColor(
+            HexColor('#666666')
+        )
+
+        pdf.drawCentredString(
+            105 * mm,
+            185 * mm,
+            tipo_movimentacao
+        )
+
+        linha_comprovante(
+            pdf,
+            168 * mm,
+            'Data e hora',
+            formatar_data_hora(data_movimentacao)
+        )
+
+        linha_comprovante(
+            pdf,
+            150 * mm,
+            'Pagador',
+            pagador
+        )
+
+        linha_comprovante(
+            pdf,
+            132 * mm,
+            'CPF / CNPJ do pagador',
+            documento_pagador
+        )
+
+        linha_comprovante(
+            pdf,
+            114 * mm,
+            'Conta de origem',
+            f'{banco_pagador} - Agencia {agencia_pagador} - Conta {numero_conta_pagador}'
+        )
+
+        linha_comprovante(
+            pdf,
+            96 * mm,
+            'Recebedor',
+            recebedor
+        )
+
+        linha_comprovante(
+            pdf,
+            78 * mm,
+            'CPF / CNPJ do recebedor',
+            documento_recebedor
+        )
+
+        linha_comprovante(
+            pdf,
+            60 * mm,
+            'Conta de destino',
+            f'{banco_recebedor} - Agencia {agencia_recebedor} - Conta {numero_conta_recebedor}'
+        )
+
+        pdf.setFont(
+            'Helvetica',
+            7
+        )
+
+        pdf.setFillColor(
+            HexColor('#666666')
+        )
+
+        pdf.drawString(
+            25 * mm,
+            42 * mm,
+            'IDENTIFICACAO DA TRANSACAO'
+        )
+
+        pdf.setFont(
+            'Helvetica-Bold',
+            9
+        )
+
+        pdf.setFillColor(
+            black
+        )
+
+        pdf.drawString(
+            25 * mm,
+            36 * mm,
+            f'ARKHE-{str(id_movimentacao).zfill(12)}'
+        )
+
+        if id_cobranca is not None:
+            pdf.setFont(
+                'Helvetica',
+                7
+            )
+
+            pdf.setFillColor(
+                HexColor('#666666')
+            )
+
+            pdf.drawRightString(
+                185 * mm,
+                42 * mm,
+                'COBRANCA'
+            )
+
+            pdf.setFont(
+                'Helvetica-Bold',
+                9
+            )
+
+            pdf.setFillColor(
+                black
+            )
+
+            pdf.drawRightString(
+                185 * mm,
+                36 * mm,
+                f'#{id_cobranca}'
+            )
+
+        if codigo_pagamento:
+            pdf.setFont(
+                'Helvetica',
+                6.5
+            )
+
+            pdf.setFillColor(
+                HexColor('#666666')
+            )
+
+            pdf.drawString(
+                25 * mm,
+                27 * mm,
+                f'Codigo do boleto: {codigo_pagamento}'
+            )
+
+        pdf.setStrokeColor(
+            HexColor('#DDDDDD')
+        )
+
+        pdf.line(
+            25 * mm,
+            20 * mm,
+            185 * mm,
+            20 * mm
+        )
+
+        pdf.setFont(
+            'Helvetica',
+            6
+        )
+
+        pdf.setFillColor(
+            HexColor('#777777')
+        )
+
+        pdf.drawCentredString(
+            105 * mm,
+            14 * mm,
+            'Comprovante gerado pelo Banco Arkhé'
+        )
+
+        pdf.drawCentredString(
+            105 * mm,
+            10 * mm,
+            'Documento interno do ambiente didatico Arkhé'
+        )
+
+        pdf.save()
+
+        memoria.seek(0)
+
+        return send_file(
+            memoria,
+            mimetype='application/pdf',
+            as_attachment=False,
+            download_name=f'comprovante_arkhe_{id_movimentacao}.pdf'
+        )
+
+    except Exception as e:
+        print("ERRO:", e)
+        return jsonify({'mensagem': 'Erro ao gerar comprovante'}), 500
+
+    finally:
+        if cursor:
+            cursor.close()

@@ -104,12 +104,17 @@ def baixar_cobranca():
                        (id_cobranca,))
 
         cursor.execute("""INSERT INTO MOVIMENTACAO (ID_PAGADOR, ID_RECEBEDOR, VALOR, DATA_MOVIMENTACAO, ID_COBRANCA)
-                          VALUES (?, ?, ?, ?, ?)""",
+                          VALUES (?, ?, ?, ?, ?) RETURNING ID_MOVIMENTACAO""",
                        (id_conta, id_recebedor, valor, data_movimentacao, id_cobranca))
+
+        id_movimentacao = cursor.fetchone()[0]
 
         con.commit()
 
-        return jsonify({'mensagem': 'Cobranca paga com sucesso'}), 200
+        return jsonify({
+            'mensagem': 'Cobranca paga com sucesso',
+            'id_movimentacao': id_movimentacao
+        }), 200
 
     except Exception as e:
         con.rollback()
@@ -120,7 +125,8 @@ def baixar_cobranca():
         if cursor:
             cursor.close()
 
-            
+
+                        
 @app.route('/adicionar_pix', methods=['POST'])
 def adicionar_pix():
     dados = request.get_json()
@@ -133,56 +139,67 @@ def adicionar_pix():
     if not id_pagador:
         return jsonify({'mensagem': 'Usuario nao logado'}), 403
 
-    cursor = con.cursor()
+    cursor = None
 
-    if tipo_chave == 'email':
-        cursor.execute("""SELECT ID_CONTA FROM CHAVE_PIX WHERE CHAVE_PIX_EMAIL = ?""", (chave_pix,))
+    try:
+        cursor = con.cursor()
 
-    elif tipo_chave == 'telefone':
-        cursor.execute("""SELECT ID_CONTA FROM CHAVE_PIX WHERE CHAVE_PIX_TELEFONE = ?""", (chave_pix,))
+        if tipo_chave == 'email':
+            cursor.execute("""SELECT ID_CONTA FROM CHAVE_PIX WHERE CHAVE_PIX_EMAIL = ?""", (chave_pix,))
 
-    elif tipo_chave == 'cpf':
-        cursor.execute("""SELECT ID_CONTA FROM CHAVE_PIX WHERE CHAVE_PIX_CPF = ?""", (chave_pix,))
+        elif tipo_chave == 'telefone':
+            cursor.execute("""SELECT ID_CONTA FROM CHAVE_PIX WHERE CHAVE_PIX_TELEFONE = ?""", (chave_pix,))
 
-    elif tipo_chave == 'cnpj':
-        cursor.execute("""SELECT ID_CONTA FROM CHAVE_PIX WHERE CHAVE_PIX_CNPJ = ?""", (chave_pix,))
+        elif tipo_chave == 'cpf':
+            cursor.execute("""SELECT ID_CONTA FROM CHAVE_PIX WHERE CHAVE_PIX_CPF = ?""", (chave_pix,))
 
-    elif tipo_chave == 'aleatoria':
-        cursor.execute("""SELECT ID_CONTA FROM CHAVE_PIX WHERE CHAVE_PIX_ALEATORIA = ?""", (chave_pix,))
+        elif tipo_chave == 'cnpj':
+            cursor.execute("""SELECT ID_CONTA FROM CHAVE_PIX WHERE CHAVE_PIX_CNPJ = ?""", (chave_pix,))
 
-    else:
-        cursor.close()
-        return jsonify({'mensagem': 'Tipo de chave Pix invalido'}), 400
+        elif tipo_chave == 'aleatoria':
+            cursor.execute("""SELECT ID_CONTA FROM CHAVE_PIX WHERE CHAVE_PIX_ALEATORIA = ?""", (chave_pix,))
 
-    conta_recebedor = cursor.fetchone()
+        else:
+            return jsonify({'mensagem': 'Tipo de chave Pix invalido'}), 400
 
-    if not conta_recebedor:
-        cursor.close()
-        return jsonify({'mensagem': 'Chave Pix nao encontrada'}), 404
+        conta_recebedor = cursor.fetchone()
 
-    id_recebedor = conta_recebedor[0]
+        if not conta_recebedor:
+            return jsonify({'mensagem': 'Chave Pix nao encontrada'}), 404
 
-    if id_pagador == id_recebedor:
-        cursor.close()
-        return jsonify({'mensagem': 'Nao e possivel fazer Pix para a mesma conta'}), 400
+        id_recebedor = conta_recebedor[0]
 
-    saldo = calcular_saldo(id_pagador)
+        if id_pagador == id_recebedor:
+            return jsonify({'mensagem': 'Nao e possivel fazer Pix para a mesma conta'}), 400
 
-    if saldo < valor:
-        cursor.close()
-        return jsonify({'mensagem': 'Saldo insuficiente para realizar o Pix'}), 400
+        saldo = calcular_saldo(id_pagador)
 
-    data_movimentacao = data_atual()
+        if saldo < valor:
+            return jsonify({'mensagem': 'Saldo insuficiente para realizar o Pix'}), 400
 
-    cursor.execute("""INSERT INTO MOVIMENTACAO (ID_PAGADOR, ID_RECEBEDOR, VALOR, DATA_MOVIMENTACAO)
-                      VALUES (?, ?, ?, ?)""",
-                   (id_pagador, id_recebedor, valor, data_movimentacao))
+        data_movimentacao = data_atual()
 
-    con.commit()
-    cursor.close()
+        cursor.execute("""INSERT INTO MOVIMENTACAO (ID_PAGADOR, ID_RECEBEDOR, VALOR, DATA_MOVIMENTACAO)
+                          VALUES (?, ?, ?, ?) RETURNING ID_MOVIMENTACAO""",
+                       (id_pagador, id_recebedor, valor, data_movimentacao))
 
-    return jsonify({'mensagem': 'Pix realizado com sucesso'}), 201
+        id_movimentacao = cursor.fetchone()[0]
 
+        con.commit()
+
+        return jsonify({
+            'mensagem': 'Pix realizado com sucesso',
+            'id_movimentacao': id_movimentacao
+        }), 201
+
+    except Exception as e:
+        con.rollback()
+        print("ERRO:", e)
+        return jsonify({'mensagem': 'Erro ao realizar Pix'}), 500
+
+    finally:
+        if cursor:
+            cursor.close()
 
 @app.route('/buscar_movimentacoes', methods=['GET'])
 def buscar_movimentacoes():
