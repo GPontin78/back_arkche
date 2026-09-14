@@ -306,3 +306,74 @@ def api_consultar_cobranca_pix(id_cobranca):
 
     finally:
         cursor.close()
+
+
+@app.route('/integracoes/api', methods=['GET'])
+def listar_integracoes_api():
+    id_conta = descobre_id_conta()
+
+    if not id_conta:
+        return jsonify({'mensagem': 'Usuario nao logado'}), 403
+
+    cursor = con.cursor()
+
+    try:
+        cursor.execute("""SELECT ID_INTEGRACAO, NOME, CLIENT_ID, ATIVO, DATA_CRIACAO, ULTIMO_USO FROM INTEGRACAO_API WHERE ID_CONTA = ? ORDER BY DATA_CRIACAO DESC""", (id_conta,))
+        integracoes = cursor.fetchall()
+
+        resultado = []
+
+        for integracao in integracoes:
+            resultado.append({
+                'id_integracao': integracao[0],
+                'nome': integracao[1],
+                'client_id': integracao[2],
+                'ativo': integracao[3],
+                'data_criacao': str(integracao[4]) if integracao[4] else None,
+                'ultimo_uso': str(integracao[5]) if integracao[5] else None
+            })
+
+        return jsonify(resultado), 200
+
+    except Exception as e:
+        print('ERRO LISTAR INTEGRACOES:', e)
+        return jsonify({'mensagem': 'Erro ao listar integracoes'}), 500
+
+    finally:
+        cursor.close()
+
+
+@app.route('/integracoes/api/<int:id_integracao>/regenerar-secret', methods=['POST'])
+def regenerar_secret_integracao(id_integracao):
+    id_conta = descobre_id_conta()
+
+    if not id_conta:
+        return jsonify({'mensagem': 'Usuario nao logado'}), 403
+
+    cursor = con.cursor()
+
+    try:
+        cursor.execute("""SELECT ID_INTEGRACAO FROM INTEGRACAO_API WHERE ID_INTEGRACAO = ? AND ID_CONTA = ?""", (id_integracao, id_conta))
+        integracao = cursor.fetchone()
+
+        if not integracao:
+            return jsonify({'mensagem': 'Integracao nao encontrada'}), 404
+
+        client_secret = uuid.uuid4().hex
+        client_secret_hash = criptografar_pin(client_secret)
+
+        cursor.execute("""UPDATE INTEGRACAO_API SET CLIENT_SECRET_HASH = ? WHERE ID_INTEGRACAO = ? AND ID_CONTA = ?""", (client_secret_hash, id_integracao, id_conta))
+        con.commit()
+
+        return jsonify({
+            'mensagem': 'Novo Client Secret gerado',
+            'client_secret': client_secret
+        }), 200
+
+    except Exception as e:
+        con.rollback()
+        print('ERRO REGENERAR SECRET:', e)
+        return jsonify({'mensagem': 'Erro ao gerar novo Client Secret'}), 500
+
+    finally:
+        cursor.close()
