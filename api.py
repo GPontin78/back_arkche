@@ -1,5 +1,6 @@
 from flask import request, jsonify
-from main import app, con
+from main import app
+from banco import con
 from funcao import descobre_id_conta, criptografar_pin, verificar_pin
 import uuid
 
