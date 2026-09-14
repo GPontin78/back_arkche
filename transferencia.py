@@ -174,7 +174,7 @@ def adicionar_pix():
             return jsonify({'mensagem': 'Nao e possivel fazer Pix para a mesma conta'}), 400
 
         saldo = calcular_saldo(id_pagador)
-
+        print("ID PAGADOR:", id_pagador, "TIPO:", type(id_pagador), "SALDO:", saldo, "VALOR:", valor)
         if id_pagador != 9:
             if saldo < valor:
                 return jsonify({'mensagem': 'Saldo insuficiente para realizar o Pix'}), 400
