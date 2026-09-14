@@ -2,6 +2,7 @@ from flask import jsonify, request
 from main import app
 from banco import con
 from funcao import descobre_id_conta, data_atual, calcular_saldo
+import uuid
 
 @app.route('/adicionar_cobranca', methods=['POST'])
 def adicionar_cobranca():
@@ -265,7 +266,6 @@ def buscar_movimentacoes():
         'movimentacoes': movimentacoes
     }), 200
 
-
 @app.route('/buscar_cobranca_codigo', methods=['POST'])
 def buscar_cobranca_codigo():
     dados = request.get_json()
@@ -284,7 +284,7 @@ def buscar_cobranca_codigo():
     try:
         cursor = con.cursor()
 
-        cursor.execute("""SELECT COB.ID_COBRANCA, COB.ID_PAGADOR, COB.ID_RECEBEDOR, COB.VALOR, COB.DATA_VENCIMENTO, COB.CODIGO_PAGAMENTO, COB.STATUS,
+        cursor.execute("""SELECT COB.ID_COBRANCA, COB.ID_PAGADOR, COB.ID_RECEBEDOR, COB.VALOR, COB.DATA_VENCIMENTO, COB.CODIGO_PAGAMENTO, COB.STATUS, COB.TIPO_COBRANCA,
                           U.NOME, U.NOME_FANTASIA, U.RAZAO_SOCIAL
                           FROM COBRANCA COB
                           INNER JOIN CONTA C ON C.ID_CONTA = COB.ID_RECEBEDOR
@@ -295,24 +295,71 @@ def buscar_cobranca_codigo():
         cobranca = cursor.fetchone()
 
         if not cobranca:
-            return jsonify({'mensagem': 'Boleto nao encontrado'}), 404
+            return jsonify({'mensagem': 'Cobranca nao encontrada'}), 404
 
-        nome_recebedor = cobranca[8] or cobranca[9] or cobranca[7]
+        nome_recebedor = cobranca[9] or cobranca[10] or cobranca[8]
 
         return jsonify({
             'id_cobranca': cobranca[0],
             'id_pagador': cobranca[1],
             'id_recebedor': cobranca[2],
             'valor': float(cobranca[3]),
-            'data_vencimento': str(cobranca[4]),
+            'data_vencimento': str(cobranca[4]) if cobranca[4] else None,
             'codigo_pagamento': cobranca[5],
             'status': cobranca[6],
+            'tipo_cobranca': cobranca[7],
             'recebedor': nome_recebedor
         }), 200
 
     except Exception as e:
         print("ERRO:", e)
-        return jsonify({'mensagem': 'Erro ao buscar boleto'}), 500
+        return jsonify({'mensagem': 'Erro ao buscar cobranca'}), 500
+
+    finally:
+        if cursor:
+            cursor.close()
+
+
+@app.route('/criar_cobranca_pix', methods=['POST'])
+def criar_cobranca_pix():
+    dados = request.get_json()
+    valor = dados.get('valor')
+    id_recebedor = descobre_id_conta()
+
+    if not id_recebedor:
+        return jsonify({'mensagem': 'Usuario nao logado'}), 403
+
+    if valor is None:
+        return jsonify({'mensagem': 'Valor nao informado'}), 400
+
+    cursor = None
+
+    try:
+        cursor = con.cursor()
+
+        codigo_pagamento = 'ARKHEPIX:' + uuid.uuid4().hex.upper()
+
+        cursor.execute("""INSERT INTO COBRANCA (ID_PAGADOR, ID_RECEBEDOR, VALOR, DATA_VENCIMENTO, CODIGO_PAGAMENTO, STATUS, TIPO_COBRANCA)
+                          VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING ID_COBRANCA""",
+                       (None, id_recebedor, valor, None, codigo_pagamento, 0, 1))
+
+        id_cobranca = cursor.fetchone()[0]
+
+        con.commit()
+
+        return jsonify({
+            'mensagem': 'Cobranca Pix criada com sucesso',
+            'id_cobranca': id_cobranca,
+            'codigo_pagamento': codigo_pagamento,
+            'valor': valor,
+            'status': 0,
+            'tipo_cobranca': 1
+        }), 201
+
+    except Exception as e:
+        con.rollback()
+        print("ERRO:", e)
+        return jsonify({'mensagem': 'Erro ao criar cobranca Pix'}), 500
 
     finally:
         if cursor:
