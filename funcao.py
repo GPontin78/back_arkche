@@ -305,4 +305,5 @@ def validar_chave_pix(chave_pix, chave, acao, id_conta=None):
 
 
 def data_atual():
-    return datetime.datetime.now()
+    fuso_brasilia = datetime.timezone(datetime.timedelta(hours=-3))
+    return datetime.datetime.now(fuso_brasilia).replace(tzinfo=None)

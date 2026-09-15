@@ -259,6 +259,7 @@ def boleto_pdf(id_cobranca):
         ON UR.ID_USUARIO = CR.ID_USUARIO
 
         WHERE COB.ID_COBRANCA = ?
+        AND COB.TIPO_COBRANCA = 0
     """, (id_cobranca,))
 
     boleto = cursor.fetchone()
@@ -779,6 +780,7 @@ def boleto_pdf(id_cobranca):
         download_name=f'boleto_arkhe_{id_cobranca}.pdf'
     )
 
+
 def formatar_data_hora(valor):
     if not valor:
         return '-'
@@ -797,12 +799,15 @@ def formatar_data_hora(valor):
     return texto
 
 
-def descobrir_tipo_movimentacao(id_pagador, valor, id_cobranca):
-    if id_cobranca is not None:
-        return 'Pagamento de boleto'
-
+def descobrir_tipo_movimentacao(id_pagador, valor, id_cobranca, tipo_cobranca):
     if id_pagador == 9 and float(valor) == 5000:
         return 'Credito inicial'
+
+    if id_cobranca is not None and tipo_cobranca == 0:
+        return 'Pagamento de boleto'
+
+    if id_cobranca is not None and tipo_cobranca == 1:
+        return 'Pix via QR Code'
 
     return 'Pix'
 
@@ -863,7 +868,8 @@ def comprovante(id_movimentacao):
                           UR.NOME_FANTASIA,
                           UR.RAZAO_SOCIAL,
 
-                          COB.CODIGO_PAGAMENTO
+                          COB.CODIGO_PAGAMENTO,
+                          COB.TIPO_COBRANCA
 
                           FROM MOVIMENTACAO M
                           INNER JOIN CONTA CP ON CP.ID_CONTA = M.ID_PAGADOR
@@ -912,6 +918,7 @@ def comprovante(id_movimentacao):
         razao_social_recebedor = movimentacao[23]
 
         codigo_pagamento = movimentacao[24]
+        tipo_cobranca = movimentacao[25]
 
         pagador = nome_cliente(
             nome_pagador,
@@ -940,7 +947,8 @@ def comprovante(id_movimentacao):
         tipo_movimentacao = descobrir_tipo_movimentacao(
             id_pagador,
             valor,
-            id_cobranca
+            id_cobranca,
+            tipo_cobranca
         )
 
         memoria = BytesIO()
@@ -1153,50 +1161,31 @@ def comprovante(id_movimentacao):
         )
 
         if id_cobranca is not None:
-            pdf.setFont(
-                'Helvetica',
-                7
-            )
+            pdf.setFont('Helvetica', 7)
+            pdf.setFillColor(HexColor('#666666'))
 
-            pdf.setFillColor(
-                HexColor('#666666')
-            )
+            if tipo_cobranca == 1:
+                pdf.drawRightString(185 * mm, 42 * mm, 'PIX QR CODE')
+            else:
+                pdf.drawRightString(185 * mm, 42 * mm, 'COBRANCA')
 
-            pdf.drawRightString(
-                185 * mm,
-                42 * mm,
-                'COBRANCA'
-            )
-
-            pdf.setFont(
-                'Helvetica-Bold',
-                9
-            )
-
-            pdf.setFillColor(
-                black
-            )
-
-            pdf.drawRightString(
-                185 * mm,
-                36 * mm,
-                f'#{id_cobranca}'
-            )
+            pdf.setFont('Helvetica-Bold', 9)
+            pdf.setFillColor(black)
+            pdf.drawRightString(185 * mm, 36 * mm, f'#{id_cobranca}')
 
         if codigo_pagamento:
-            pdf.setFont(
-                'Helvetica',
-                6.5
-            )
+            pdf.setFont('Helvetica', 6.5)
+            pdf.setFillColor(HexColor('#666666'))
 
-            pdf.setFillColor(
-                HexColor('#666666')
-            )
+            if tipo_cobranca == 1:
+                texto_codigo = f'Codigo Pix: {codigo_pagamento}'
+            else:
+                texto_codigo = f'Codigo do boleto: {codigo_pagamento}'
 
             pdf.drawString(
                 25 * mm,
                 27 * mm,
-                f'Codigo do boleto: {codigo_pagamento}'
+                texto_codigo
             )
 
         pdf.setStrokeColor(

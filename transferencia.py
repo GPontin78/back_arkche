@@ -210,62 +210,101 @@ def buscar_movimentacoes():
     if not id_conta:
         return jsonify({'mensagem': 'Usuario nao logado'}), 403
 
-    cursor = con.cursor()
+    cursor = None
 
-    cursor.execute("""SELECT ID_COBRANCA, ID_PAGADOR, ID_RECEBEDOR, VALOR, DATA_VENCIMENTO, STATUS FROM COBRANCA WHERE ID_PAGADOR = ? OR ID_RECEBEDOR = ? ORDER BY DATA_VENCIMENTO DESC""", (id_conta, id_conta))
-    cobrancas_banco = cursor.fetchall()
+    try:
+        cursor = con.cursor()
 
-    cobrancas = []
+        cursor.execute("""SELECT COB.ID_COBRANCA, COB.ID_PAGADOR, COB.ID_RECEBEDOR, COB.VALOR, COB.DATA_VENCIMENTO, COB.STATUS, COB.TIPO_COBRANCA,
+                          UP.NOME, UP.NOME_FANTASIA, UP.RAZAO_SOCIAL, CP.TIPO_CONTA,
+                          UR.NOME, UR.NOME_FANTASIA, UR.RAZAO_SOCIAL, CR.TIPO_CONTA
+                          FROM COBRANCA COB
+                          INNER JOIN CONTA CP ON CP.ID_CONTA = COB.ID_PAGADOR
+                          INNER JOIN USUARIO UP ON UP.ID_USUARIO = CP.ID_USUARIO
+                          INNER JOIN CONTA CR ON CR.ID_CONTA = COB.ID_RECEBEDOR
+                          INNER JOIN USUARIO UR ON UR.ID_USUARIO = CR.ID_USUARIO
+                          WHERE (COB.ID_PAGADOR = ? OR COB.ID_RECEBEDOR = ?) AND COB.TIPO_COBRANCA = 0
+                          ORDER BY COB.DATA_VENCIMENTO DESC""", (id_conta, id_conta))
 
-    for cobranca in cobrancas_banco:
-        if cobranca[1] == id_conta:
-            tipo = 'pagar'
-        else:
-            tipo = 'receber'
+        cobrancas_banco = cursor.fetchall()
+        cobrancas = []
 
-        cobrancas.append({
-            'id_cobranca': cobranca[0],
-            'id_pagador': cobranca[1],
-            'id_recebedor': cobranca[2],
-            'valor': float(cobranca[3]),
-            'data_vencimento': str(cobranca[4]),
-            'status': cobranca[5],
-            'tipo': tipo
-        })
+        for cobranca in cobrancas_banco:
+            tipo = 'pagar' if cobranca[1] == id_conta else 'receber'
 
-    cursor.execute("""SELECT ID_MOVIMENTACAO, ID_PAGADOR, ID_RECEBEDOR, VALOR, DATA_MOVIMENTACAO, ID_COBRANCA FROM MOVIMENTACAO WHERE ID_PAGADOR = ? OR ID_RECEBEDOR = ? ORDER BY DATA_MOVIMENTACAO DESC""", (id_conta, id_conta))
-    movimentacoes_banco = cursor.fetchall()
+            nome_pagador = cobranca[8] or cobranca[9] or cobranca[7] if cobranca[10] == 1 else cobranca[7]
+            nome_recebedor = cobranca[12] or cobranca[13] or cobranca[11] if cobranca[14] == 1 else cobranca[11]
 
-    movimentacoes = []
+            cobrancas.append({
+                'id_cobranca': cobranca[0],
+                'id_pagador': cobranca[1],
+                'id_recebedor': cobranca[2],
+                'valor': float(cobranca[3]),
+                'data_vencimento': str(cobranca[4]) if cobranca[4] else None,
+                'status': cobranca[5],
+                'tipo_cobranca': cobranca[6],
+                'tipo': tipo,
+                'nome_pagador': nome_pagador,
+                'nome_recebedor': nome_recebedor
+            })
 
-    for movimentacao in movimentacoes_banco:
-        if movimentacao[1] == id_conta:
-            tipo = 'saida'
-        else:
-            tipo = 'entrada'
+        cursor.execute("""SELECT M.ID_MOVIMENTACAO, M.ID_PAGADOR, M.ID_RECEBEDOR, M.VALOR, M.DATA_MOVIMENTACAO, M.ID_COBRANCA, COB.TIPO_COBRANCA,
+                          UP.NOME, UP.NOME_FANTASIA, UP.RAZAO_SOCIAL, CP.TIPO_CONTA,
+                          UR.NOME, UR.NOME_FANTASIA, UR.RAZAO_SOCIAL, CR.TIPO_CONTA
+                          FROM MOVIMENTACAO M
+                          INNER JOIN CONTA CP ON CP.ID_CONTA = M.ID_PAGADOR
+                          INNER JOIN USUARIO UP ON UP.ID_USUARIO = CP.ID_USUARIO
+                          INNER JOIN CONTA CR ON CR.ID_CONTA = M.ID_RECEBEDOR
+                          INNER JOIN USUARIO UR ON UR.ID_USUARIO = CR.ID_USUARIO
+                          LEFT JOIN COBRANCA COB ON COB.ID_COBRANCA = M.ID_COBRANCA
+                          WHERE M.ID_PAGADOR = ? OR M.ID_RECEBEDOR = ?
+                          ORDER BY M.DATA_MOVIMENTACAO DESC""", (id_conta, id_conta))
 
-        if movimentacao[5] is None:
-            origem = 'pix'
-        else:
-            origem = 'cobranca'
+        movimentacoes_banco = cursor.fetchall()
+        movimentacoes = []
 
-        movimentacoes.append({
-            'id_movimentacao': movimentacao[0],
-            'id_pagador': movimentacao[1],
-            'id_recebedor': movimentacao[2],
-            'valor': float(movimentacao[3]),
-            'data_movimentacao': str(movimentacao[4]),
-            'id_cobranca': movimentacao[5],
-            'tipo': tipo,
-            'origem': origem
-        })
+        for movimentacao in movimentacoes_banco:
+            tipo = 'saida' if movimentacao[1] == id_conta else 'entrada'
 
-    cursor.close()
+            if movimentacao[5] is None:
+                origem = 'pix'
+            elif movimentacao[6] == 1:
+                origem = 'pix_qrcode'
+            else:
+                origem = 'boleto'
 
-    return jsonify({
-        'cobrancas': cobrancas,
-        'movimentacoes': movimentacoes
-    }), 200
+            nome_pagador = movimentacao[8] or movimentacao[9] or movimentacao[7] if movimentacao[10] == 1 else movimentacao[7]
+            nome_recebedor = movimentacao[12] or movimentacao[13] or movimentacao[11] if movimentacao[14] == 1 else movimentacao[11]
+
+            nome_contraparte = nome_recebedor if tipo == 'saida' else nome_pagador
+
+            movimentacoes.append({
+                'id_movimentacao': movimentacao[0],
+                'id_pagador': movimentacao[1],
+                'id_recebedor': movimentacao[2],
+                'valor': float(movimentacao[3]),
+                'data_movimentacao': str(movimentacao[4]),
+                'id_cobranca': movimentacao[5],
+                'tipo_cobranca': movimentacao[6],
+                'tipo': tipo,
+                'origem': origem,
+                'nome_pagador': nome_pagador,
+                'nome_recebedor': nome_recebedor,
+                'nome_contraparte': nome_contraparte
+            })
+
+        return jsonify({
+            'cobrancas': cobrancas,
+            'movimentacoes': movimentacoes
+        }), 200
+
+    except Exception as e:
+        print("ERRO:", e)
+        return jsonify({'mensagem': 'Erro ao buscar movimentacoes'}), 500
+
+    finally:
+        if cursor:
+            cursor.close()
 
 @app.route('/buscar_cobranca_codigo', methods=['POST'])
 def buscar_cobranca_codigo():
