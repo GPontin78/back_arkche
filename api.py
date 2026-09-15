@@ -3,6 +3,7 @@ from main import app
 from banco import con
 from funcao import descobre_id_conta, criptografar_pin, verificar_pin
 import uuid
+import datetime
 
 
 def autenticar_integracao():
@@ -47,6 +48,39 @@ def autenticar_integracao():
 
     finally:
         cursor.close()
+
+
+def obter_periodo():
+    data_inicio = request.args.get('data_inicio')
+    data_fim = request.args.get('data_fim')
+
+    hoje = datetime.date.today()
+
+    if not data_inicio and not data_fim:
+        data_inicio = hoje.replace(day=1).isoformat()
+        data_fim = hoje.isoformat()
+        return data_inicio, data_fim, None
+
+    if not data_inicio or not data_fim:
+        return None, None, (jsonify({'mensagem': 'Informe data_inicio e data_fim juntas'}), 400)
+
+    try:
+        inicio = datetime.date.fromisoformat(data_inicio)
+        fim = datetime.date.fromisoformat(data_fim)
+    except ValueError:
+        return None, None, (jsonify({'mensagem': 'Datas invalidas. Use o formato YYYY-MM-DD'}), 400)
+
+    if inicio > fim:
+        return None, None, (jsonify({'mensagem': 'data_inicio nao pode ser maior que data_fim'}), 400)
+
+    return inicio.isoformat(), fim.isoformat(), None
+
+
+def nome_cliente_api(nome, nome_fantasia, razao_social, tipo_conta):
+    if tipo_conta == 1:
+        return nome_fantasia or razao_social or nome or 'Conta Arkhe'
+
+    return nome or 'Conta Arkhe'
 
 
 @app.route('/integracoes/api', methods=['POST'])
@@ -119,7 +153,7 @@ def api_conta():
         if not conta:
             return jsonify({'mensagem': 'Conta nao encontrada'}), 404
 
-        nome = conta[6] or conta[7] or conta[5]
+        nome = nome_cliente_api(conta[5], conta[6], conta[7], conta[4])
 
         return jsonify({
             'id_conta': conta[0],
@@ -174,48 +208,125 @@ def api_movimentacoes():
         return erro
 
     id_conta = integracao['id_conta']
-    data_inicio = request.args.get('data_inicio')
-    data_fim = request.args.get('data_fim')
+    data_inicio, data_fim, erro_periodo = obter_periodo()
+
+    if erro_periodo:
+        return erro_periodo
 
     cursor = con.cursor()
 
     try:
-        sql = """SELECT ID_MOVIMENTACAO, ID_PAGADOR, ID_RECEBEDOR, VALOR, DATA_MOVIMENTACAO, ID_COBRANCA FROM MOVIMENTACAO WHERE (ID_PAGADOR = ? OR ID_RECEBEDOR = ?)"""
-        parametros = [id_conta, id_conta]
+        cursor.execute("""SELECT M.ID_MOVIMENTACAO, M.ID_PAGADOR, M.ID_RECEBEDOR, M.VALOR, M.DATA_MOVIMENTACAO, M.ID_COBRANCA, COB.TIPO_COBRANCA,
+                          UP.NOME, UP.NOME_FANTASIA, UP.RAZAO_SOCIAL, CP.TIPO_CONTA,
+                          UR.NOME, UR.NOME_FANTASIA, UR.RAZAO_SOCIAL, CR.TIPO_CONTA
+                          FROM MOVIMENTACAO M
+                          INNER JOIN CONTA CP ON CP.ID_CONTA = M.ID_PAGADOR
+                          INNER JOIN USUARIO UP ON UP.ID_USUARIO = CP.ID_USUARIO
+                          INNER JOIN CONTA CR ON CR.ID_CONTA = M.ID_RECEBEDOR
+                          INNER JOIN USUARIO UR ON UR.ID_USUARIO = CR.ID_USUARIO
+                          LEFT JOIN COBRANCA COB ON COB.ID_COBRANCA = M.ID_COBRANCA
+                          WHERE (M.ID_PAGADOR = ? OR M.ID_RECEBEDOR = ?)
+                          AND M.DATA_MOVIMENTACAO >= CAST(? AS DATE)
+                          AND M.DATA_MOVIMENTACAO < DATEADD(1 DAY TO CAST(? AS DATE))
+                          ORDER BY M.DATA_MOVIMENTACAO DESC""",
+                       (id_conta, id_conta, data_inicio, data_fim))
 
-        if data_inicio:
-            sql += """ AND DATA_MOVIMENTACAO >= ?"""
-            parametros.append(data_inicio)
-
-        if data_fim:
-            sql += """ AND DATA_MOVIMENTACAO < DATEADD(1 DAY TO CAST(? AS DATE))"""
-            parametros.append(data_fim)
-
-        sql += """ ORDER BY DATA_MOVIMENTACAO DESC"""
-
-        cursor.execute(sql, tuple(parametros))
         movimentacoes = cursor.fetchall()
-
         resultado = []
 
         for movimentacao in movimentacoes:
             tipo = 'entrada' if movimentacao[2] == id_conta else 'saida'
 
+            if movimentacao[5] is None:
+                origem = 'pix'
+            elif movimentacao[6] == 1:
+                origem = 'pix_qrcode'
+            else:
+                origem = 'boleto'
+
+            nome_pagador = nome_cliente_api(
+                movimentacao[7],
+                movimentacao[8],
+                movimentacao[9],
+                movimentacao[10]
+            )
+
+            nome_recebedor = nome_cliente_api(
+                movimentacao[11],
+                movimentacao[12],
+                movimentacao[13],
+                movimentacao[14]
+            )
+
+            nome_contraparte = nome_recebedor if tipo == 'saida' else nome_pagador
+
             resultado.append({
                 'id_movimentacao': movimentacao[0],
                 'id_pagador': movimentacao[1],
+                'nome_pagador': nome_pagador,
                 'id_recebedor': movimentacao[2],
+                'nome_recebedor': nome_recebedor,
+                'nome_contraparte': nome_contraparte,
                 'valor': float(movimentacao[3]),
                 'data_movimentacao': str(movimentacao[4]),
                 'id_cobranca': movimentacao[5],
-                'tipo': tipo
+                'tipo_cobranca': movimentacao[6],
+                'tipo': tipo,
+                'origem': origem
             })
 
-        return jsonify(resultado), 200
+        return jsonify({
+            'data_inicio': data_inicio,
+            'data_fim': data_fim,
+            'movimentacoes': resultado
+        }), 200
 
     except Exception as e:
         print('ERRO API MOVIMENTACOES:', e)
         return jsonify({'mensagem': 'Erro ao consultar movimentacoes'}), 500
+
+    finally:
+        cursor.close()
+
+
+@app.route('/api/v1/resumo-financeiro', methods=['GET'])
+def api_resumo_financeiro():
+    integracao, erro = autenticar_integracao()
+
+    if erro:
+        return erro
+
+    id_conta = integracao['id_conta']
+    data_inicio, data_fim, erro_periodo = obter_periodo()
+
+    if erro_periodo:
+        return erro_periodo
+
+    cursor = con.cursor()
+
+    try:
+        cursor.execute("""SELECT CAST(COALESCE(SUM(VALOR), 0) AS DECIMAL(18,2)) FROM MOVIMENTACAO WHERE ID_RECEBEDOR = ? AND DATA_MOVIMENTACAO >= CAST(? AS DATE) AND DATA_MOVIMENTACAO < DATEADD(1 DAY TO CAST(? AS DATE))""",
+                       (id_conta, data_inicio, data_fim))
+        total_receitas = cursor.fetchone()[0]
+
+        cursor.execute("""SELECT CAST(COALESCE(SUM(VALOR), 0) AS DECIMAL(18,2)) FROM MOVIMENTACAO WHERE ID_PAGADOR = ? AND DATA_MOVIMENTACAO >= CAST(? AS DATE) AND DATA_MOVIMENTACAO < DATEADD(1 DAY TO CAST(? AS DATE))""",
+                       (id_conta, data_inicio, data_fim))
+        total_despesas = cursor.fetchone()[0]
+
+        total_receitas = float(total_receitas or 0)
+        total_despesas = float(total_despesas or 0)
+
+        return jsonify({
+            'data_inicio': data_inicio,
+            'data_fim': data_fim,
+            'total_receitas': total_receitas,
+            'total_despesas': total_despesas,
+            'saldo_periodo': total_receitas - total_despesas
+        }), 200
+
+    except Exception as e:
+        print('ERRO API RESUMO FINANCEIRO:', e)
+        return jsonify({'mensagem': 'Erro ao consultar resumo financeiro'}), 500
 
     finally:
         cursor.close()
