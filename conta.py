@@ -1,7 +1,105 @@
 from flask import jsonify, request, make_response, render_template
+import os
+import json
+import urllib.request
+import urllib.error
 from main import app
 from banco import con
 from funcao import gerar_token, descobre_id_usuario, descobre_id_conta, criptografar_pin, verificar_pin, dados_usuario, dados_conta, gerar_codigo, enviando_email,data_atual
+
+
+def criar_sessao_facial_mobile(cpf):
+    face_api_url = os.getenv('FACE_API_URL', 'https://apps-arkhe-identity-api.ucxocw.easypanel.host').rstrip('/')
+    face_client_id = os.getenv('FACE_CLIENT_ID', 'arkhe')
+    face_client_secret = os.getenv('FACE_CLIENT_SECRET')
+
+    if not face_client_secret:
+        raise RuntimeError('FACE_CLIENT_SECRET nao configurado no backend')
+
+    corpo = json.dumps({
+        'cpf': ''.join(numero for numero in str(cpf or '') if numero.isdigit()),
+        'purpose': 'login_mobile',
+        'ttl_minutes': 10
+    }).encode('utf-8')
+
+    requisicao = urllib.request.Request(
+        face_api_url + '/v1/verifications',
+        data=corpo,
+        headers={
+            'Content-Type': 'application/json',
+            'X-Client-Id': face_client_id,
+            'X-Client-Secret': face_client_secret
+        },
+        method='POST'
+    )
+
+    try:
+        with urllib.request.urlopen(requisicao, timeout=20) as resposta:
+            resultado = json.loads(resposta.read().decode('utf-8'))
+    except urllib.error.HTTPError as erro:
+        mensagem = 'Nao foi possivel iniciar o reconhecimento facial'
+        try:
+            resultado_erro = json.loads(erro.read().decode('utf-8'))
+            detalhe = resultado_erro.get('detail')
+            if isinstance(detalhe, dict):
+                detalhe = detalhe.get('message')
+            if isinstance(detalhe, str) and detalhe.strip():
+                mensagem = detalhe.strip()
+        except Exception:
+            pass
+        raise RuntimeError(mensagem)
+    except Exception:
+        raise RuntimeError('Nao foi possivel conectar ao servico de reconhecimento facial')
+
+    if not resultado.get('session_id') or not resultado.get('session_token'):
+        raise RuntimeError('O servico facial retornou uma sessao invalida')
+
+    return {
+        'session_id': resultado['session_id'],
+        'session_token': resultado['session_token']
+    }
+
+
+@app.route('/mobile/preparar_login', methods=['POST'])
+def mobile_preparar_login():
+    dados = request.get_json() or {}
+    cpf = ''.join(numero for numero in str(dados.get('cpf') or '') if numero.isdigit())
+    pin = ''.join(numero for numero in str(dados.get('pin') or '') if numero.isdigit())
+    tipo_conta = dados.get('tipo_conta')
+
+    if len(cpf) != 11 or len(pin) != 6 or tipo_conta not in [0, 1, '0', '1']:
+        return jsonify({'mensagem': 'CPF, PIN ou tipo de conta invalido'}), 400
+
+    cursor = None
+
+    try:
+        cursor = con.cursor()
+        cursor.execute("""SELECT C.PIN_HASH FROM USUARIO U INNER JOIN CONTA C ON C.ID_USUARIO = U.ID_USUARIO WHERE U.CPF = ? AND C.TIPO_CONTA = ?""",
+                       (cpf, int(tipo_conta)))
+        conta = cursor.fetchone()
+
+        if not conta or not verificar_pin(pin, conta[0]):
+            return jsonify({'mensagem': 'CPF, PIN ou tipo de conta invalido'}), 401
+
+        sessao_facial = criar_sessao_facial_mobile(cpf)
+
+        return jsonify({
+            'mensagem': 'Credenciais validas',
+            'reconhecimento_facial_pendente': True,
+            'sessao_facial': sessao_facial
+        }), 200
+
+    except RuntimeError as e:
+        return jsonify({'mensagem': str(e)}), 502
+
+    except Exception as e:
+        print('ERRO PREPARAR LOGIN MOBILE:', e)
+        return jsonify({'mensagem': 'Nao foi possivel preparar o login mobile'}), 500
+
+    finally:
+        if cursor:
+            cursor.close()
+
 @app.route('/login', methods=['POST'])
 def login():
     dados = request.get_json()
