@@ -1,7 +1,32 @@
 from flask import jsonify, request, make_response, render_template
+import os
+import requests
 from main import app
 from banco import con
-from funcao import gerar_token, descobre_id_usuario, descobre_id_conta, criptografar_pin, verificar_pin, dados_usuario, dados_conta, gerar_codigo, enviando_email,data_atual
+from funcao import gerar_token, descobre_id_usuario, descobre_id_conta, criptografar_pin, verificar_pin, dados_usuario, dados_conta, gerar_codigo, enviando_email, data_atual
+
+def criar_sessao_facial(cpf):
+    resposta = requests.post(
+        os.getenv('FACE_API_URL') + '/v1/verifications',
+        headers={
+            'X-Client-Id': os.getenv('FACE_CLIENT_ID'),
+            'X-Client-Secret': os.getenv('FACE_CLIENT_SECRET')
+        },
+        json={
+            'cpf': cpf,
+            'purpose': 'login',
+            'ttl_minutes': 10
+        },
+        timeout=20
+    )
+
+    if not resposta.ok:
+        return None
+
+    return resposta.json()
+
+
+
 @app.route('/login', methods=['POST'])
 def login():
     dados = request.get_json()
@@ -10,6 +35,7 @@ def login():
     pin = dados.get('pin')
     tipo_conta = dados.get('tipo_conta')
     cadastro_facial = dados.get('cadastro_facial', False)
+    mobile = dados.get('mobile', False)
 
     cursor = None
 
@@ -43,6 +69,18 @@ def login():
             return jsonify({'mensagem': 'CPF, PIN ou tipo de conta inválido'}), 401
 
         if not cadastro_facial:
+            if mobile:
+                sessao_facial = criar_sessao_facial(cpf)
+
+                if not sessao_facial:
+                    return jsonify({'mensagem': 'Não foi possível iniciar o reconhecimento facial'}), 500
+
+                return jsonify({
+                    'mensagem': 'Credenciais válidas',
+                    'reconhecimento_facial_pendente': True,
+                    'sessao_facial': sessao_facial
+                }), 200
+
             return jsonify({
                 'mensagem': 'Credenciais válidas',
                 'reconhecimento_facial_pendente': True
@@ -70,13 +108,14 @@ def login():
 
         return resposta
 
-    except Exception:
+    except Exception as e:
+        print('ERRO LOGIN:', e)
         return jsonify({'mensagem': 'Não foi possível realizar o login. Tente novamente.'}), 500
 
     finally:
         if cursor:
             cursor.close()
-
+            
 
 @app.route('/adicionar_conta', methods=['POST'])
 def adicionar_conta():
