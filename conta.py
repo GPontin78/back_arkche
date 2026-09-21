@@ -20,11 +20,13 @@ def criar_sessao_facial(cpf):
         timeout=20
     )
 
+    print('FACE STATUS:', resposta.status_code)
+    print('FACE RESPOSTA:', resposta.text)
+
     if not resposta.ok:
         return None
 
     return resposta.json()
-
 
 
 @app.route('/login', methods=['POST'])
@@ -115,7 +117,7 @@ def login():
     finally:
         if cursor:
             cursor.close()
-            
+
 
 @app.route('/adicionar_conta', methods=['POST'])
 def adicionar_conta():
