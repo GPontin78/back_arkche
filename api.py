@@ -1,7 +1,7 @@
 from flask import request, jsonify
 from main import app
 from banco import con
-from funcao import descobre_id_conta, criptografar_pin, verificar_pin
+from funcao import descobre_id_conta, criptografar_pin, verificar_pin, calcular_saldo
 import uuid
 import datetime
 
@@ -179,14 +179,8 @@ def api_saldo():
     if erro:
         return erro
 
-    id_conta = integracao['id_conta']
-    cursor = con.cursor()
-
     try:
-        cursor.execute("""SELECT COALESCE(SUM(CASE WHEN ID_RECEBEDOR = ? THEN VALOR ELSE 0 END), 0) - COALESCE(SUM(CASE WHEN ID_PAGADOR = ? THEN VALOR ELSE 0 END), 0) FROM MOVIMENTACAO WHERE ID_RECEBEDOR = ? OR ID_PAGADOR = ?""",
-                       (id_conta, id_conta, id_conta, id_conta))
-
-        saldo = cursor.fetchone()[0]
+        saldo = calcular_saldo(integracao['id_conta'])
 
         return jsonify({
             'saldo': float(saldo or 0)
@@ -195,9 +189,6 @@ def api_saldo():
     except Exception as e:
         print('ERRO API SALDO:', e)
         return jsonify({'mensagem': 'Erro ao consultar saldo'}), 500
-
-    finally:
-        cursor.close()
 
 
 @app.route('/api/v1/movimentacoes', methods=['GET'])
