@@ -348,7 +348,7 @@ def verificar_pin_usuario(id_usuario, pin):
         cursor = con.cursor()
 
         cursor.execute(
-            """SELECT PIN_HASH, PRIMEIRO_ACESSO
+            """SELECT PIN_HASH, PRIMEIRO_ACESSO, PIN_TEMPORARIO_EXPIRA_EM
                FROM USUARIO
                WHERE ID_USUARIO = ?""",
             (id_usuario,)
@@ -359,16 +359,45 @@ def verificar_pin_usuario(id_usuario, pin):
         if not usuario:
             return {
                 'valido': False,
-                'legado': False
+                'legado': False,
+                'temporario': False,
+                'temporario_expirado': False
             }
 
         pin_hash = usuario[0]
         primeiro_acesso = usuario[1]
+        expiracao = usuario[2]
+
+        if primeiro_acesso == 1 and expiracao is not None:
+            if expiracao <= data_atual():
+                return {
+                    'valido': False,
+                    'legado': False,
+                    'temporario': True,
+                    'temporario_expirado': True
+                }
+
+            if pin_hash and verificar_pin(pin, pin_hash):
+                return {
+                    'valido': True,
+                    'legado': False,
+                    'temporario': True,
+                    'temporario_expirado': False
+                }
+
+            return {
+                'valido': False,
+                'legado': False,
+                'temporario': True,
+                'temporario_expirado': False
+            }
 
         if pin_hash and verificar_pin(pin, pin_hash):
             return {
                 'valido': True,
-                'legado': False
+                'legado': False,
+                'temporario': False,
+                'temporario_expirado': False
             }
 
         if pin_hash is None or primeiro_acesso == 1:
@@ -385,12 +414,16 @@ def verificar_pin_usuario(id_usuario, pin):
                 if verificar_pin(pin, conta[0]):
                     return {
                         'valido': True,
-                        'legado': True
+                        'legado': True,
+                        'temporario': False,
+                        'temporario_expirado': False
                     }
 
         return {
             'valido': False,
-            'legado': False
+            'legado': False,
+            'temporario': False,
+            'temporario_expirado': False
         }
 
     finally:
@@ -399,6 +432,9 @@ def verificar_pin_usuario(id_usuario, pin):
 
 
 def gerar_codigo():
+    return str(random.randint(100000, 999999))
+
+def gerar_pin_temporario():
     return str(random.randint(100000, 999999))
 
 

@@ -69,8 +69,16 @@ def login_usuario():
 
         resultado_pin = verificar_pin_usuario(id_usuario, pin)
 
+        if resultado_pin.get('temporario_expirado'):
+            return jsonify({
+                'mensagem': 'PIN temporário expirado',
+                'pin_temporario_expirado': True
+            }), 401
+
         if not resultado_pin['valido']:
-            return jsonify({'mensagem': 'CPF ou PIN inválido'}), 401
+            return jsonify({
+                'mensagem': 'CPF ou PIN inválido'
+            }), 401
 
         if not cadastro_facial:
             if mobile:
@@ -84,18 +92,30 @@ def login_usuario():
                 return jsonify({
                     'mensagem': 'Credenciais válidas',
                     'reconhecimento_facial_pendente': True,
-                    'sessao_facial': sessao_facial
+                    'sessao_facial': sessao_facial,
+                    'troca_pin_obrigatoria': bool(
+                        resultado_pin.get('legado')
+                        or resultado_pin.get('temporario')
+                        or primeiro_acesso == 1
+                    )
                 }), 200
 
             return jsonify({
                 'mensagem': 'Credenciais válidas',
-                'reconhecimento_facial_pendente': True
+                'reconhecimento_facial_pendente': True,
+                'troca_pin_obrigatoria': bool(
+                    resultado_pin.get('legado')
+                    or resultado_pin.get('temporario')
+                    or primeiro_acesso == 1
+                )
             }), 200
 
         token = gerar_token_usuario(id_usuario)
 
         troca_pin_obrigatoria = bool(
-            resultado_pin['legado'] or primeiro_acesso == 1
+            resultado_pin.get('legado')
+            or resultado_pin.get('temporario')
+            or primeiro_acesso == 1
         )
 
         resposta = make_response(jsonify({
@@ -135,6 +155,7 @@ def login_usuario():
         if cursor:
             cursor.close()
 
+            
 
 @app.route('/definir_pin_pessoal', methods=['POST'])
 def definir_pin_pessoal():
@@ -623,7 +644,7 @@ def adicionar_conta():
         if cursor:
             cursor.close()
 
-            
+
 @app.route('/logout', methods=['POST'])
 def logout():
     resposta = make_response(jsonify({
