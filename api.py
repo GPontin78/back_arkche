@@ -145,15 +145,26 @@ def api_conta():
     cursor = con.cursor()
 
     try:
-        cursor.execute("""SELECT C.ID_CONTA, C.NUMERO_CONTA, C.AGENCIA, C.BANCO, C.TIPO_CONTA, U.NOME, U.NOME_FANTASIA, U.RAZAO_SOCIAL FROM CONTA C INNER JOIN USUARIO U ON U.ID_USUARIO = C.ID_USUARIO WHERE C.ID_CONTA = ?""",
-                       (integracao['id_conta'],))
+        cursor.execute(
+            """SELECT C.ID_CONTA, C.NUMERO_CONTA, C.AGENCIA, C.BANCO, C.TIPO_CONTA,
+                      U.NOME, C.NOME_FANTASIA, C.RAZAO_SOCIAL
+               FROM CONTA C
+               INNER JOIN USUARIO U ON U.ID_USUARIO = C.ID_USUARIO
+               WHERE C.ID_CONTA = ?""",
+            (integracao['id_conta'],)
+        )
 
         conta = cursor.fetchone()
 
         if not conta:
             return jsonify({'mensagem': 'Conta nao encontrada'}), 404
 
-        nome = nome_cliente_api(conta[5], conta[6], conta[7], conta[4])
+        nome = nome_cliente_api(
+            conta[5],
+            conta[6],
+            conta[7],
+            conta[4]
+        )
 
         return jsonify({
             'id_conta': conta[0],
@@ -170,7 +181,6 @@ def api_conta():
 
     finally:
         cursor.close()
-
 
 @app.route('/api/v1/saldo', methods=['GET'])
 def api_saldo():
@@ -207,20 +217,29 @@ def api_movimentacoes():
     cursor = con.cursor()
 
     try:
-        cursor.execute("""SELECT M.ID_MOVIMENTACAO, M.ID_PAGADOR, M.ID_RECEBEDOR, M.VALOR, M.DATA_MOVIMENTACAO, M.ID_COBRANCA, COB.TIPO_COBRANCA,
-                          UP.NOME, UP.NOME_FANTASIA, UP.RAZAO_SOCIAL, CP.TIPO_CONTA,
-                          UR.NOME, UR.NOME_FANTASIA, UR.RAZAO_SOCIAL, CR.TIPO_CONTA
-                          FROM MOVIMENTACAO M
-                          INNER JOIN CONTA CP ON CP.ID_CONTA = M.ID_PAGADOR
-                          INNER JOIN USUARIO UP ON UP.ID_USUARIO = CP.ID_USUARIO
-                          INNER JOIN CONTA CR ON CR.ID_CONTA = M.ID_RECEBEDOR
-                          INNER JOIN USUARIO UR ON UR.ID_USUARIO = CR.ID_USUARIO
-                          LEFT JOIN COBRANCA COB ON COB.ID_COBRANCA = M.ID_COBRANCA
-                          WHERE (M.ID_PAGADOR = ? OR M.ID_RECEBEDOR = ?)
-                          AND M.DATA_MOVIMENTACAO >= CAST(? AS DATE)
-                          AND M.DATA_MOVIMENTACAO < DATEADD(1 DAY TO CAST(? AS DATE))
-                          ORDER BY M.DATA_MOVIMENTACAO DESC""",
-                       (id_conta, id_conta, data_inicio, data_fim))
+        cursor.execute(
+            """SELECT M.ID_MOVIMENTACAO, M.ID_PAGADOR, M.ID_RECEBEDOR,
+                      M.VALOR, M.DATA_MOVIMENTACAO, M.ID_COBRANCA,
+                      COB.TIPO_COBRANCA,
+                      UP.NOME, CP.NOME_FANTASIA, CP.RAZAO_SOCIAL, CP.TIPO_CONTA,
+                      UR.NOME, CR.NOME_FANTASIA, CR.RAZAO_SOCIAL, CR.TIPO_CONTA
+               FROM MOVIMENTACAO M
+               INNER JOIN CONTA CP ON CP.ID_CONTA = M.ID_PAGADOR
+               INNER JOIN USUARIO UP ON UP.ID_USUARIO = CP.ID_USUARIO
+               INNER JOIN CONTA CR ON CR.ID_CONTA = M.ID_RECEBEDOR
+               INNER JOIN USUARIO UR ON UR.ID_USUARIO = CR.ID_USUARIO
+               LEFT JOIN COBRANCA COB ON COB.ID_COBRANCA = M.ID_COBRANCA
+               WHERE (M.ID_PAGADOR = ? OR M.ID_RECEBEDOR = ?)
+               AND M.DATA_MOVIMENTACAO >= CAST(? AS DATE)
+               AND M.DATA_MOVIMENTACAO < DATEADD(1 DAY TO CAST(? AS DATE))
+               ORDER BY M.DATA_MOVIMENTACAO DESC""",
+            (
+                id_conta,
+                id_conta,
+                data_inicio,
+                data_fim
+            )
+        )
 
         movimentacoes = cursor.fetchall()
         resultado = []
@@ -230,8 +249,10 @@ def api_movimentacoes():
 
             if movimentacao[5] is None:
                 origem = 'pix'
+
             elif movimentacao[6] == 1:
                 origem = 'pix_qrcode'
+
             else:
                 origem = 'boleto'
 
@@ -249,7 +270,11 @@ def api_movimentacoes():
                 movimentacao[14]
             )
 
-            nome_contraparte = nome_recebedor if tipo == 'saida' else nome_pagador
+            nome_contraparte = (
+                nome_recebedor
+                if tipo == 'saida'
+                else nome_pagador
+            )
 
             resultado.append({
                 'id_movimentacao': movimentacao[0],
@@ -274,12 +299,14 @@ def api_movimentacoes():
 
     except Exception as e:
         print('ERRO API MOVIMENTACOES:', e)
-        return jsonify({'mensagem': 'Erro ao consultar movimentacoes'}), 500
+        return jsonify({
+            'mensagem': 'Erro ao consultar movimentacoes'
+        }), 500
 
     finally:
         cursor.close()
 
-
+        
 @app.route('/api/v1/resumo-financeiro', methods=['GET'])
 def api_resumo_financeiro():
     integracao, erro = autenticar_integracao()

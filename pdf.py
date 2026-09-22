@@ -229,9 +229,9 @@ def boleto_pdf(id_cobranca):
 
             UP.NOME,
             UP.CPF,
-            UP.CNPJ,
-            UP.NOME_FANTASIA,
-            UP.RAZAO_SOCIAL,
+            CP.CNPJ,
+            CP.NOME_FANTASIA,
+            CP.RAZAO_SOCIAL,
 
             CR.NUMERO_CONTA,
             CR.AGENCIA,
@@ -240,9 +240,9 @@ def boleto_pdf(id_cobranca):
 
             UR.NOME,
             UR.CPF,
-            UR.CNPJ,
-            UR.NOME_FANTASIA,
-            UR.RAZAO_SOCIAL
+            CR.CNPJ,
+            CR.NOME_FANTASIA,
+            CR.RAZAO_SOCIAL
 
         FROM COBRANCA COB
 
@@ -261,6 +261,7 @@ def boleto_pdf(id_cobranca):
         WHERE COB.ID_COBRANCA = ?
         AND COB.TIPO_COBRANCA = 0
     """, (id_cobranca,))
+
 
     boleto = cursor.fetchone()
     cursor.close()
@@ -853,9 +854,9 @@ def comprovante(id_movimentacao):
 
                           UP.NOME,
                           UP.CPF,
-                          UP.CNPJ,
-                          UP.NOME_FANTASIA,
-                          UP.RAZAO_SOCIAL,
+                          CP.CNPJ,
+                          CP.NOME_FANTASIA,
+                          CP.RAZAO_SOCIAL,
 
                           CR.NUMERO_CONTA,
                           CR.AGENCIA,
@@ -864,9 +865,9 @@ def comprovante(id_movimentacao):
 
                           UR.NOME,
                           UR.CPF,
-                          UR.CNPJ,
-                          UR.NOME_FANTASIA,
-                          UR.RAZAO_SOCIAL,
+                          CR.CNPJ,
+                          CR.NOME_FANTASIA,
+                          CR.RAZAO_SOCIAL,
 
                           COB.CODIGO_PAGAMENTO,
                           COB.TIPO_COBRANCA
@@ -880,6 +881,7 @@ def comprovante(id_movimentacao):
                           WHERE M.ID_MOVIMENTACAO = ?""",
                        (id_movimentacao,))
 
+        
         movimentacao = cursor.fetchone()
 
         if not movimentacao:

@@ -203,6 +203,7 @@ def adicionar_pix():
         if cursor:
             cursor.close()
 
+
 @app.route('/buscar_movimentacoes', methods=['GET'])
 def buscar_movimentacoes():
     id_conta = descobre_id_conta()
@@ -216,15 +217,16 @@ def buscar_movimentacoes():
         cursor = con.cursor()
 
         cursor.execute("""SELECT COB.ID_COBRANCA, COB.ID_PAGADOR, COB.ID_RECEBEDOR, COB.VALOR, COB.DATA_VENCIMENTO, COB.STATUS, COB.TIPO_COBRANCA,
-                          UP.NOME, UP.NOME_FANTASIA, UP.RAZAO_SOCIAL, CP.TIPO_CONTA,
-                          UR.NOME, UR.NOME_FANTASIA, UR.RAZAO_SOCIAL, CR.TIPO_CONTA
+                                 UP.NOME, CP.NOME_FANTASIA, CP.RAZAO_SOCIAL, CP.TIPO_CONTA,
+                                 UR.NOME, CR.NOME_FANTASIA, CR.RAZAO_SOCIAL, CR.TIPO_CONTA
                           FROM COBRANCA COB
                           INNER JOIN CONTA CP ON CP.ID_CONTA = COB.ID_PAGADOR
                           INNER JOIN USUARIO UP ON UP.ID_USUARIO = CP.ID_USUARIO
                           INNER JOIN CONTA CR ON CR.ID_CONTA = COB.ID_RECEBEDOR
                           INNER JOIN USUARIO UR ON UR.ID_USUARIO = CR.ID_USUARIO
                           WHERE (COB.ID_PAGADOR = ? OR COB.ID_RECEBEDOR = ?) AND COB.TIPO_COBRANCA = 0
-                          ORDER BY COB.DATA_VENCIMENTO DESC""", (id_conta, id_conta))
+                          ORDER BY COB.DATA_VENCIMENTO DESC""",
+                       (id_conta, id_conta))
 
         cobrancas_banco = cursor.fetchall()
         cobrancas = []
@@ -232,8 +234,15 @@ def buscar_movimentacoes():
         for cobranca in cobrancas_banco:
             tipo = 'pagar' if cobranca[1] == id_conta else 'receber'
 
-            nome_pagador = cobranca[8] or cobranca[9] or cobranca[7] if cobranca[10] == 1 else cobranca[7]
-            nome_recebedor = cobranca[12] or cobranca[13] or cobranca[11] if cobranca[14] == 1 else cobranca[11]
+            if cobranca[10] == 1:
+                nome_pagador = cobranca[8] or cobranca[9] or cobranca[7]
+            else:
+                nome_pagador = cobranca[7]
+
+            if cobranca[14] == 1:
+                nome_recebedor = cobranca[12] or cobranca[13] or cobranca[11]
+            else:
+                nome_recebedor = cobranca[11]
 
             cobrancas.append({
                 'id_cobranca': cobranca[0],
@@ -249,8 +258,8 @@ def buscar_movimentacoes():
             })
 
         cursor.execute("""SELECT M.ID_MOVIMENTACAO, M.ID_PAGADOR, M.ID_RECEBEDOR, M.VALOR, M.DATA_MOVIMENTACAO, M.ID_COBRANCA, COB.TIPO_COBRANCA,
-                          UP.NOME, UP.NOME_FANTASIA, UP.RAZAO_SOCIAL, CP.TIPO_CONTA,
-                          UR.NOME, UR.NOME_FANTASIA, UR.RAZAO_SOCIAL, CR.TIPO_CONTA
+                                 UP.NOME, CP.NOME_FANTASIA, CP.RAZAO_SOCIAL, CP.TIPO_CONTA,
+                                 UR.NOME, CR.NOME_FANTASIA, CR.RAZAO_SOCIAL, CR.TIPO_CONTA
                           FROM MOVIMENTACAO M
                           INNER JOIN CONTA CP ON CP.ID_CONTA = M.ID_PAGADOR
                           INNER JOIN USUARIO UP ON UP.ID_USUARIO = CP.ID_USUARIO
@@ -258,7 +267,8 @@ def buscar_movimentacoes():
                           INNER JOIN USUARIO UR ON UR.ID_USUARIO = CR.ID_USUARIO
                           LEFT JOIN COBRANCA COB ON COB.ID_COBRANCA = M.ID_COBRANCA
                           WHERE M.ID_PAGADOR = ? OR M.ID_RECEBEDOR = ?
-                          ORDER BY M.DATA_MOVIMENTACAO DESC""", (id_conta, id_conta))
+                          ORDER BY M.DATA_MOVIMENTACAO DESC""",
+                       (id_conta, id_conta))
 
         movimentacoes_banco = cursor.fetchall()
         movimentacoes = []
@@ -273,8 +283,15 @@ def buscar_movimentacoes():
             else:
                 origem = 'boleto'
 
-            nome_pagador = movimentacao[8] or movimentacao[9] or movimentacao[7] if movimentacao[10] == 1 else movimentacao[7]
-            nome_recebedor = movimentacao[12] or movimentacao[13] or movimentacao[11] if movimentacao[14] == 1 else movimentacao[11]
+            if movimentacao[10] == 1:
+                nome_pagador = movimentacao[8] or movimentacao[9] or movimentacao[7]
+            else:
+                nome_pagador = movimentacao[7]
+
+            if movimentacao[14] == 1:
+                nome_recebedor = movimentacao[12] or movimentacao[13] or movimentacao[11]
+            else:
+                nome_recebedor = movimentacao[11]
 
             nome_contraparte = nome_recebedor if tipo == 'saida' else nome_pagador
 
@@ -299,16 +316,15 @@ def buscar_movimentacoes():
         }), 200
 
     except Exception as e:
-        print("ERRO:", e)
+        print("ERRO BUSCAR MOVIMENTACOES:", e)
         return jsonify({'mensagem': 'Erro ao buscar movimentacoes'}), 500
 
     finally:
         if cursor:
             cursor.close()
-
 @app.route('/buscar_cobranca_codigo', methods=['POST'])
 def buscar_cobranca_codigo():
-    dados = request.get_json()
+    dados = request.get_json() or {}
     codigo_pagamento = dados.get('codigo_pagamento')
 
     id_conta = descobre_id_conta()
@@ -324,8 +340,9 @@ def buscar_cobranca_codigo():
     try:
         cursor = con.cursor()
 
-        cursor.execute("""SELECT COB.ID_COBRANCA, COB.ID_PAGADOR, COB.ID_RECEBEDOR, COB.VALOR, COB.DATA_VENCIMENTO, COB.CODIGO_PAGAMENTO, COB.STATUS, COB.TIPO_COBRANCA,
-                          U.NOME, U.NOME_FANTASIA, U.RAZAO_SOCIAL
+        cursor.execute("""SELECT COB.ID_COBRANCA, COB.ID_PAGADOR, COB.ID_RECEBEDOR, COB.VALOR, COB.DATA_VENCIMENTO,
+                                 COB.CODIGO_PAGAMENTO, COB.STATUS, COB.TIPO_COBRANCA,
+                                 U.NOME, C.NOME_FANTASIA, C.RAZAO_SOCIAL, C.TIPO_CONTA
                           FROM COBRANCA COB
                           INNER JOIN CONTA C ON C.ID_CONTA = COB.ID_RECEBEDOR
                           INNER JOIN USUARIO U ON U.ID_USUARIO = C.ID_USUARIO
@@ -337,7 +354,10 @@ def buscar_cobranca_codigo():
         if not cobranca:
             return jsonify({'mensagem': 'Cobranca nao encontrada'}), 404
 
-        nome_recebedor = cobranca[9] or cobranca[10] or cobranca[8]
+        if cobranca[11] == 1:
+            nome_recebedor = cobranca[9] or cobranca[10] or cobranca[8]
+        else:
+            nome_recebedor = cobranca[8]
 
         return jsonify({
             'id_cobranca': cobranca[0],
@@ -352,13 +372,12 @@ def buscar_cobranca_codigo():
         }), 200
 
     except Exception as e:
-        print("ERRO:", e)
+        print("ERRO BUSCAR COBRANCA:", e)
         return jsonify({'mensagem': 'Erro ao buscar cobranca'}), 500
 
     finally:
         if cursor:
             cursor.close()
-
 
 @app.route('/criar_cobranca_pix', methods=['POST'])
 def criar_cobranca_pix():
