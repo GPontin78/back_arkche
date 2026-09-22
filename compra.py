@@ -32,6 +32,7 @@ def adicionar_compra():
         id_conta_pagador = cartao[1]
         limite_cartao = cartao[2]
         data_compra = data_atual()
+        
         if tipo == 0: #debito
 
             cursor.execute("""SELECT CAST(COALESCE(SUM(M.VALOR), 0) AS DECIMAL(18,2))
