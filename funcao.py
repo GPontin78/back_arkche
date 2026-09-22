@@ -1,7 +1,6 @@
 import jwt
 import datetime
 import random
-import secrets
 import smtplib
 import os
 import bcrypt
@@ -556,11 +555,21 @@ def data_atual():
 
 
 def gerar_numero_cartao():
-    return '248' + ''.join(secrets.choice('0123456789') for _ in range(13))
+    return str(
+        random.randint(
+            1000000000000000,
+            9999999999999999
+        )
+    )
 
 
 def gerar_cvv():
-    return ''.join(secrets.choice('0123456789') for _ in range(3))
+    return str(
+        random.randint(
+            100,
+            999
+        )
+    )
 
 
 def gerar_vencimento():
