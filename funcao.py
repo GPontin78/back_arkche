@@ -307,3 +307,21 @@ def validar_chave_pix(chave_pix, chave, acao, id_conta=None):
 def data_atual():
     fuso_brasilia = datetime.timezone(datetime.timedelta(hours=-3))
     return datetime.datetime.now(fuso_brasilia).replace(tzinfo=None)
+
+
+def gerar_numero_cartao():
+    return str(random.randint(1000000000000000, 9999999999999999))
+
+def gerar_cvv():
+    return str(random.randint(100, 999))
+
+
+def gerar_vencimento():
+    data_atual = datetime.now()
+
+    mes = data_atual.month
+    ano = data_atual.year + 5
+
+    vencimento = datetime(ano, mes, 1)
+
+    return vencimento.date()
