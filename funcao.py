@@ -585,3 +585,26 @@ def gerar_vencimento():
     )
 
     return vencimento.date()
+
+
+def calcular_limite_cartao(id_cartao):
+    cursor = None
+
+    try:
+        cursor = con.cursor()
+
+        cursor.execute(
+            """SELECT CAST(COALESCE(SUM(FC.VALOR_PARCELA), 0) AS DECIMAL(18,2))
+               FROM FATURA_COMPRA FC
+               INNER JOIN COMPRA CM ON CM.ID_COMPRA = FC.ID_COMPRA
+               WHERE FC.STATUS = 0 AND CM.ID_CARTAO = ?""",
+            (id_cartao,)
+        )
+
+        resultado = cursor.fetchone()
+
+        return float(resultado[0] or 0)
+
+    finally:
+        if cursor:
+            cursor.close()
