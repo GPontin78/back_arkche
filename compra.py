@@ -9,9 +9,9 @@ def adicionar_compra():
     try:
         dados = request.get_json()
 
-        valor_compra = dados.get('valor_compra')
+        valor_compra = float(dados.get('valor_compra'))
         tipo = int(dados.get('tipo'))
-        qtd_parcela = dados.get('qtd_parcela')
+        qtd_parcela = int(dados.get('qtd_parcela') or 1)
         numero_cartao = dados.get('numero_cartao')
 
 
@@ -30,7 +30,7 @@ def adicionar_compra():
         cartao = cursor.fetchone()
         id_cartao_pagador = cartao[0]
         id_conta_pagador = cartao[1]
-        limite_cartao = cartao[2]
+        limite_cartao = float(cartao[2] or 0)
         data_compra = data_atual()
         
         if tipo == 0: #debito
@@ -64,8 +64,10 @@ def adicionar_compra():
         
         if tipo == 1: #credito
 
-            if limite_cartao < valor_compra:
-                return jsonify({'mensagem': 'Erro ao realizar compra, limite insuficiente'}), 500
+            limite_cartao_utilizado = calcular_limite_cartao(id_cartao_pagador)
+
+            if limite_cartao_utilizado + valor_compra > limite_cartao:
+                return jsonify({'mensagem': 'Erro ao realizar compra, limite insuficiente'}), 400
 
             valor_parcela = valor_compra / qtd_parcela
 
