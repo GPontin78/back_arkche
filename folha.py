@@ -1,7 +1,7 @@
 from flask import jsonify, request
 from main import app
 from banco import con
-from funcao import descobre_id_conta, descobre_id_usuario, usuario_pode_acessar_conta
+from funcao import descobre_id_conta, descobre_id_usuario, usuario_pode_acessar_conta, calcular_saldo, data_atual
 
 
 def contexto_folha_pj():
@@ -341,6 +341,106 @@ def buscar_folha(id_folha):
 
     except Exception as e:
         return jsonify({'mensagem': 'Erro ao buscar folha', 'erro': str(e)}), 500
+
+    finally:
+        if cursor:
+            cursor.close()
+@app.route('/pagar_folha', methods=['POST'])
+def pagar_folha():
+    id_conta, erro = contexto_folha_pj()
+
+    if erro:
+        return erro
+
+    dados = request.get_json()
+    id_folha = dados.get('id_folha')
+
+    if not id_folha:
+        return jsonify({'mensagem': 'Folha nao informada'}), 400
+
+    cursor = None
+
+    try:
+        cursor = con.cursor()
+
+        cursor.execute("SELECT STATUS FROM FOLHA_PAGAMENTO WHERE ID_FOLHA = ? AND ID_CONTA_EMPRESA = ?", (id_folha, id_conta))
+        folha = cursor.fetchone()
+
+        if not folha:
+            return jsonify({'mensagem': 'Folha nao encontrada'}), 404
+
+        if folha[0] == 3:
+            return jsonify({'mensagem': 'Esta folha ja foi paga'}), 400
+
+        if folha[0] == 2:
+            return jsonify({'mensagem': 'Esta folha esta sendo processada'}), 409
+
+        cursor.execute("UPDATE FOLHA_PAGAMENTO SET STATUS = 2 WHERE ID_FOLHA = ? AND ID_CONTA_EMPRESA = ? AND STATUS IN (0,1,4) RETURNING ID_FOLHA", (id_folha, id_conta))
+        bloqueio = cursor.fetchone()
+
+        if not bloqueio:
+            con.rollback()
+            return jsonify({'mensagem': 'Folha ja paga ou em processamento'}), 409
+
+        cursor.execute("SELECT ID_FOLHA_ITEM, ID_CONTA_DESTINO, VALOR FROM FOLHA_ITEM WHERE ID_FOLHA = ? AND STATUS = 1 AND ID_MOVIMENTACAO IS NULL", (id_folha,))
+        itens = cursor.fetchall()
+
+        if not itens:
+            con.rollback()
+            return jsonify({'mensagem': 'Nenhum pagamento disponivel nesta folha'}), 400
+
+        total = sum(float(item[2]) for item in itens)
+        saldo = calcular_saldo(id_conta)
+
+        if saldo < total:
+            con.rollback()
+
+            return jsonify({
+                'mensagem': 'Saldo insuficiente para pagar a folha',
+                'saldo': float(saldo),
+                'total_folha': total
+            }), 400
+
+        pagamentos = []
+
+        for item in itens:
+            id_item = item[0]
+            id_destino = item[1]
+            valor = item[2]
+            data_movimentacao = data_atual()
+
+            cursor.execute("INSERT INTO MOVIMENTACAO (ID_PAGADOR, ID_RECEBEDOR, VALOR, DATA_MOVIMENTACAO) VALUES (?, ?, ?, ?) RETURNING ID_MOVIMENTACAO", (id_conta, id_destino, valor, data_movimentacao))
+            id_movimentacao = cursor.fetchone()[0]
+
+            cursor.execute("UPDATE FOLHA_ITEM SET STATUS = 2, ID_MOVIMENTACAO = ?, DATA_PAGAMENTO = ? WHERE ID_FOLHA_ITEM = ? AND STATUS = 1 AND ID_MOVIMENTACAO IS NULL", (id_movimentacao, data_movimentacao, id_item))
+
+            pagamentos.append({
+                'id_item': id_item,
+                'id_movimentacao': id_movimentacao,
+                'valor': float(valor)
+            })
+
+        cursor.execute("SELECT COUNT(*) FROM FOLHA_ITEM WHERE ID_FOLHA = ? AND STATUS <> 2", (id_folha,))
+        pendentes = cursor.fetchone()[0]
+
+        status_folha = 3 if pendentes == 0 else 4
+
+        cursor.execute("UPDATE FOLHA_PAGAMENTO SET STATUS = ?, DATA_PAGAMENTO = CURRENT_TIMESTAMP WHERE ID_FOLHA = ?", (status_folha, id_folha))
+
+        con.commit()
+
+        return jsonify({
+            'mensagem': 'Folha processada com sucesso',
+            'id_folha': id_folha,
+            'total_pago': total,
+            'quantidade_pagamentos': len(pagamentos),
+            'status': status_folha,
+            'pagamentos': pagamentos
+        }), 200
+
+    except Exception as e:
+        con.rollback()
+        return jsonify({'mensagem': 'Erro ao pagar folha', 'erro': str(e)}), 500
 
     finally:
         if cursor:
