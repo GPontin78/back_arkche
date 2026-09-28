@@ -23,7 +23,7 @@ def adicionar_compra():
         
         cursor = con.cursor()
 
-        cursor.execute("""SELECT C.ID_CARTAO, C.ID_CONTA, c.limite
+        cursor.execute("""SELECT C.ID_CARTAO, C.ID_CONTA, c.limite, c.status
                             FROM CARTAO c 
                             INNER JOIN CONTA cn ON C.ID_CONTA = CN.ID_CONTA 
                             WHERE C.NUMERO_CARTAO = ?""", (numero_cartao,))
@@ -31,7 +31,11 @@ def adicionar_compra():
         id_cartao_pagador = cartao[0]
         id_conta_pagador = cartao[1]
         limite_cartao = float(cartao[2] or 0)
+        status_cartao = cartao[3]
         data_compra = data_atual()
+        
+        if status_cartao == 1:
+            return jsonify({'mensagem': 'Erro ao realizar compra, cartao bloqueado'}), 400
         
         if tipo == 0: #debito
 
