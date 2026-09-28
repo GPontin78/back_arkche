@@ -221,9 +221,10 @@ def criar_folha():
         cursor = con.cursor()
 
         cursor.execute("SELECT ID_FOLHA FROM FOLHA_PAGAMENTO WHERE ID_CONTA_EMPRESA = ? AND COMPETENCIA_MES = ? AND COMPETENCIA_ANO = ?", (id_conta, mes, ano))
+        folha_existente = cursor.fetchone()
 
-        if cursor.fetchone():
-            return jsonify({'mensagem': 'Ja existe uma folha para esta competencia'}), 409
+        if folha_existente:
+            return jsonify({'mensagem': 'Ja existe uma folha para esta competencia', 'id_folha': folha_existente[0]}), 409
 
         cursor.execute("SELECT ID_FUNCIONARIO, CPF, NOME, SALARIO FROM FUNCIONARIO WHERE ID_CONTA_EMPRESA = ? AND STATUS = 1 ORDER BY NOME", (id_conta,))
         funcionarios = cursor.fetchall()
@@ -264,6 +265,64 @@ def criar_folha():
     except Exception as e:
         con.rollback()
         return jsonify({'mensagem': 'Erro ao criar folha', 'erro': str(e)}), 500
+
+    finally:
+        if cursor:
+            cursor.close()
+
+
+@app.route('/listar_folhas', methods=['GET'])
+def listar_folhas():
+    id_conta, erro = contexto_folha_pj()
+
+    if erro:
+        return erro
+
+    cursor = None
+
+    try:
+        cursor = con.cursor()
+
+        cursor.execute("""SELECT FP.ID_FOLHA, FP.COMPETENCIA_MES, FP.COMPETENCIA_ANO, FP.STATUS, FP.DATA_CRIACAO, FP.DATA_PAGAMENTO,
+                                 CAST(COALESCE(SUM(FI.VALOR), 0) AS DECIMAL(18,2)),
+                                 CAST(COALESCE(SUM(CASE WHEN FI.STATUS = 2 THEN FI.VALOR ELSE 0 END), 0) AS DECIMAL(18,2)),
+                                 CAST(COALESCE(SUM(CASE WHEN FI.STATUS = 1 THEN FI.VALOR ELSE 0 END), 0) AS DECIMAL(18,2)),
+                                 CAST(COALESCE(SUM(CASE WHEN FI.STATUS = 0 THEN FI.VALOR ELSE 0 END), 0) AS DECIMAL(18,2)),
+                                 COUNT(FI.ID_FOLHA_ITEM),
+                                 SUM(CASE WHEN FI.STATUS = 2 THEN 1 ELSE 0 END),
+                                 SUM(CASE WHEN FI.STATUS = 1 THEN 1 ELSE 0 END),
+                                 SUM(CASE WHEN FI.STATUS = 0 THEN 1 ELSE 0 END)
+                          FROM FOLHA_PAGAMENTO FP
+                          LEFT JOIN FOLHA_ITEM FI ON FI.ID_FOLHA = FP.ID_FOLHA
+                          WHERE FP.ID_CONTA_EMPRESA = ?
+                          GROUP BY FP.ID_FOLHA, FP.COMPETENCIA_MES, FP.COMPETENCIA_ANO, FP.STATUS, FP.DATA_CRIACAO, FP.DATA_PAGAMENTO
+                          ORDER BY FP.COMPETENCIA_ANO DESC, FP.COMPETENCIA_MES DESC, FP.ID_FOLHA DESC""", (id_conta,))
+
+        dados = cursor.fetchall()
+        folhas = []
+
+        for folha in dados:
+            folhas.append({
+                'id_folha': folha[0],
+                'mes': folha[1],
+                'ano': folha[2],
+                'status': folha[3],
+                'data_criacao': str(folha[4]) if folha[4] else None,
+                'data_pagamento': str(folha[5]) if folha[5] else None,
+                'total': float(folha[6]),
+                'total_pago': float(folha[7]),
+                'total_valido': float(folha[8]),
+                'total_pendente': float(folha[9]),
+                'quantidade_funcionarios': folha[10],
+                'quantidade_pagos': folha[11] or 0,
+                'quantidade_validos': folha[12] or 0,
+                'quantidade_pendentes': folha[13] or 0
+            })
+
+        return jsonify({'folhas': folhas, 'total': len(folhas)}), 200
+
+    except Exception as e:
+        return jsonify({'mensagem': 'Erro ao listar folhas', 'erro': str(e)}), 500
 
     finally:
         if cursor:
