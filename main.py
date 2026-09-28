@@ -20,6 +20,7 @@ import compra
 import acesso
 import folha
 import folha_csv
+import maquininha
 
 
 if __name__ == '__main__':
