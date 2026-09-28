@@ -18,6 +18,7 @@ import api
 import cartao
 import compra 
 import acesso
+import folha
 
 
 if __name__ == '__main__':
