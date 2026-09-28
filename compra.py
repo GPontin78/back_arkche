@@ -92,11 +92,3 @@ def adicionar_compra():
         return jsonify({'mensagem': 'Erro ao realizar compra','erro': str(e)}), 500
 
 
-
-
-        
-
-
-
-
-        

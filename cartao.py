@@ -125,3 +125,56 @@ def adicionar_cartao():
     finally:
         if 'cursor' in locals() and cursor:
             cursor.close()
+
+
+@app.route('/bloquear_cartao', methods=['PUT'])
+def bloquear_cartao():
+    try:
+        id_conta = descobre_id_conta()
+
+        if id_conta is None:
+            return jsonify({'mensagem': 'Usuario nao logado'}), 403
+
+        cursor = con.cursor()
+
+        cursor.execute("""SELECT ID_CARTAO, STATUS
+                          FROM CARTAO
+                          WHERE ID_CONTA = ?""", (id_conta,))
+
+        cartao = cursor.fetchone()
+
+        if not cartao:
+            return jsonify({'mensagem': 'Cartao nao encontrado'}), 404
+
+        id_cartao = cartao[0]
+        status = cartao[1]
+
+        if status == 0:
+            status = 1
+
+        else:
+            status = 0
+
+        cursor.execute("""UPDATE CARTAO
+                          SET STATUS = ?
+                          WHERE ID_CARTAO = ?""",
+                       (status, id_cartao))
+
+        con.commit()
+
+        return jsonify({
+            'mensagem': 'Status do cartao alterado com sucesso',
+            'status': status
+        }), 200
+
+    except Exception as e:
+        con.rollback()
+
+        return jsonify({
+            'mensagem': 'Erro ao alterar status do cartao',
+            'erro': str(e)
+        }), 500
+
+    finally:
+        if 'cursor' in locals() and cursor:
+            cursor.close()
