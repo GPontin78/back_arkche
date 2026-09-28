@@ -4,9 +4,7 @@ from banco import con
 from funcao import descobre_id_conta, verificar_pin, calcular_saldo, calcular_limite_cartao, data_atual
 
 CARTOES_FISICOS = {
-    # Depois vamos preencher:
-    # '04A17B92': 12,
-    # 'B39102AF': 18,
+    '0D94A4A5': 4,  # Cartao da Lais
 }
 
 def normalizar_uid(uid):
