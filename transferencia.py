@@ -95,7 +95,6 @@ def baixar_cobranca():
             return jsonify({'mensagem': 'A conta recebedora nao pode pagar o proprio boleto'}), 400
 
         saldo = calcular_saldo(id_conta)
-
         if saldo < valor:
             return jsonify({'mensagem': 'Saldo insuficiente para pagar a cobranca'}), 400
 
