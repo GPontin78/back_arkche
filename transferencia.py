@@ -259,7 +259,16 @@ def buscar_movimentacoes():
         cursor.execute("""SELECT M.ID_MOVIMENTACAO, M.ID_PAGADOR, M.ID_RECEBEDOR, M.VALOR, M.DATA_MOVIMENTACAO, M.ID_COBRANCA, COB.TIPO_COBRANCA,
                                  UP.NOME, CP.NOME_FANTASIA, CP.RAZAO_SOCIAL, CP.TIPO_CONTA,
                                  UR.NOME, CR.NOME_FANTASIA, CR.RAZAO_SOCIAL, CR.TIPO_CONTA,
-                                 FI.ID_FOLHA
+                                 FI.ID_FOLHA,
+                                 CASE WHEN EXISTS (
+                                     SELECT 1
+                                     FROM COMPRA CMP
+                                     INNER JOIN CARTAO CAT ON CAT.ID_CARTAO = CMP.ID_CARTAO
+                                     WHERE CAT.ID_CONTA = M.ID_PAGADOR
+                                       AND CMP.VALOR_COMPRA = M.VALOR
+                                       AND CMP.DATA_COMPRA = M.DATA_MOVIMENTACAO
+                                       AND CMP.TIPO = 0
+                                 ) THEN 1 ELSE 0 END AS COMPRA_CARTAO
                           FROM MOVIMENTACAO M
                           INNER JOIN CONTA CP ON CP.ID_CONTA = M.ID_PAGADOR
                           INNER JOIN USUARIO UP ON UP.ID_USUARIO = CP.ID_USUARIO
@@ -279,6 +288,8 @@ def buscar_movimentacoes():
 
             if movimentacao[15] is not None:
                 origem = 'folha_pagamento'
+            elif movimentacao[16] == 1:
+                origem = 'compra_cartao'
             elif movimentacao[5] is None:
                 origem = 'pix'
             elif movimentacao[6] == 1:
