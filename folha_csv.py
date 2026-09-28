@@ -1,5 +1,6 @@
 import csv
 import io
+import unicodedata
 from flask import jsonify, request
 from main import app
 from banco import con
@@ -8,6 +9,12 @@ from folha import contexto_folha_pj
 
 def somente_numeros(valor):
     return ''.join(numero for numero in str(valor or '') if numero.isdigit())
+
+
+def normalizar_cabecalho(valor):
+    texto = unicodedata.normalize('NFKD', str(valor or '').strip().lower())
+    texto = ''.join(caractere for caractere in texto if not unicodedata.combining(caractere))
+    return ' '.join(texto.replace('_', ' ').split())
 
 
 def converter_salario(valor):
@@ -42,23 +49,37 @@ def preview_csv_funcionarios():
         if not conteudo.strip():
             return jsonify({'mensagem': 'Arquivo CSV vazio'}), 400
 
+        linhas = conteudo.splitlines()
+
+        if linhas and linhas[0].strip().lower().startswith('sep='):
+            separador_declarado = linhas[0].strip()[4:]
+            conteudo = '\n'.join(linhas[1:])
+        else:
+            separador_declarado = None
+
         amostra = conteudo[:2048]
 
-        try:
-            separador = csv.Sniffer().sniff(amostra, delimiters=';,').delimiter
-        except Exception:
-            separador = ','
+        if separador_declarado in (';', ','):
+            separador = separador_declarado
+        else:
+            try:
+                separador = csv.Sniffer().sniff(amostra, delimiters=';,').delimiter
+            except Exception:
+                separador = ','
 
         leitor = csv.DictReader(io.StringIO(conteudo), delimiter=separador)
 
         if not leitor.fieldnames:
             return jsonify({'mensagem': 'Cabecalho do CSV nao encontrado'}), 400
 
-        campos = {str(campo).strip().lower(): campo for campo in leitor.fieldnames}
+        campos_normalizados = {normalizar_cabecalho(campo): campo for campo in leitor.fieldnames}
+        campo_cpf = campos_normalizados.get('cpf')
+        campo_nome = campos_normalizados.get('nome') or campos_normalizados.get('nome completo')
+        campo_salario = campos_normalizados.get('salario') or campos_normalizados.get('salario mensal') or campos_normalizados.get('salario mensal (r$)')
 
-        if 'cpf' not in campos or 'nome' not in campos or 'salario' not in campos:
+        if not campo_cpf or not campo_nome or not campo_salario:
             return jsonify({
-                'mensagem': 'O CSV precisa possuir as colunas cpf, nome e salario'
+                'mensagem': 'O CSV precisa possuir as colunas CPF, Nome e Salario'
             }), 400
 
         cursor = con.cursor()
@@ -70,9 +91,9 @@ def preview_csv_funcionarios():
         erros = 0
 
         for numero_linha, linha in enumerate(leitor, start=2):
-            cpf = somente_numeros(linha.get(campos['cpf']))
-            nome = str(linha.get(campos['nome']) or '').strip()
-            salario_original = linha.get(campos['salario'])
+            cpf = somente_numeros(linha.get(campo_cpf))
+            nome = str(linha.get(campo_nome) or '').strip()
+            salario_original = linha.get(campo_salario)
 
             item = {
                 'linha': numero_linha,
@@ -201,12 +222,32 @@ def importar_csv_funcionarios():
         atualizados = 0
         ignorados = 0
         erros = []
+        cpfs_importacao = set()
 
         for indice, item in enumerate(itens):
             cpf = somente_numeros(item.get('cpf'))
             nome = str(item.get('nome') or '').strip()
             salario = item.get('salario')
             acao = item.get('acao')
+            linha_item = item.get('linha', indice + 1)
+
+            if acao not in ('criar', 'atualizar', 'ignorar'):
+                erros.append({
+                    'linha': linha_item,
+                    'cpf': cpf,
+                    'erro': 'Acao invalida'
+                })
+                continue
+
+            if cpf in cpfs_importacao:
+                erros.append({
+                    'linha': linha_item,
+                    'cpf': cpf,
+                    'erro': 'CPF duplicado na importacao'
+                })
+                continue
+
+            cpfs_importacao.add(cpf)
 
             if acao == 'ignorar':
                 ignorados += 1
@@ -214,7 +255,7 @@ def importar_csv_funcionarios():
 
             if len(cpf) != 11 or not nome:
                 erros.append({
-                    'linha': item.get('linha', indice + 1),
+                    'linha': linha_item,
                     'cpf': cpf,
                     'erro': 'Dados invalidos'
                 })
@@ -228,7 +269,7 @@ def importar_csv_funcionarios():
 
             except Exception:
                 erros.append({
-                    'linha': item.get('linha', indice + 1),
+                    'linha': linha_item,
                     'cpf': cpf,
                     'erro': 'Salario invalido'
                 })
