@@ -259,13 +259,15 @@ def buscar_movimentacoes():
 
         cursor.execute("""SELECT M.ID_MOVIMENTACAO, M.ID_PAGADOR, M.ID_RECEBEDOR, M.VALOR, M.DATA_MOVIMENTACAO, M.ID_COBRANCA, COB.TIPO_COBRANCA,
                                  UP.NOME, CP.NOME_FANTASIA, CP.RAZAO_SOCIAL, CP.TIPO_CONTA,
-                                 UR.NOME, CR.NOME_FANTASIA, CR.RAZAO_SOCIAL, CR.TIPO_CONTA
+                                 UR.NOME, CR.NOME_FANTASIA, CR.RAZAO_SOCIAL, CR.TIPO_CONTA,
+                                 FI.ID_FOLHA
                           FROM MOVIMENTACAO M
                           INNER JOIN CONTA CP ON CP.ID_CONTA = M.ID_PAGADOR
                           INNER JOIN USUARIO UP ON UP.ID_USUARIO = CP.ID_USUARIO
                           INNER JOIN CONTA CR ON CR.ID_CONTA = M.ID_RECEBEDOR
                           INNER JOIN USUARIO UR ON UR.ID_USUARIO = CR.ID_USUARIO
                           LEFT JOIN COBRANCA COB ON COB.ID_COBRANCA = M.ID_COBRANCA
+                          LEFT JOIN FOLHA_ITEM FI ON FI.ID_MOVIMENTACAO = M.ID_MOVIMENTACAO
                           WHERE M.ID_PAGADOR = ? OR M.ID_RECEBEDOR = ?
                           ORDER BY M.DATA_MOVIMENTACAO DESC""",
                        (id_conta, id_conta))
@@ -276,7 +278,9 @@ def buscar_movimentacoes():
         for movimentacao in movimentacoes_banco:
             tipo = 'saida' if movimentacao[1] == id_conta else 'entrada'
 
-            if movimentacao[5] is None:
+            if movimentacao[15] is not None:
+                origem = 'folha_pagamento'
+            elif movimentacao[5] is None:
                 origem = 'pix'
             elif movimentacao[6] == 1:
                 origem = 'pix_qrcode'
@@ -303,6 +307,7 @@ def buscar_movimentacoes():
                 'data_movimentacao': str(movimentacao[4]),
                 'id_cobranca': movimentacao[5],
                 'tipo_cobranca': movimentacao[6],
+                'id_folha': movimentacao[15],
                 'tipo': tipo,
                 'origem': origem,
                 'nome_pagador': nome_pagador,

@@ -295,8 +295,10 @@ def buscar_folha(id_folha):
         total = 0
         total_valido = 0
         total_pendente = 0
+        total_pago = 0
         quantidade_validos = 0
         quantidade_pendentes = 0
+        quantidade_pagos = 0
 
         for item in dados:
             valor = float(item[5])
@@ -309,6 +311,10 @@ def buscar_folha(id_folha):
             if item[6] == 0:
                 total_pendente += valor
                 quantidade_pendentes += 1
+
+            if item[6] == 2:
+                total_pago += valor
+                quantidade_pagos += 1
 
             itens.append({
                 'id_item': item[0],
@@ -333,9 +339,11 @@ def buscar_folha(id_folha):
             'total': total,
             'total_valido': total_valido,
             'total_pendente': total_pendente,
+            'total_pago': total_pago,
             'quantidade_funcionarios': len(itens),
             'quantidade_validos': quantidade_validos,
             'quantidade_pendentes': quantidade_pendentes,
+            'quantidade_pagos': quantidade_pagos,
             'itens': itens
         }), 200
 
@@ -345,6 +353,79 @@ def buscar_folha(id_folha):
     finally:
         if cursor:
             cursor.close()
+@app.route('/revalidar_folha', methods=['POST'])
+def revalidar_folha():
+    id_conta, erro = contexto_folha_pj()
+
+    if erro:
+        return erro
+
+    dados = request.get_json()
+    id_folha = dados.get('id_folha')
+
+    if not id_folha:
+        return jsonify({'mensagem': 'Folha nao informada'}), 400
+
+    cursor = None
+
+    try:
+        cursor = con.cursor()
+
+        cursor.execute("SELECT STATUS FROM FOLHA_PAGAMENTO WHERE ID_FOLHA = ? AND ID_CONTA_EMPRESA = ?", (id_folha, id_conta))
+        folha = cursor.fetchone()
+
+        if not folha:
+            return jsonify({'mensagem': 'Folha nao encontrada'}), 404
+
+        if folha[0] == 2:
+            return jsonify({'mensagem': 'Folha esta sendo processada'}), 409
+
+        cursor.execute("SELECT ID_FOLHA_ITEM, ID_FUNCIONARIO, CPF FROM FOLHA_ITEM WHERE ID_FOLHA = ? AND STATUS = 0 AND ID_MOVIMENTACAO IS NULL", (id_folha,))
+        itens = cursor.fetchall()
+
+        revalidados = 0
+
+        for item in itens:
+            id_item = item[0]
+            id_funcionario = item[1]
+            cpf = item[2]
+
+            cursor.execute("""SELECT U.ID_USUARIO, C.ID_CONTA FROM USUARIO U INNER JOIN CONTA C ON C.ID_USUARIO = U.ID_USUARIO WHERE U.CPF = ? AND C.TIPO_CONTA = 0 ORDER BY C.ID_CONTA ROWS 1""", (cpf,))
+            conta = cursor.fetchone()
+
+            if conta:
+                id_usuario = conta[0]
+                id_conta_destino = conta[1]
+
+                cursor.execute("UPDATE FOLHA_ITEM SET ID_CONTA_DESTINO = ?, STATUS = 1, ERRO = NULL WHERE ID_FOLHA_ITEM = ?", (id_conta_destino, id_item))
+                cursor.execute("UPDATE FUNCIONARIO SET ID_USUARIO = ? WHERE ID_FUNCIONARIO = ? AND ID_CONTA_EMPRESA = ?", (id_usuario, id_funcionario, id_conta))
+
+                revalidados += 1
+
+        cursor.execute("SELECT COUNT(*) FROM FOLHA_ITEM WHERE ID_FOLHA = ? AND STATUS = 0", (id_folha,))
+        pendentes = cursor.fetchone()[0]
+
+        if pendentes == 0 and folha[0] in (0, 1):
+            cursor.execute("UPDATE FOLHA_PAGAMENTO SET STATUS = 1 WHERE ID_FOLHA = ?", (id_folha,))
+
+        con.commit()
+
+        return jsonify({
+            'mensagem': 'Folha revalidada com sucesso',
+            'id_folha': id_folha,
+            'revalidados': revalidados,
+            'pendentes': pendentes
+        }), 200
+
+    except Exception as e:
+        con.rollback()
+        return jsonify({'mensagem': 'Erro ao revalidar folha', 'erro': str(e)}), 500
+
+    finally:
+        if cursor:
+            cursor.close()
+
+
 @app.route('/pagar_folha', methods=['POST'])
 def pagar_folha():
     id_conta, erro = contexto_folha_pj()
