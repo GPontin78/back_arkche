@@ -271,6 +271,137 @@ def criar_folha():
             cursor.close()
 
 
+@app.route('/editar_folha', methods=['PUT'])
+def editar_folha():
+    id_conta, erro = contexto_folha_pj()
+
+    if erro:
+        return erro
+
+    dados = request.get_json() or {}
+    id_folha = dados.get('id_folha')
+    mes = dados.get('mes')
+    ano = dados.get('ano')
+
+    if not id_folha or not mes or not ano:
+        return jsonify({'mensagem': 'Folha, mes e ano sao obrigatorios'}), 400
+
+    try:
+        mes = int(mes)
+        ano = int(ano)
+    except Exception:
+        return jsonify({'mensagem': 'Mes ou ano invalido'}), 400
+
+    if mes < 1 or mes > 12 or ano < 2000 or ano > 2200:
+        return jsonify({'mensagem': 'Competencia invalida'}), 400
+
+    cursor = None
+
+    try:
+        cursor = con.cursor()
+
+        cursor.execute("SELECT STATUS FROM FOLHA_PAGAMENTO WHERE ID_FOLHA = ? AND ID_CONTA_EMPRESA = ?", (id_folha, id_conta))
+        folha = cursor.fetchone()
+
+        if not folha:
+            return jsonify({'mensagem': 'Folha nao encontrada'}), 404
+
+        if folha[0] != 0:
+            return jsonify({'mensagem': 'Somente folhas em rascunho podem ser editadas'}), 409
+
+        cursor.execute("SELECT COUNT(*) FROM FOLHA_ITEM WHERE ID_FOLHA = ? AND ID_MOVIMENTACAO IS NOT NULL", (id_folha,))
+        if cursor.fetchone()[0] > 0:
+            return jsonify({'mensagem': 'Esta folha possui movimentacoes e nao pode ser editada'}), 409
+
+        cursor.execute("SELECT ID_FOLHA FROM FOLHA_PAGAMENTO WHERE ID_CONTA_EMPRESA = ? AND COMPETENCIA_MES = ? AND COMPETENCIA_ANO = ? AND ID_FOLHA <> ?", (id_conta, mes, ano, id_folha))
+        existente = cursor.fetchone()
+
+        if existente:
+            return jsonify({'mensagem': 'Ja existe uma folha para esta competencia', 'id_folha': existente[0]}), 409
+
+        cursor.execute("SELECT ID_FUNCIONARIO, CPF, NOME, SALARIO FROM FUNCIONARIO WHERE ID_CONTA_EMPRESA = ? AND STATUS = 1 ORDER BY NOME", (id_conta,))
+        funcionarios = cursor.fetchall()
+
+        if not funcionarios:
+            return jsonify({'mensagem': 'Nenhum funcionario ativo cadastrado'}), 400
+
+        cursor.execute("DELETE FROM FOLHA_ITEM WHERE ID_FOLHA = ?", (id_folha,))
+        cursor.execute("UPDATE FOLHA_PAGAMENTO SET COMPETENCIA_MES = ?, COMPETENCIA_ANO = ?, STATUS = 0, DATA_PAGAMENTO = NULL WHERE ID_FOLHA = ? AND ID_CONTA_EMPRESA = ?", (mes, ano, id_folha, id_conta))
+
+        for funcionario in funcionarios:
+            id_funcionario = funcionario[0]
+            cpf = funcionario[1]
+            nome = funcionario[2]
+            salario = funcionario[3]
+
+            cursor.execute("""SELECT C.ID_CONTA FROM USUARIO U INNER JOIN CONTA C ON C.ID_USUARIO = U.ID_USUARIO WHERE U.CPF = ? AND C.TIPO_CONTA = 0 ORDER BY C.ID_CONTA ROWS 1""", (cpf,))
+            conta_pf = cursor.fetchone()
+
+            if conta_pf:
+                id_conta_destino = conta_pf[0]
+                status = 1
+                erro_item = None
+            else:
+                id_conta_destino = None
+                status = 0
+                erro_item = 'Conta PF Arkhe nao encontrada'
+
+            cursor.execute("INSERT INTO FOLHA_ITEM (ID_FOLHA, ID_FUNCIONARIO, ID_CONTA_DESTINO, CPF, NOME, VALOR, STATUS, ERRO) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (id_folha, id_funcionario, id_conta_destino, cpf, nome, salario, status, erro_item))
+
+        con.commit()
+
+        return jsonify({'mensagem': 'Rascunho atualizado com sucesso', 'id_folha': id_folha}), 200
+
+    except Exception as e:
+        con.rollback()
+        return jsonify({'mensagem': 'Erro ao editar folha', 'erro': str(e)}), 500
+
+    finally:
+        if cursor:
+            cursor.close()
+
+
+@app.route('/folha/<int:id_folha>', methods=['DELETE'])
+def excluir_folha(id_folha):
+    id_conta, erro = contexto_folha_pj()
+
+    if erro:
+        return erro
+
+    cursor = None
+
+    try:
+        cursor = con.cursor()
+
+        cursor.execute("SELECT STATUS FROM FOLHA_PAGAMENTO WHERE ID_FOLHA = ? AND ID_CONTA_EMPRESA = ?", (id_folha, id_conta))
+        folha = cursor.fetchone()
+
+        if not folha:
+            return jsonify({'mensagem': 'Folha nao encontrada'}), 404
+
+        if folha[0] != 0:
+            return jsonify({'mensagem': 'Somente folhas em rascunho podem ser excluidas'}), 409
+
+        cursor.execute("SELECT COUNT(*) FROM FOLHA_ITEM WHERE ID_FOLHA = ? AND ID_MOVIMENTACAO IS NOT NULL", (id_folha,))
+        if cursor.fetchone()[0] > 0:
+            return jsonify({'mensagem': 'Esta folha possui movimentacoes e nao pode ser excluida'}), 409
+
+        cursor.execute("DELETE FROM FOLHA_ITEM WHERE ID_FOLHA = ?", (id_folha,))
+        cursor.execute("DELETE FROM FOLHA_PAGAMENTO WHERE ID_FOLHA = ? AND ID_CONTA_EMPRESA = ?", (id_folha, id_conta))
+
+        con.commit()
+
+        return jsonify({'mensagem': 'Rascunho excluido com sucesso', 'id_folha': id_folha}), 200
+
+    except Exception as e:
+        con.rollback()
+        return jsonify({'mensagem': 'Erro ao excluir folha', 'erro': str(e)}), 500
+
+    finally:
+        if cursor:
+            cursor.close()
+
+
 @app.route('/listar_folhas', methods=['GET'])
 def listar_folhas():
     id_conta, erro = contexto_folha_pj()
