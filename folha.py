@@ -200,3 +200,148 @@ def alterar_status_funcionario():
     finally:
         if cursor:
             cursor.close()
+
+@app.route('/criar_folha', methods=['POST'])
+def criar_folha():
+    id_conta, erro = contexto_folha_pj()
+
+    if erro:
+        return erro
+
+    dados = request.get_json()
+    mes = dados.get('mes')
+    ano = dados.get('ano')
+
+    if not mes or not ano:
+        return jsonify({'mensagem': 'Mes e ano nao informados'}), 400
+
+    cursor = None
+
+    try:
+        cursor = con.cursor()
+
+        cursor.execute("SELECT ID_FOLHA FROM FOLHA_PAGAMENTO WHERE ID_CONTA_EMPRESA = ? AND COMPETENCIA_MES = ? AND COMPETENCIA_ANO = ?", (id_conta, mes, ano))
+
+        if cursor.fetchone():
+            return jsonify({'mensagem': 'Ja existe uma folha para esta competencia'}), 409
+
+        cursor.execute("SELECT ID_FUNCIONARIO, CPF, NOME, SALARIO FROM FUNCIONARIO WHERE ID_CONTA_EMPRESA = ? AND STATUS = 1 ORDER BY NOME", (id_conta,))
+        funcionarios = cursor.fetchall()
+
+        if not funcionarios:
+            return jsonify({'mensagem': 'Nenhum funcionario ativo cadastrado'}), 400
+
+        cursor.execute("INSERT INTO FOLHA_PAGAMENTO (ID_CONTA_EMPRESA, COMPETENCIA_MES, COMPETENCIA_ANO, STATUS) VALUES (?, ?, ?, 0) RETURNING ID_FOLHA", (id_conta, mes, ano))
+        id_folha = cursor.fetchone()[0]
+
+        for funcionario in funcionarios:
+            id_funcionario = funcionario[0]
+            cpf = funcionario[1]
+            nome = funcionario[2]
+            salario = funcionario[3]
+
+            cursor.execute("""SELECT C.ID_CONTA FROM USUARIO U INNER JOIN CONTA C ON C.ID_USUARIO = U.ID_USUARIO WHERE U.CPF = ? AND C.TIPO_CONTA = 0 ORDER BY C.ID_CONTA ROWS 1""", (cpf,))
+            conta_pf = cursor.fetchone()
+
+            if conta_pf:
+                id_conta_destino = conta_pf[0]
+                status = 1
+                erro_item = None
+            else:
+                id_conta_destino = None
+                status = 0
+                erro_item = 'Conta PF Arkhe nao encontrada'
+
+            cursor.execute("INSERT INTO FOLHA_ITEM (ID_FOLHA, ID_FUNCIONARIO, ID_CONTA_DESTINO, CPF, NOME, VALOR, STATUS, ERRO) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (id_folha, id_funcionario, id_conta_destino, cpf, nome, salario, status, erro_item))
+
+        con.commit()
+
+        return jsonify({
+            'mensagem': 'Folha criada com sucesso',
+            'id_folha': id_folha
+        }), 201
+
+    except Exception as e:
+        con.rollback()
+        return jsonify({'mensagem': 'Erro ao criar folha', 'erro': str(e)}), 500
+
+    finally:
+        if cursor:
+            cursor.close()
+
+
+@app.route('/folha/<int:id_folha>', methods=['GET'])
+def buscar_folha(id_folha):
+    id_conta, erro = contexto_folha_pj()
+
+    if erro:
+        return erro
+
+    cursor = None
+
+    try:
+        cursor = con.cursor()
+
+        cursor.execute("SELECT ID_FOLHA, COMPETENCIA_MES, COMPETENCIA_ANO, STATUS, DATA_CRIACAO, DATA_PAGAMENTO FROM FOLHA_PAGAMENTO WHERE ID_FOLHA = ? AND ID_CONTA_EMPRESA = ?", (id_folha, id_conta))
+        folha = cursor.fetchone()
+
+        if not folha:
+            return jsonify({'mensagem': 'Folha nao encontrada'}), 404
+
+        cursor.execute("SELECT ID_FOLHA_ITEM, ID_FUNCIONARIO, ID_CONTA_DESTINO, CPF, NOME, VALOR, STATUS, ERRO, ID_MOVIMENTACAO, DATA_PAGAMENTO FROM FOLHA_ITEM WHERE ID_FOLHA = ? ORDER BY NOME", (id_folha,))
+        dados = cursor.fetchall()
+
+        itens = []
+        total = 0
+        total_valido = 0
+        total_pendente = 0
+        quantidade_validos = 0
+        quantidade_pendentes = 0
+
+        for item in dados:
+            valor = float(item[5])
+            total += valor
+
+            if item[6] == 1:
+                total_valido += valor
+                quantidade_validos += 1
+
+            if item[6] == 0:
+                total_pendente += valor
+                quantidade_pendentes += 1
+
+            itens.append({
+                'id_item': item[0],
+                'id_funcionario': item[1],
+                'id_conta_destino': item[2],
+                'cpf': item[3],
+                'nome': item[4],
+                'valor': valor,
+                'status': item[6],
+                'erro': item[7],
+                'id_movimentacao': item[8],
+                'data_pagamento': str(item[9]) if item[9] else None
+            })
+
+        return jsonify({
+            'id_folha': folha[0],
+            'mes': folha[1],
+            'ano': folha[2],
+            'status': folha[3],
+            'data_criacao': str(folha[4]),
+            'data_pagamento': str(folha[5]) if folha[5] else None,
+            'total': total,
+            'total_valido': total_valido,
+            'total_pendente': total_pendente,
+            'quantidade_funcionarios': len(itens),
+            'quantidade_validos': quantidade_validos,
+            'quantidade_pendentes': quantidade_pendentes,
+            'itens': itens
+        }), 200
+
+    except Exception as e:
+        return jsonify({'mensagem': 'Erro ao buscar folha', 'erro': str(e)}), 500
+
+    finally:
+        if cursor:
+            cursor.close()
