@@ -7,3 +7,4 @@ bcrypt==5.0.0
 gunicorn
 reportlab==4.4.3
 requests
+APScheduler
