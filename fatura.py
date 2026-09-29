@@ -1,8 +1,15 @@
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from main import app
 from banco import con
+
+FUSO_BRASIL = ZoneInfo('America/Sao_Paulo')
+
+
+def hoje_brasil():
+    return datetime.now(FUSO_BRASIL).date()
 
 
 def data_vencimento_fatura(hoje, dia_fechamento, dia_vencimento):
@@ -42,7 +49,7 @@ def fechar_fatura(id_cartao):
         dia_vencimento = cartao[1]
         id_conta = cartao[2]
 
-        hoje = date.today()
+        hoje = hoje_brasil()
 
         data_fechamento = date(
             hoje.year,
@@ -149,7 +156,7 @@ def fechar_fatura(id_cartao):
 
 
 def verificar_fechamento():
-    hoje = date.today()
+    hoje = hoje_brasil()
     cursor = None
 
     try:
@@ -177,7 +184,7 @@ def executar_com_contexto(funcao):
         funcao()
 
 
-scheduler = BackgroundScheduler(timezone='America/Sao_Paulo')
+scheduler = BackgroundScheduler(timezone=FUSO_BRASIL)
 
 scheduler.add_job(
     lambda: executar_com_contexto(verificar_fechamento),
