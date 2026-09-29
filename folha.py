@@ -1,7 +1,34 @@
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from flask import jsonify, request
 from main import app
 from banco import con
 from funcao import descobre_id_conta, descobre_id_usuario, usuario_pode_acessar_conta, calcular_saldo, pode_debitar_saldo, data_atual, normalizar_cpf, validar_cpf
+
+
+def validar_dados_funcionario(cpf, nome, salario):
+    cpf = normalizar_cpf(cpf)
+    nome = str(nome or '').strip()
+    problemas = []
+
+    if not cpf:
+        problemas.append('CPF nao informado')
+    elif len(cpf) != 11:
+        problemas.append('CPF deve possuir 11 digitos')
+    elif not validar_cpf(cpf):
+        problemas.append('CPF invalido')
+
+    if not nome:
+        problemas.append('Nome nao informado')
+
+    try:
+        salario = Decimal(str(salario)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        if not salario.is_finite() or salario <= 0:
+            raise ValueError()
+    except (InvalidOperation, TypeError, ValueError):
+        salario = None
+        problemas.append('Salario invalido')
+
+    return cpf, nome, salario, problemas
 
 
 def contexto_folha_pj():
@@ -36,25 +63,14 @@ def adicionar_funcionario():
         return erro
 
     dados = request.get_json() or {}
-    cpf = normalizar_cpf(dados.get('cpf'))
-    nome = str(dados.get('nome') or '').strip()
-    salario = dados.get('salario')
+    cpf, nome, salario, problemas = validar_dados_funcionario(
+        dados.get('cpf'),
+        dados.get('nome'),
+        dados.get('salario')
+    )
 
-    if not cpf:
-        return jsonify({'mensagem': 'CPF nao informado'}), 400
-
-    if not validar_cpf(cpf):
-        return jsonify({'mensagem': 'CPF invalido'}), 400
-
-    if not nome:
-        return jsonify({'mensagem': 'Nome nao informado'}), 400
-
-    try:
-        salario = float(salario)
-        if salario <= 0:
-            raise ValueError()
-    except (TypeError, ValueError):
-        return jsonify({'mensagem': 'Salario invalido'}), 400
+    if problemas:
+        return jsonify({'mensagem': '; '.join(problemas), 'erros': problemas}), 400
 
     cursor = None
 
@@ -114,16 +130,24 @@ def listar_funcionarios():
         funcionarios = []
 
         for funcionario in dados:
+            cpf, nome, salario, problemas = validar_dados_funcionario(
+                funcionario[2],
+                funcionario[3],
+                funcionario[4]
+            )
+
             funcionarios.append({
                 'id_funcionario': funcionario[0],
                 'id_usuario': funcionario[1],
-                'cpf': funcionario[2],
-                'nome': funcionario[3],
-                'salario': float(funcionario[4]),
+                'cpf': cpf,
+                'nome': nome,
+                'salario': float(salario) if salario is not None else None,
                 'status': funcionario[5],
-                'data_cadastro': str(funcionario[6]),
+                'data_cadastro': str(funcionario[6]) if funcionario[6] else None,
                 'id_conta_pf': funcionario[7],
-                'possui_conta_arkhe': funcionario[7] is not None
+                'possui_conta_arkhe': funcionario[7] is not None,
+                'cadastro_valido': len(problemas) == 0,
+                'erros_cadastro': problemas
             })
 
         return jsonify(funcionarios), 200
@@ -143,29 +167,65 @@ def editar_funcionario():
     if erro:
         return erro
 
-    dados = request.get_json()
+    dados = request.get_json() or {}
     id_funcionario = dados.get('id_funcionario')
-    nome = dados.get('nome')
-    salario = dados.get('salario')
 
-    if not id_funcionario or not nome or salario is None:
-        return jsonify({'mensagem': 'Dados incompletos'}), 400
+    if not id_funcionario:
+        return jsonify({'mensagem': 'Funcionario nao informado'}), 400
 
     cursor = None
 
     try:
         cursor = con.cursor()
 
-        cursor.execute("SELECT ID_FUNCIONARIO FROM FUNCIONARIO WHERE ID_FUNCIONARIO = ? AND ID_CONTA_EMPRESA = ?", (id_funcionario, id_conta))
+        cursor.execute(
+            "SELECT CPF FROM FUNCIONARIO WHERE ID_FUNCIONARIO = ? AND ID_CONTA_EMPRESA = ?",
+            (id_funcionario, id_conta)
+        )
+        atual = cursor.fetchone()
 
-        if not cursor.fetchone():
+        if not atual:
             return jsonify({'mensagem': 'Funcionario nao encontrado'}), 404
 
-        cursor.execute("UPDATE FUNCIONARIO SET NOME = ?, SALARIO = ? WHERE ID_FUNCIONARIO = ? AND ID_CONTA_EMPRESA = ?", (nome, salario, id_funcionario, id_conta))
+        cpf, nome, salario, problemas = validar_dados_funcionario(
+            dados.get('cpf', atual[0]),
+            dados.get('nome'),
+            dados.get('salario')
+        )
+
+        if problemas:
+            return jsonify({'mensagem': '; '.join(problemas), 'erros': problemas}), 400
+
+        cursor.execute(
+            "SELECT ID_FUNCIONARIO FROM FUNCIONARIO WHERE ID_CONTA_EMPRESA = ? AND CPF = ? AND ID_FUNCIONARIO <> ?",
+            (id_conta, cpf, id_funcionario)
+        )
+
+        if cursor.fetchone():
+            return jsonify({'mensagem': 'CPF ja cadastrado para outro funcionario desta empresa'}), 409
+
+        cursor.execute("SELECT ID_USUARIO FROM USUARIO WHERE CPF = ?", (cpf,))
+        usuario = cursor.fetchone()
+        id_usuario = usuario[0] if usuario else None
+
+        cursor.execute(
+            """UPDATE FUNCIONARIO
+               SET CPF = ?, NOME = ?, SALARIO = ?, ID_USUARIO = ?
+               WHERE ID_FUNCIONARIO = ? AND ID_CONTA_EMPRESA = ?""",
+            (cpf, nome, salario, id_usuario, id_funcionario, id_conta)
+        )
 
         con.commit()
 
-        return jsonify({'mensagem': 'Funcionario atualizado com sucesso'}), 200
+        return jsonify({
+            'mensagem': 'Funcionario atualizado com sucesso',
+            'cpf': cpf,
+            'nome': nome,
+            'salario': float(salario),
+            'id_usuario': id_usuario,
+            'cadastro_valido': True,
+            'erros_cadastro': []
+        }), 200
 
     except Exception as e:
         con.rollback()
@@ -183,11 +243,15 @@ def alterar_status_funcionario():
     if erro:
         return erro
 
-    dados = request.get_json()
+    dados = request.get_json() or {}
     id_funcionario = dados.get('id_funcionario')
-    status = dados.get('status')
 
-    if not id_funcionario or status is None:
+    try:
+        status = int(dados.get('status'))
+    except (TypeError, ValueError):
+        return jsonify({'mensagem': 'Status invalido'}), 400
+
+    if not id_funcionario or status not in (0, 1):
         return jsonify({'mensagem': 'Dados incompletos'}), 400
 
     cursor = None
@@ -195,12 +259,30 @@ def alterar_status_funcionario():
     try:
         cursor = con.cursor()
 
-        cursor.execute("SELECT ID_FUNCIONARIO FROM FUNCIONARIO WHERE ID_FUNCIONARIO = ? AND ID_CONTA_EMPRESA = ?", (id_funcionario, id_conta))
+        cursor.execute(
+            "SELECT CPF, NOME, SALARIO FROM FUNCIONARIO WHERE ID_FUNCIONARIO = ? AND ID_CONTA_EMPRESA = ?",
+            (id_funcionario, id_conta)
+        )
+        funcionario = cursor.fetchone()
 
-        if not cursor.fetchone():
+        if not funcionario:
             return jsonify({'mensagem': 'Funcionario nao encontrado'}), 404
 
-        cursor.execute("UPDATE FUNCIONARIO SET STATUS = ? WHERE ID_FUNCIONARIO = ? AND ID_CONTA_EMPRESA = ?", (status, id_funcionario, id_conta))
+        if status == 1:
+            _cpf, _nome, _salario, problemas = validar_dados_funcionario(
+                funcionario[0], funcionario[1], funcionario[2]
+            )
+
+            if problemas:
+                return jsonify({
+                    'mensagem': 'Corrija o cadastro antes de reativar o funcionario',
+                    'erros': problemas
+                }), 400
+
+        cursor.execute(
+            "UPDATE FUNCIONARIO SET STATUS = ? WHERE ID_FUNCIONARIO = ? AND ID_CONTA_EMPRESA = ?",
+            (status, id_funcionario, id_conta)
+        )
 
         con.commit()
 
@@ -241,6 +323,30 @@ def criar_folha():
 
         cursor.execute("SELECT ID_FUNCIONARIO, CPF, NOME, SALARIO FROM FUNCIONARIO WHERE ID_CONTA_EMPRESA = ? AND STATUS = 1 ORDER BY NOME", (id_conta,))
         funcionarios = cursor.fetchall()
+
+        funcionarios_validos = []
+        funcionarios_invalidos = []
+
+        for funcionario in funcionarios:
+            _cpf, _nome, _salario, problemas = validar_dados_funcionario(
+                funcionario[1], funcionario[2], funcionario[3]
+            )
+            if problemas:
+                funcionarios_invalidos.append({
+                    'id_funcionario': funcionario[0],
+                    'cpf': normalizar_cpf(funcionario[1]),
+                    'erros': problemas
+                })
+            else:
+                funcionarios_validos.append(funcionario)
+
+        if funcionarios_invalidos:
+            return jsonify({
+                'mensagem': 'Existem funcionarios ativos com cadastro invalido. Corrija-os antes de criar a folha.',
+                'funcionarios_invalidos': funcionarios_invalidos
+            }), 400
+
+        funcionarios = funcionarios_validos
 
         if not funcionarios:
             return jsonify({'mensagem': 'Nenhum funcionario ativo cadastrado'}), 400
