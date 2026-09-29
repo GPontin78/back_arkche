@@ -165,8 +165,8 @@ scheduler = BackgroundScheduler()
 scheduler.add_job(
     lambda: executar_com_contexto(verificar_fechamento),
     'cron',
-    hour=0,
-    minute=0,
+    hour=11,
+    minute=19,
     id='fechamento_fatura',
     replace_existing=True
 )
