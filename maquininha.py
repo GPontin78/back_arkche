@@ -91,8 +91,8 @@ def compra_duplicada_maquininha(id_cartao, id_conta_pagador, id_recebedor, valor
         """, (
             id_conta_pagador,
             id_recebedor,
-            valor,
             id_cartao,
+            valor,
             agora,
             agora
         ))
