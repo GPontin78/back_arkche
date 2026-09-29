@@ -26,18 +26,8 @@ def data_fechamento_parcela(data_parcela, dia_fechamento):
 
 
 def data_vencimento_fatura(data_fechamento, dia_vencimento):
-    mes = data_fechamento.month
-    ano = data_fechamento.year
-
-    if int(dia_vencimento) <= data_fechamento.day:
-        mes += 1
-
-        if mes == 13:
-            mes = 1
-            ano += 1
-
-    dia = min(int(dia_vencimento), monthrange(ano, mes)[1])
-    return date(ano, mes, dia)
+    dia = min(int(dia_vencimento), monthrange(data_fechamento.year, data_fechamento.month)[1])
+    return date(data_fechamento.year, data_fechamento.month, dia)
 
 
 def formatar_numero_cartao(numero):
