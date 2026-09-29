@@ -1,5 +1,6 @@
 from calendar import monthrange
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 from flask import jsonify, request
 from main import app
 from banco import con
@@ -268,7 +269,7 @@ def listar_faturas_cartao():
 
                 if status == 1:
                     situacao = 'PAGA'
-                elif vencimento and vencimento < date.today():
+                elif vencimento and vencimento < datetime.now(ZoneInfo('America/Sao_Paulo')).date():
                     situacao = 'VENCIDA'
                 else:
                     situacao = 'FECHADA'
