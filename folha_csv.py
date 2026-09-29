@@ -170,7 +170,7 @@ def preview_csv_funcionarios():
                 item['situacao'] = 'existente'
                 item['id_funcionario'] = funcionario[0]
                 item['nome_atual'] = funcionario[1]
-                item['salario_atual'] = float(funcionario[2])
+                item['salario_atual'] = float(funcionario[2]) if funcionario[2] is not None else None
                 item['status_atual'] = funcionario[3]
                 existentes += 1
             else:
