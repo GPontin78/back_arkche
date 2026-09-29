@@ -5,8 +5,8 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from flask import jsonify, request
 from main import app
 from banco import con
-from folha import contexto_folha_pj
-from funcao import normalizar_cpf, validar_cpf
+from folha import contexto_folha_pj, validar_dados_funcionario
+from funcao import normalizar_cpf
 
 
 def normalizar_cabecalho(valor):
@@ -115,48 +115,30 @@ def preview_csv_funcionarios():
             if not any(str(valor or '').strip() for valor in linha.values() if not isinstance(valor, list)):
                 continue
 
-            cpf = normalizar_cpf(linha.get(campo_cpf)) if campo_cpf else ''
-            nome = str(linha.get(campo_nome) or '').strip() if campo_nome else ''
-            salario_original = linha.get(campo_salario) if campo_salario else None
+            cpf, nome, salario, problemas = validar_dados_funcionario(
+                linha.get(campo_cpf),
+                linha.get(campo_nome),
+                linha.get(campo_salario)
+            )
 
             item = {
                 'linha': numero_linha,
                 'cpf': cpf,
-                'cpf_valido': False,
+                'cpf_valido': not any(problema.startswith('CPF ') for problema in problemas),
                 'nome': nome,
-                'salario': None,
+                'salario': float(salario) if salario is not None else None,
                 'situacao': None,
                 'erro': None,
                 'possui_usuario_arkhe': False,
-                'possui_conta_arkhe': False
+                'possui_conta_arkhe': False,
+                'importavel': False
             }
 
-            problemas = []
-
-            if not campo_cpf or not cpf:
-                problemas.append('CPF nao informado')
-            elif len(cpf) != 11:
-                problemas.append('CPF deve possuir 11 digitos')
-            elif not validar_cpf(cpf):
-                problemas.append('CPF invalido')
-            else:
-                item['cpf_valido'] = True
+            if item['cpf_valido']:
                 if cpf in cpfs_arquivo:
                     problemas.append('CPF duplicado no arquivo')
                 else:
                     cpfs_arquivo.add(cpf)
-
-            if not campo_nome or not nome:
-                problemas.append('Nome nao informado')
-
-            if not campo_salario or salario_original is None or not str(salario_original).strip():
-                problemas.append('Salario nao informado')
-            else:
-                try:
-                    salario = converter_salario(salario_original)
-                    item['salario'] = float(salario)
-                except (InvalidOperation, ValueError):
-                    problemas.append('Salario invalido')
 
             if problemas:
                 itens.append(erro_item(item, problemas))
@@ -181,6 +163,8 @@ def preview_csv_funcionarios():
 
             item['possui_usuario_arkhe'] = conta_arkhe is not None
             item['possui_conta_arkhe'] = bool(conta_arkhe and conta_arkhe[1] is not None)
+
+            item['importavel'] = True
 
             if funcionario:
                 item['situacao'] = 'existente'
@@ -248,9 +232,11 @@ def importar_csv_funcionarios():
         cpfs_importacao = set()
 
         for indice, item in enumerate(itens):
-            cpf = normalizar_cpf(item.get('cpf'))
-            nome = str(item.get('nome') or '').strip()
-            salario_original = item.get('salario')
+            cpf, nome, salario, problemas = validar_dados_funcionario(
+                item.get('cpf'),
+                item.get('nome'),
+                item.get('salario')
+            )
             acao = item.get('acao')
             linha_item = item.get('linha', indice + 1)
 
@@ -276,22 +262,6 @@ def importar_csv_funcionarios():
             if acao == 'ignorar':
                 ignorados += 1
                 continue
-
-            problemas = []
-
-            if not cpf:
-                problemas.append('CPF nao informado')
-            elif not validar_cpf(cpf):
-                problemas.append('CPF invalido')
-
-            if not nome:
-                problemas.append('Nome nao informado')
-
-            try:
-                salario = converter_salario(salario_original)
-            except (InvalidOperation, ValueError):
-                salario = None
-                problemas.append('Salario invalido' if salario_original not in (None, '') else 'Salario nao informado')
 
             if problemas:
                 erros.append({
