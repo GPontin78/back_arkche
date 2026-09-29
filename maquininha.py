@@ -1,7 +1,8 @@
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from flask import jsonify, request
 from main import app
 from banco import con
-from funcao import dados_conta, verificar_pin_usuario, calcular_saldo, data_atual
+from funcao import dados_conta, verificar_pin_usuario, calcular_saldo, calcular_limite_cartao, data_atual
 
 CARTOES_FISICOS = {
     '0D94A4A5': 4,  # Cartao da Lais
@@ -175,8 +176,8 @@ def comprar_maquininha():
         }), 400
 
     try:
-        valor = float(dados.get('valor'))
-    except (TypeError, ValueError):
+        valor = Decimal(str(dados.get('valor'))).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+    except (InvalidOperation, TypeError, ValueError):
         return jsonify({
             'aprovado': False,
             'codigo': 'DADOS_INVALIDOS',
@@ -190,12 +191,27 @@ def comprar_maquininha():
             'mensagem': 'Valor invalido'
         }), 400
 
-    if tipo != 'DEBITO':
+    if tipo not in ('DEBITO', 'CREDITO'):
         return jsonify({
             'aprovado': False,
             'codigo': 'MODALIDADE_INDISPONIVEL',
-            'mensagem': 'Modalidade ainda nao disponivel'
+            'mensagem': 'Modalidade indisponivel'
         }), 400
+
+    qtd_parcela = 1
+
+    if tipo == 'CREDITO':
+        try:
+            qtd_parcela = int(dados.get('parcelas') or 1)
+        except (TypeError, ValueError):
+            qtd_parcela = 0
+
+        if qtd_parcela < 1 or qtd_parcela > 12:
+            return jsonify({
+                'aprovado': False,
+                'codigo': 'PARCELAS_INVALIDAS',
+                'mensagem': 'Quantidade de parcelas deve ser entre 1 e 12'
+            }), 400
 
     cartao = buscar_cartao_fisico(uid)
 
@@ -238,62 +254,100 @@ def comprar_maquininha():
 
     data_compra = data_atual()
 
-    if compra_duplicada_maquininha(
-        id_cartao,
-        id_conta_pagador,
-        id_recebedor,
-        valor,
-        data_compra
-    ):
-        return jsonify({
-            'aprovado': False,
-            'codigo': 'COMPRA_DUPLICADA',
-            'mensagem': 'Compra duplicada. Aguarde 5 minutos para repetir o mesmo valor neste estabelecimento.'
-        }), 409
+    if tipo == 'DEBITO':
+        if compra_duplicada_maquininha(
+            id_cartao,
+            id_conta_pagador,
+            id_recebedor,
+            valor,
+            data_compra
+        ):
+            return jsonify({
+                'aprovado': False,
+                'codigo': 'COMPRA_DUPLICADA',
+                'mensagem': 'Compra duplicada. Aguarde 5 minutos para repetir o mesmo valor neste estabelecimento.'
+            }), 409
 
-    saldo = calcular_saldo(id_conta_pagador)
+        saldo = calcular_saldo(id_conta_pagador)
 
-    if saldo is None or float(saldo) < valor:
-        return jsonify({
-            'aprovado': False,
-            'codigo': 'SALDO_INSUFICIENTE',
-            'mensagem': 'Saldo insuficiente'
-        }), 400
+        if saldo is None or Decimal(str(saldo)) < valor:
+            return jsonify({
+                'aprovado': False,
+                'codigo': 'SALDO_INSUFICIENTE',
+                'mensagem': 'Saldo insuficiente'
+            }), 400
+
+    else:
+        limite_total = Decimal(str(cartao[3] or 0))
+        limite_utilizado = Decimal(str(calcular_limite_cartao(id_cartao) or 0))
+
+        if limite_utilizado + valor > limite_total:
+            return jsonify({
+                'aprovado': False,
+                'codigo': 'LIMITE_INSUFICIENTE',
+                'mensagem': 'Limite insuficiente'
+            }), 400
 
     cursor = None
 
     try:
         cursor = con.cursor()
 
-        cursor.execute("""
-            INSERT INTO COMPRA (
-                ID_CARTAO,
-                VALOR_COMPRA,
-                DATA_COMPRA,
-                TIPO
-            )
-            VALUES (?, ?, ?, ?)
-        """, (
-            id_cartao,
-            valor,
-            data_compra,
-            0
-        ))
+        if tipo == 'DEBITO':
+            cursor.execute("""
+                INSERT INTO COMPRA (
+                    ID_CARTAO,
+                    VALOR_COMPRA,
+                    DATA_COMPRA,
+                    TIPO
+                )
+                VALUES (?, ?, ?, ?)
+            """, (
+                id_cartao,
+                valor,
+                data_compra,
+                0
+            ))
 
-        cursor.execute("""
-            INSERT INTO MOVIMENTACAO (
-                ID_PAGADOR,
-                ID_RECEBEDOR,
-                VALOR,
-                DATA_MOVIMENTACAO
+            cursor.execute("""
+                INSERT INTO MOVIMENTACAO (
+                    ID_PAGADOR,
+                    ID_RECEBEDOR,
+                    VALOR,
+                    DATA_MOVIMENTACAO
+                )
+                VALUES (?, ?, ?, ?)
+            """, (
+                id_conta_pagador,
+                id_recebedor,
+                valor,
+                data_compra
+            ))
+
+        else:
+            valor_parcela = (valor / Decimal(qtd_parcela)).quantize(
+                Decimal('0.01'),
+                rounding=ROUND_HALF_UP
             )
-            VALUES (?, ?, ?, ?)
-        """, (
-            id_conta_pagador,
-            id_recebedor,
-            valor,
-            data_compra
-        ))
+
+            cursor.execute("""
+                INSERT INTO COMPRA (
+                    ID_CARTAO,
+                    VALOR_COMPRA,
+                    DATA_COMPRA,
+                    TIPO,
+                    VALOR_PARCELA,
+                    QTD_PARCELA
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                id_cartao,
+                valor,
+                data_compra,
+                1,
+                valor_parcela,
+                qtd_parcela
+            ))
 
         con.commit()
 
@@ -301,7 +355,9 @@ def comprar_maquininha():
             'aprovado': True,
             'codigo': 'APROVADO',
             'mensagem': 'Compra aprovada',
-            'valor': round(valor, 2),
+            'valor': float(valor),
+            'tipo': tipo,
+            'parcelas': qtd_parcela,
             'final_cartao': numero_cartao[-4:],
             'nome': nome_usuario
         }), 200
