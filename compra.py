@@ -88,31 +88,7 @@ def adicionar_compra():
 
         if tipo == 0:
 
-            cursor.execute("""
-                SELECT CAST(
-                    COALESCE(SUM(M.VALOR), 0)
-                    AS DECIMAL(18,2)
-                )
-                FROM MOVIMENTACAO M
-                WHERE M.ID_RECEBEDOR = ?
-            """, (id_conta_pagador,))
-
-            receita = cursor.fetchone()[0]
-
-            cursor.execute("""
-                SELECT CAST(
-                    COALESCE(SUM(M.VALOR), 0)
-                    AS DECIMAL(18,2)
-                )
-                FROM MOVIMENTACAO M
-                WHERE M.ID_PAGADOR = ?
-            """, (id_conta_pagador,))
-
-            despesa = cursor.fetchone()[0]
-
-            saldo = receita - despesa
-
-            if saldo < valor_compra:
+            if not pode_debitar_saldo(id_conta_pagador, valor_compra):
                 return jsonify({
                     'mensagem': 'Erro ao realizar compra, saldo insuficiente'
                 }), 400
