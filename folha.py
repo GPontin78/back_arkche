@@ -1,7 +1,7 @@
 from flask import jsonify, request
 from main import app
 from banco import con
-from funcao import descobre_id_conta, descobre_id_usuario, usuario_pode_acessar_conta, calcular_saldo, pode_debitar_saldo, data_atual
+from funcao import descobre_id_conta, descobre_id_usuario, usuario_pode_acessar_conta, calcular_saldo, pode_debitar_saldo, data_atual, normalizar_cpf, validar_cpf
 
 
 def contexto_folha_pj():
@@ -35,13 +35,26 @@ def adicionar_funcionario():
     if erro:
         return erro
 
-    dados = request.get_json()
-    cpf = dados.get('cpf')
-    nome = dados.get('nome')
+    dados = request.get_json() or {}
+    cpf = normalizar_cpf(dados.get('cpf'))
+    nome = str(dados.get('nome') or '').strip()
     salario = dados.get('salario')
 
-    if not cpf or not nome or salario is None:
-        return jsonify({'mensagem': 'Dados incompletos'}), 400
+    if not cpf:
+        return jsonify({'mensagem': 'CPF nao informado'}), 400
+
+    if not validar_cpf(cpf):
+        return jsonify({'mensagem': 'CPF invalido'}), 400
+
+    if not nome:
+        return jsonify({'mensagem': 'Nome nao informado'}), 400
+
+    try:
+        salario = float(salario)
+        if salario <= 0:
+            raise ValueError()
+    except (TypeError, ValueError):
+        return jsonify({'mensagem': 'Salario invalido'}), 400
 
     cursor = None
 

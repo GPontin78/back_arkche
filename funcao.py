@@ -13,6 +13,29 @@ import uuid
 from decimal import Decimal, InvalidOperation
 
 
+def normalizar_cpf(valor):
+    return ''.join(caractere for caractere in str(valor or '') if caractere.isdigit())
+
+
+def validar_cpf(valor):
+    cpf = normalizar_cpf(valor)
+
+    if len(cpf) != 11 or cpf == cpf[0] * 11:
+        return False
+
+    for tamanho in (9, 10):
+        soma = sum(int(cpf[indice]) * (tamanho + 1 - indice) for indice in range(tamanho))
+        digito = (soma * 10) % 11
+
+        if digito == 10:
+            digito = 0
+
+        if digito != int(cpf[tamanho]):
+            return False
+
+    return True
+
+
 def obter_token():
     return request.cookies.get('access_token')
 
