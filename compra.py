@@ -1,3 +1,4 @@
+from decimal import Decimal, ROUND_HALF_UP
 from flask import jsonify, request
 from main import app
 from banco import con
