@@ -6,6 +6,7 @@ from funcao import dados_conta, verificar_pin_usuario, pode_debitar_saldo, calcu
 
 CARTOES_FISICOS = {
     '0D94A4A5': 4,  # Cartao da Lais
+    'F590B889': 3,  # Cartao do Banco Arkhe - conta 9
 }
 
 
