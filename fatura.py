@@ -43,6 +43,7 @@ def fechar_fatura(id_cartao):
         cartao = cursor.fetchone()
 
         if not cartao:
+            con.rollback()
             return
 
         dia_fechamento = cartao[0]
@@ -51,6 +52,7 @@ def fechar_fatura(id_cartao):
         hoje = hoje_brasil()
 
         if dia_fechamento != hoje.day:
+            con.rollback()
             return
 
         data_fechamento = hoje
@@ -64,6 +66,7 @@ def fechar_fatura(id_cartao):
         """, (id_conta, data_fechamento))
 
         if cursor.fetchone():
+            con.rollback()
             return
 
         cursor.execute("""
@@ -79,6 +82,7 @@ def fechar_fatura(id_cartao):
         parcelas = cursor.fetchall()
 
         if not parcelas:
+            con.rollback()
             return
 
         valor_total = sum(parcela[1] for parcela in parcelas)
@@ -129,6 +133,7 @@ def verificar_fechamento():
         """, (hoje.day,))
 
         cartoes = cursor.fetchall()
+        con.rollback()
 
     finally:
         if cursor:
