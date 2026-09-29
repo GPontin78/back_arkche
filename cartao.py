@@ -50,7 +50,8 @@ def serializar_cartao(cartao):
         'limite_utilizado': limite_utilizado,
         'limite_disponivel': limite_total - limite_utilizado,
         'dia_vencimento': cartao[6],
-        'dia_fechamento': cartao[7]
+        'dia_fechamento': cartao[7],
+        'status': int(cartao[8] or 0)
     }
 
 
@@ -66,7 +67,7 @@ def buscar_cartao():
     try:
         cursor = con.cursor()
 
-        cursor.execute("""SELECT ID_CARTAO, ID_CONTA, NUMERO_CARTAO, VENCIMENTO, CVV, LIMITE, DIA_VENCIMENTO, FECHAMENTO
+        cursor.execute("""SELECT ID_CARTAO, ID_CONTA, NUMERO_CARTAO, VENCIMENTO, CVV, LIMITE, DIA_VENCIMENTO, FECHAMENTO, STATUS
                           FROM CARTAO
                           WHERE ID_CONTA = ?""", (id_conta,))
 
@@ -370,7 +371,7 @@ def adicionar_cartao():
 
         cursor = con.cursor()
 
-        cursor.execute("""SELECT ID_CARTAO, ID_CONTA, NUMERO_CARTAO, VENCIMENTO, CVV, LIMITE, DIA_VENCIMENTO, FECHAMENTO
+        cursor.execute("""SELECT ID_CARTAO, ID_CONTA, NUMERO_CARTAO, VENCIMENTO, CVV, LIMITE, DIA_VENCIMENTO, FECHAMENTO, STATUS
                           FROM CARTAO
                           WHERE ID_CONTA = ?""", (id_conta,))
 
@@ -402,7 +403,7 @@ def adicionar_cartao():
 
         con.commit()
 
-        cursor.execute("""SELECT ID_CARTAO, ID_CONTA, NUMERO_CARTAO, VENCIMENTO, CVV, LIMITE, DIA_VENCIMENTO, FECHAMENTO
+        cursor.execute("""SELECT ID_CARTAO, ID_CONTA, NUMERO_CARTAO, VENCIMENTO, CVV, LIMITE, DIA_VENCIMENTO, FECHAMENTO, STATUS
                           FROM CARTAO
                           WHERE ID_CONTA = ? AND NUMERO_CARTAO = ?""", (id_conta, numero_cartao))
 
