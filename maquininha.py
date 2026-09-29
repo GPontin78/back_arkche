@@ -207,11 +207,11 @@ def comprar_maquininha():
         except (TypeError, ValueError):
             qtd_parcela = 0
 
-        if qtd_parcela < 1 or qtd_parcela > 12:
+        if qtd_parcela < 1 or qtd_parcela > 15:
             return jsonify({
                 'aprovado': False,
                 'codigo': 'PARCELAS_INVALIDAS',
-                'mensagem': 'Quantidade de parcelas deve ser entre 1 e 12'
+                'mensagem': 'Quantidade de parcelas deve ser entre 1 e 15'
             }), 400
 
     cartao = buscar_cartao_fisico(uid)
