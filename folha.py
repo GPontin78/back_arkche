@@ -1,7 +1,7 @@
 from flask import jsonify, request
 from main import app
 from banco import con
-from funcao import descobre_id_conta, descobre_id_usuario, usuario_pode_acessar_conta, calcular_saldo, data_atual
+from funcao import descobre_id_conta, descobre_id_usuario, usuario_pode_acessar_conta, calcular_saldo, pode_debitar_saldo, data_atual
 
 
 def contexto_folha_pj():
@@ -663,7 +663,7 @@ def pagar_folha():
         total = sum(float(item[2]) for item in itens)
         saldo = calcular_saldo(id_conta)
 
-        if saldo < total:
+        if not pode_debitar_saldo(id_conta, total):
             con.rollback()
 
             return jsonify({
