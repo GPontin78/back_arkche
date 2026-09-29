@@ -450,6 +450,25 @@ def editar_folha():
         cursor.execute("SELECT ID_FUNCIONARIO, CPF, NOME, SALARIO FROM FUNCIONARIO WHERE ID_CONTA_EMPRESA = ? AND STATUS = 1 ORDER BY NOME", (id_conta,))
         funcionarios = cursor.fetchall()
 
+        funcionarios_invalidos = []
+
+        for funcionario in funcionarios:
+            _cpf, _nome, _salario, problemas = validar_dados_funcionario(
+                funcionario[1], funcionario[2], funcionario[3]
+            )
+            if problemas:
+                funcionarios_invalidos.append({
+                    'id_funcionario': funcionario[0],
+                    'cpf': normalizar_cpf(funcionario[1]),
+                    'erros': problemas
+                })
+
+        if funcionarios_invalidos:
+            return jsonify({
+                'mensagem': 'Existem funcionarios ativos com cadastro invalido. Corrija-os antes de atualizar a folha.',
+                'funcionarios_invalidos': funcionarios_invalidos
+            }), 400
+
         if not funcionarios:
             return jsonify({'mensagem': 'Nenhum funcionario ativo cadastrado'}), 400
 
