@@ -45,9 +45,19 @@ def fechar_fatura(id_cartao):
             dia_fechamento
         )
 
+        ano_vencimento = hoje.year
+        mes_vencimento = hoje.month
+
+        if dia_vencimento <= dia_fechamento:
+            mes_vencimento = mes_vencimento + 1
+
+            if mes_vencimento == 13:
+                mes_vencimento = 1
+                ano_vencimento = ano_vencimento + 1
+
         data_vencimento = date(
-            hoje.year,
-            hoje.month,
+            ano_vencimento,
+            mes_vencimento,
             dia_vencimento
         )
 
@@ -64,7 +74,16 @@ def fechar_fatura(id_cartao):
         fatura_existente = cursor.fetchone()
 
         if fatura_existente:
-            con.rollback()
+            cursor.execute("""
+                UPDATE FATURA
+                SET DATA_VENCIMENTO = ?
+                WHERE ID_FATURA = ?
+            """, (
+                data_vencimento,
+                fatura_existente[0]
+            ))
+
+            con.commit()
             return
 
         cursor.execute("""
