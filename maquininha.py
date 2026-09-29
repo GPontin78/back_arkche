@@ -70,6 +70,40 @@ def buscar_cartao_fisico(uid):
             cursor.close()
 
 
+def compra_duplicada_maquininha(id_cartao, id_conta_pagador, id_recebedor, valor, agora):
+    cursor = None
+
+    try:
+        cursor = con.cursor()
+
+        cursor.execute("""
+            SELECT FIRST 1 1
+            FROM COMPRA C
+            INNER JOIN MOVIMENTACAO M
+                ON M.ID_PAGADOR = ?
+               AND M.ID_RECEBEDOR = ?
+               AND M.VALOR = C.VALOR_COMPRA
+               AND M.DATA_MOVIMENTACAO = C.DATA_COMPRA
+            WHERE C.ID_CARTAO = ?
+              AND C.TIPO = 0
+              AND C.VALOR_COMPRA = ?
+              AND C.DATA_COMPRA BETWEEN DATEADD(-5 MINUTE TO ?) AND ?
+        """, (
+            id_conta_pagador,
+            id_recebedor,
+            valor,
+            id_cartao,
+            agora,
+            agora
+        ))
+
+        return cursor.fetchone() is not None
+
+    finally:
+        if cursor:
+            cursor.close()
+
+
 @app.route('/maquininha/identificar', methods=['POST'])
 def identificar_cartao_maquininha():
     id_recebedor, erro = validar_conta_recebedora()
@@ -202,6 +236,21 @@ def comprar_maquininha():
             'mensagem': 'PIN invalido'
         }), 401
 
+    data_compra = data_atual()
+
+    if compra_duplicada_maquininha(
+        id_cartao,
+        id_conta_pagador,
+        id_recebedor,
+        valor,
+        data_compra
+    ):
+        return jsonify({
+            'aprovado': False,
+            'codigo': 'COMPRA_DUPLICADA',
+            'mensagem': 'Compra duplicada. Aguarde 5 minutos para repetir o mesmo valor neste estabelecimento.'
+        }), 409
+
     saldo = calcular_saldo(id_conta_pagador)
 
     if saldo is None or float(saldo) < valor:
@@ -215,7 +264,6 @@ def comprar_maquininha():
 
     try:
         cursor = con.cursor()
-        data_compra = data_atual()
 
         cursor.execute("""
             INSERT INTO COMPRA (
