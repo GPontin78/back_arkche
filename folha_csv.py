@@ -1,14 +1,12 @@
 import csv
 import io
 import unicodedata
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from flask import jsonify, request
 from main import app
 from banco import con
 from folha import contexto_folha_pj
-
-
-def somente_numeros(valor):
-    return ''.join(numero for numero in str(valor or '') if numero.isdigit())
+from funcao import normalizar_cpf, validar_cpf
 
 
 def normalizar_cabecalho(valor):
@@ -18,12 +16,26 @@ def normalizar_cabecalho(valor):
 
 
 def converter_salario(valor):
-    valor = str(valor or '').strip().replace('R$', '').replace(' ', '')
+    texto = str(valor or '').strip().replace('R$', '').replace(' ', '')
 
-    if ',' in valor:
-        valor = valor.replace('.', '').replace(',', '.')
+    if not texto:
+        raise ValueError()
 
-    return float(valor)
+    if ',' in texto:
+        texto = texto.replace('.', '').replace(',', '.')
+
+    salario = Decimal(texto)
+
+    if not salario.is_finite() or salario <= 0:
+        raise ValueError()
+
+    return salario.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+
+def erro_item(item, mensagens):
+    item['situacao'] = 'erro'
+    item['erro'] = '; '.join(mensagens)
+    return item
 
 
 @app.route('/funcionarios/csv/preview', methods=['POST'])
@@ -72,14 +84,22 @@ def preview_csv_funcionarios():
         if not leitor.fieldnames:
             return jsonify({'mensagem': 'Cabecalho do CSV nao encontrado'}), 400
 
-        campos_normalizados = {normalizar_cabecalho(campo): campo for campo in leitor.fieldnames}
+        campos_normalizados = {normalizar_cabecalho(campo): campo for campo in leitor.fieldnames if campo is not None}
         campo_cpf = campos_normalizados.get('cpf')
         campo_nome = campos_normalizados.get('nome') or campos_normalizados.get('nome completo')
         campo_salario = campos_normalizados.get('salario') or campos_normalizados.get('salario mensal') or campos_normalizados.get('salario mensal (r$)')
 
-        if not campo_cpf or not campo_nome or not campo_salario:
+        colunas_ausentes = []
+        if not campo_cpf:
+            colunas_ausentes.append('CPF')
+        if not campo_nome:
+            colunas_ausentes.append('Nome completo')
+        if not campo_salario:
+            colunas_ausentes.append('Salario mensal')
+
+        if len(colunas_ausentes) == 3:
             return jsonify({
-                'mensagem': 'O CSV precisa possuir as colunas CPF, Nome e Salario'
+                'mensagem': 'Nenhuma coluna reconhecida. Use CPF, Nome completo e Salario mensal.'
             }), 400
 
         cursor = con.cursor()
@@ -91,76 +111,75 @@ def preview_csv_funcionarios():
         erros = 0
 
         for numero_linha, linha in enumerate(leitor, start=2):
-            cpf = somente_numeros(linha.get(campo_cpf))
-            nome = str(linha.get(campo_nome) or '').strip()
-            salario_original = linha.get(campo_salario)
+            if not any(str(valor or '').strip() for valor in linha.values() if not isinstance(valor, list)):
+                continue
+
+            cpf = normalizar_cpf(linha.get(campo_cpf)) if campo_cpf else ''
+            nome = str(linha.get(campo_nome) or '').strip() if campo_nome else ''
+            salario_original = linha.get(campo_salario) if campo_salario else None
 
             item = {
                 'linha': numero_linha,
                 'cpf': cpf,
+                'cpf_valido': False,
                 'nome': nome,
                 'salario': None,
                 'situacao': None,
-                'erro': None
+                'erro': None,
+                'possui_usuario_arkhe': False,
+                'possui_conta_arkhe': False
             }
 
-            if len(cpf) != 11:
-                item['situacao'] = 'erro'
-                item['erro'] = 'CPF deve possuir 11 digitos'
+            problemas = []
+
+            if not campo_cpf or not cpf:
+                problemas.append('CPF nao informado')
+            elif len(cpf) != 11:
+                problemas.append('CPF deve possuir 11 digitos')
+            elif not validar_cpf(cpf):
+                problemas.append('CPF invalido')
+            else:
+                item['cpf_valido'] = True
+                if cpf in cpfs_arquivo:
+                    problemas.append('CPF duplicado no arquivo')
+                else:
+                    cpfs_arquivo.add(cpf)
+
+            if not campo_nome or not nome:
+                problemas.append('Nome nao informado')
+
+            if not campo_salario or salario_original is None or not str(salario_original).strip():
+                problemas.append('Salario nao informado')
+            else:
+                try:
+                    salario = converter_salario(salario_original)
+                    item['salario'] = float(salario)
+                except (InvalidOperation, ValueError):
+                    problemas.append('Salario invalido')
+
+            if problemas:
+                itens.append(erro_item(item, problemas))
                 erros += 1
-                itens.append(item)
-                continue
-
-            if cpf in cpfs_arquivo:
-                item['situacao'] = 'erro'
-                item['erro'] = 'CPF duplicado no arquivo'
-                erros += 1
-                itens.append(item)
-                continue
-
-            cpfs_arquivo.add(cpf)
-
-            if not nome:
-                item['situacao'] = 'erro'
-                item['erro'] = 'Nome nao informado'
-                erros += 1
-                itens.append(item)
-                continue
-
-            try:
-                salario = converter_salario(salario_original)
-
-                if salario <= 0:
-                    raise ValueError()
-
-                item['salario'] = salario
-
-            except Exception:
-                item['situacao'] = 'erro'
-                item['erro'] = 'Salario invalido'
-                erros += 1
-                itens.append(item)
                 continue
 
             cursor.execute(
                 "SELECT ID_FUNCIONARIO, NOME, SALARIO, STATUS FROM FUNCIONARIO WHERE ID_CONTA_EMPRESA = ? AND CPF = ?",
                 (id_conta, cpf)
             )
-
             funcionario = cursor.fetchone()
 
             cursor.execute(
-                """SELECT C.ID_CONTA
+                """SELECT U.ID_USUARIO, C.ID_CONTA
                    FROM USUARIO U
-                   INNER JOIN CONTA C ON C.ID_USUARIO = U.ID_USUARIO
-                   WHERE U.CPF = ? AND C.TIPO_CONTA = 0
-                   ORDER BY C.ID_CONTA ROWS 1""",
+                   LEFT JOIN CONTA C ON C.ID_USUARIO = U.ID_USUARIO AND C.TIPO_CONTA = 0
+                   WHERE U.CPF = ?
+                   ORDER BY C.ID_CONTA NULLS LAST ROWS 1""",
                 (cpf,)
             )
+            conta_arkhe = cursor.fetchone()
 
-            conta_pf = cursor.fetchone()
-
-            item['possui_conta_arkhe'] = conta_pf is not None
+            item['possui_usuario_arkhe'] = conta_arkhe is not None
+            item['possui_conta_arkhe'] = bool(conta_arkhe and conta_arkhe[1] is not None)
 
             if funcionario:
                 item['situacao'] = 'existente'
@@ -175,12 +194,16 @@ def preview_csv_funcionarios():
 
             itens.append(item)
 
+        if not itens:
+            return jsonify({'mensagem': 'O CSV nao possui linhas de funcionarios para analisar'}), 400
+
         return jsonify({
             'mensagem': 'CSV analisado com sucesso',
             'total_linhas': len(itens),
             'novos': novos,
             'existentes': existentes,
             'erros': erros,
+            'colunas_ausentes': colunas_ausentes,
             'itens': itens
         }), 200
 
@@ -225,9 +248,9 @@ def importar_csv_funcionarios():
         cpfs_importacao = set()
 
         for indice, item in enumerate(itens):
-            cpf = somente_numeros(item.get('cpf'))
+            cpf = normalizar_cpf(item.get('cpf'))
             nome = str(item.get('nome') or '').strip()
-            salario = item.get('salario')
+            salario_original = item.get('salario')
             acao = item.get('acao')
             linha_item = item.get('linha', indice + 1)
 
@@ -239,7 +262,7 @@ def importar_csv_funcionarios():
                 })
                 continue
 
-            if cpf in cpfs_importacao:
+            if cpf and cpf in cpfs_importacao:
                 erros.append({
                     'linha': linha_item,
                     'cpf': cpf,
@@ -247,31 +270,34 @@ def importar_csv_funcionarios():
                 })
                 continue
 
-            cpfs_importacao.add(cpf)
+            if cpf:
+                cpfs_importacao.add(cpf)
 
             if acao == 'ignorar':
                 ignorados += 1
                 continue
 
-            if len(cpf) != 11 or not nome:
-                erros.append({
-                    'linha': linha_item,
-                    'cpf': cpf,
-                    'erro': 'Dados invalidos'
-                })
-                continue
+            problemas = []
+
+            if not cpf:
+                problemas.append('CPF nao informado')
+            elif not validar_cpf(cpf):
+                problemas.append('CPF invalido')
+
+            if not nome:
+                problemas.append('Nome nao informado')
 
             try:
-                salario = float(salario)
+                salario = converter_salario(salario_original)
+            except (InvalidOperation, ValueError):
+                salario = None
+                problemas.append('Salario invalido' if salario_original not in (None, '') else 'Salario nao informado')
 
-                if salario <= 0:
-                    raise ValueError()
-
-            except Exception:
+            if problemas:
                 erros.append({
                     'linha': linha_item,
                     'cpf': cpf,
-                    'erro': 'Salario invalido'
+                    'erro': '; '.join(problemas)
                 })
                 continue
 
@@ -279,7 +305,6 @@ def importar_csv_funcionarios():
                 "SELECT ID_FUNCIONARIO FROM FUNCIONARIO WHERE ID_CONTA_EMPRESA = ? AND CPF = ?",
                 (id_conta, cpf)
             )
-
             funcionario = cursor.fetchone()
 
             if funcionario:
@@ -291,7 +316,6 @@ def importar_csv_funcionarios():
                     "UPDATE FUNCIONARIO SET NOME = ?, SALARIO = ? WHERE ID_FUNCIONARIO = ? AND ID_CONTA_EMPRESA = ?",
                     (nome, salario, funcionario[0], id_conta)
                 )
-
                 atualizados += 1
 
             else:
@@ -303,7 +327,6 @@ def importar_csv_funcionarios():
                     "SELECT ID_USUARIO FROM USUARIO WHERE CPF = ?",
                     (cpf,)
                 )
-
                 usuario = cursor.fetchone()
                 id_usuario = usuario[0] if usuario else None
 
@@ -313,7 +336,6 @@ def importar_csv_funcionarios():
                        VALUES (?, ?, ?, ?, ?, 1)""",
                     (id_conta, id_usuario, cpf, nome, salario)
                 )
-
                 criados += 1
 
         con.commit()
