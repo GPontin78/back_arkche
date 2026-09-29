@@ -1,7 +1,42 @@
+from calendar import monthrange
+from datetime import date
 from flask import jsonify, request
 from main import app
 from banco import con
 from funcao import *
+
+
+def data_fechamento_parcela(data_parcela, dia_fechamento):
+    dia = min(int(dia_fechamento), monthrange(data_parcela.year, data_parcela.month)[1])
+    fechamento = date(data_parcela.year, data_parcela.month, dia)
+
+    if data_parcela <= fechamento:
+        return fechamento
+
+    mes = data_parcela.month + 1
+    ano = data_parcela.year
+
+    if mes == 13:
+        mes = 1
+        ano += 1
+
+    dia = min(int(dia_fechamento), monthrange(ano, mes)[1])
+    return date(ano, mes, dia)
+
+
+def data_vencimento_fatura(data_fechamento, dia_vencimento):
+    mes = data_fechamento.month
+    ano = data_fechamento.year
+
+    if int(dia_vencimento) <= data_fechamento.day:
+        mes += 1
+
+        if mes == 13:
+            mes = 1
+            ano += 1
+
+    dia = min(int(dia_vencimento), monthrange(ano, mes)[1])
+    return date(ano, mes, dia)
 
 
 def formatar_numero_cartao(numero):
@@ -174,6 +209,155 @@ def listar_compras_cartao():
 
     except Exception as e:
         return jsonify({'mensagem': 'Erro ao buscar compras do cartao', 'erro': str(e)}), 500
+
+    finally:
+        if cursor:
+            cursor.close()
+
+
+@app.route('/cartao/faturas', methods=['GET'])
+def listar_faturas_cartao():
+    id_conta = descobre_id_conta()
+
+    if id_conta is None:
+        return jsonify({'mensagem': 'Usuario nao logado'}), 403
+
+    cursor = None
+
+    try:
+        cursor = con.cursor()
+
+        cursor.execute("""
+            SELECT ID_CARTAO, FECHAMENTO, DIA_VENCIMENTO
+            FROM CARTAO
+            WHERE ID_CONTA = ?
+        """, (id_conta,))
+
+        cartao = cursor.fetchone()
+
+        if not cartao:
+            return jsonify({
+                'faturas': [],
+                'proximas_faturas': [],
+                'fatura_atual': None,
+                'proxima_fatura': None
+            }), 200
+
+        id_cartao, dia_fechamento, dia_vencimento = cartao
+
+        cursor.execute("""
+            SELECT F.ID_FATURA, F.VALOR_TOTAL, F.STATUS, F.DATA_FECHAMENTO, F.DATA_VENCIMENTO,
+                   FC.ID_FATURA_COMPRA, C.ID_COMPRA, FC.NUMERO_PARCELA, C.QTD_PARCELA,
+                   FC.VALOR_PARCELA, FC.STATUS, FC.DATA_PARCELA, C.DATA_COMPRA, C.VALOR_COMPRA
+            FROM FATURA F
+            LEFT JOIN FATURA_COMPRA FC ON FC.ID_FATURA = F.ID_FATURA
+            LEFT JOIN COMPRA C ON C.ID_COMPRA = FC.ID_COMPRA
+            WHERE F.ID_CONTA = ?
+            ORDER BY F.DATA_FECHAMENTO DESC, F.ID_FATURA DESC, FC.NUMERO_PARCELA
+        """, (id_conta,))
+
+        faturas = []
+        por_id = {}
+
+        for linha in cursor.fetchall():
+            id_fatura = linha[0]
+
+            if id_fatura not in por_id:
+                status = int(linha[2] or 0)
+                vencimento = linha[4]
+
+                if status == 1:
+                    situacao = 'PAGA'
+                elif vencimento and vencimento < date.today():
+                    situacao = 'VENCIDA'
+                else:
+                    situacao = 'FECHADA'
+
+                por_id[id_fatura] = {
+                    'id_fatura': id_fatura,
+                    'valor_total': float(linha[1] or 0),
+                    'status': status,
+                    'situacao': situacao,
+                    'data_fechamento': str(linha[3]) if linha[3] else None,
+                    'data_vencimento': str(vencimento) if vencimento else None,
+                    'itens': []
+                }
+
+                faturas.append(por_id[id_fatura])
+
+            if linha[5] is not None:
+                por_id[id_fatura]['itens'].append({
+                    'id_fatura_compra': linha[5],
+                    'id_compra': linha[6],
+                    'numero_parcela': int(linha[7] or 0),
+                    'total_parcelas': int(linha[8] or 1),
+                    'valor': float(linha[9] or 0),
+                    'status': int(linha[10] or 0),
+                    'data_parcela': str(linha[11]) if linha[11] else None,
+                    'data_compra': str(linha[12]) if linha[12] else None,
+                    'valor_compra': float(linha[13] or 0)
+                })
+
+        cursor.execute("""
+            SELECT FC.ID_FATURA_COMPRA, C.ID_COMPRA, FC.NUMERO_PARCELA, C.QTD_PARCELA,
+                   FC.VALOR_PARCELA, FC.STATUS, FC.DATA_PARCELA, C.DATA_COMPRA, C.VALOR_COMPRA
+            FROM FATURA_COMPRA FC
+            INNER JOIN COMPRA C ON C.ID_COMPRA = FC.ID_COMPRA
+            WHERE C.ID_CARTAO = ?
+            AND FC.ID_FATURA IS NULL
+            AND FC.STATUS = 0
+            ORDER BY FC.DATA_PARCELA, FC.NUMERO_PARCELA
+        """, (id_cartao,))
+
+        futuras = {}
+
+        for linha in cursor.fetchall():
+            data_parcela = linha[6]
+
+            if not data_parcela:
+                continue
+
+            fechamento = data_fechamento_parcela(data_parcela, dia_fechamento)
+            chave = str(fechamento)
+
+            if chave not in futuras:
+                futuras[chave] = {
+                    'data_fechamento': chave,
+                    'data_vencimento': str(data_vencimento_fatura(fechamento, dia_vencimento)),
+                    'valor_total': 0.0,
+                    'situacao': 'PREVISTA',
+                    'itens': []
+                }
+
+            item = {
+                'id_fatura_compra': linha[0],
+                'id_compra': linha[1],
+                'numero_parcela': int(linha[2] or 0),
+                'total_parcelas': int(linha[3] or 1),
+                'valor': float(linha[4] or 0),
+                'status': int(linha[5] or 0),
+                'data_parcela': str(data_parcela),
+                'data_compra': str(linha[7]) if linha[7] else None,
+                'valor_compra': float(linha[8] or 0)
+            }
+
+            futuras[chave]['itens'].append(item)
+            futuras[chave]['valor_total'] += item['valor']
+
+        proximas_faturas = list(futuras.values())
+
+        for fatura in proximas_faturas:
+            fatura['valor_total'] = round(fatura['valor_total'], 2)
+
+        return jsonify({
+            'faturas': faturas,
+            'proximas_faturas': proximas_faturas,
+            'fatura_atual': faturas[0] if faturas else None,
+            'proxima_fatura': proximas_faturas[0] if proximas_faturas else None
+        }), 200
+
+    except Exception as e:
+        return jsonify({'mensagem': 'Erro ao buscar faturas do cartao', 'erro': str(e)}), 500
 
     finally:
         if cursor:
