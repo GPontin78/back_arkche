@@ -243,9 +243,13 @@ def listar_faturas_cartao():
         dia_fechamento = int(cartao[1])
         dia_vencimento = int(cartao[2])
 
+        cursor.close()
+        cursor = None
+
         fechamento_referencia = fechamento_mais_recente(hoje_brasil(), dia_fechamento)
         fechar_fatura(id_cartao, fechamento_referencia)
 
+        cursor = con.cursor()
         cursor.execute("""
             SELECT
                 F.ID_FATURA,
