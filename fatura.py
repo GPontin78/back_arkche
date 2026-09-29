@@ -10,32 +10,19 @@ from banco import con
 FUSO_BRASIL = ZoneInfo('America/Sao_Paulo')
 
 
-def hoje_brasil():
-    return datetime.now(FUSO_BRASIL).date()
-
-
-def calcular_vencimento(data_fechamento, dia_vencimento):
-    ano = data_fechamento.year
-    mes = data_fechamento.month
-
-    if dia_vencimento <= data_fechamento.day:
-        mes += 1
-
-        if mes == 13:
-            mes = 1
-            ano += 1
-
-    return date(ano, mes, dia_vencimento)
-
-
 def fechar_fatura(id_cartao):
+
     cursor = None
 
     try:
+
         cursor = con.cursor()
 
         cursor.execute("""
-            SELECT FECHAMENTO, DIA_VENCIMENTO, ID_CONTA
+            SELECT
+                FECHAMENTO,
+                DIA_VENCIMENTO,
+                ID_CONTA
             FROM CARTAO
             WHERE ID_CARTAO = ?
         """, (id_cartao,))
@@ -49,35 +36,54 @@ def fechar_fatura(id_cartao):
         dia_fechamento = cartao[0]
         dia_vencimento = cartao[1]
         id_conta = cartao[2]
-        hoje = hoje_brasil()
 
-        if dia_fechamento != hoje.day:
-            con.rollback()
-            return
+        hoje = datetime.now(FUSO_BRASIL).date()
 
-        data_fechamento = hoje
-        data_vencimento = calcular_vencimento(data_fechamento, dia_vencimento)
+        data_fechamento = date(
+            hoje.year,
+            hoje.month,
+            dia_fechamento
+        )
+
+        data_vencimento = date(
+            hoje.year,
+            hoje.month,
+            dia_vencimento
+        )
 
         cursor.execute("""
             SELECT ID_FATURA
             FROM FATURA
             WHERE ID_CONTA = ?
             AND DATA_FECHAMENTO = ?
-        """, (id_conta, data_fechamento))
+        """, (
+            id_conta,
+            data_fechamento
+        ))
 
-        if cursor.fetchone():
+        fatura_existente = cursor.fetchone()
+
+        if fatura_existente:
             con.rollback()
             return
 
         cursor.execute("""
-            SELECT FC.ID_FATURA_COMPRA, FC.VALOR_PARCELA
+            SELECT
+                FC.ID_FATURA_COMPRA,
+                FC.VALOR_PARCELA
             FROM FATURA_COMPRA FC
-            INNER JOIN COMPRA C ON C.ID_COMPRA = FC.ID_COMPRA
+
+            INNER JOIN COMPRA C
+            ON C.ID_COMPRA = FC.ID_COMPRA
+
             WHERE C.ID_CARTAO = ?
             AND FC.STATUS = 0
             AND FC.ID_FATURA IS NULL
             AND FC.DATA_PARCELA <= ?
-        """, (id_cartao, data_fechamento))
+        """, (
+            id_cartao,
+            data_fechamento
+        ))
 
         parcelas = cursor.fetchall()
 
@@ -85,44 +91,67 @@ def fechar_fatura(id_cartao):
             con.rollback()
             return
 
-        valor_total = sum(parcela[1] for parcela in parcelas)
+        valor_total = 0
+
+        for parcela in parcelas:
+
+            valor_parcela = parcela[1]
+            valor_total = valor_total + valor_parcela
 
         cursor.execute("""
             INSERT INTO FATURA (
-                ID_CONTA, VALOR_TOTAL, STATUS,
-                DATA_FECHAMENTO, DATA_VENCIMENTO
+                ID_CONTA,
+                VALOR_TOTAL,
+                STATUS,
+                DATA_FECHAMENTO,
+                DATA_VENCIMENTO
             )
             VALUES (?, ?, 0, ?, ?)
             RETURNING ID_FATURA
-        """, (id_conta, valor_total, data_fechamento, data_vencimento))
+        """, (
+            id_conta,
+            valor_total,
+            data_fechamento,
+            data_vencimento
+        ))
 
         id_fatura = cursor.fetchone()[0]
 
         for parcela in parcelas:
+
+            id_fatura_compra = parcela[0]
+
             cursor.execute("""
                 UPDATE FATURA_COMPRA
                 SET ID_FATURA = ?
                 WHERE ID_FATURA_COMPRA = ?
-            """, (id_fatura, parcela[0]))
+            """, (
+                id_fatura,
+                id_fatura_compra
+            ))
 
         con.commit()
 
-        print('Fatura fechada:', id_fatura, 'conta:', id_conta, 'valor:', valor_total)
-
     except Exception as e:
-        con.rollback()
+
+        if cursor is not None:
+            con.rollback()
+
         print('Erro ao fechar fatura:', e)
 
     finally:
-        if cursor:
+
+        if cursor is not None:
             cursor.close()
 
 
 def verificar_fechamento():
-    hoje = hoje_brasil()
+
+    hoje = datetime.now(FUSO_BRASIL).date()
     cursor = None
 
     try:
+
         cursor = con.cursor()
 
         cursor.execute("""
@@ -136,31 +165,30 @@ def verificar_fechamento():
         con.rollback()
 
     finally:
-        if cursor:
+
+        if cursor is not None:
             cursor.close()
 
     for cartao in cartoes:
-        fechar_fatura(cartao[0])
+
+        id_cartao = cartao[0]
+        fechar_fatura(id_cartao)
 
 
-def executar_com_contexto():
+def executar_com_contexto(funcao):
     with app.app_context():
-        verificar_fechamento()
-
-
+        funcao()
+        
 scheduler = BackgroundScheduler(timezone=FUSO_BRASIL)
-
 scheduler.add_job(
     executar_com_contexto,
     'cron',
+    args=[verificar_fechamento],
     minute='*/5',
     id='fechamento_fatura',
-    replace_existing=True
+    replace_existing=True,
+    max_instances=1,
+    coalesce=True,
+    next_run_time=datetime.now(FUSO_BRASIL)
 )
-
 scheduler.start()
-
-try:
-    executar_com_contexto()
-except Exception as e:
-    print('Erro na verificacao inicial das faturas:', e)
