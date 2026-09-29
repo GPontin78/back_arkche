@@ -2,7 +2,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from flask import jsonify, request
 from main import app
 from banco import con
-from funcao import dados_conta, verificar_pin_usuario, calcular_saldo, pode_debitar_saldo, calcular_limite_cartao, data_atual
+from funcao import dados_conta, verificar_pin_usuario, pode_debitar_saldo, calcular_limite_cartao, data_atual
 
 CARTOES_FISICOS = {
     '0D94A4A5': 4,  # Cartao da Lais
