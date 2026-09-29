@@ -97,9 +97,10 @@ def preview_csv_funcionarios():
         if not campo_salario:
             colunas_ausentes.append('Salario mensal')
 
-        if len(colunas_ausentes) == 3:
+        if colunas_ausentes:
             return jsonify({
-                'mensagem': 'Nenhuma coluna reconhecida. Use CPF, Nome completo e Salario mensal.'
+                'mensagem': 'O CSV precisa possuir as colunas CPF, Nome completo e Salario mensal.',
+                'colunas_ausentes': colunas_ausentes
             }), 400
 
         cursor = con.cursor()
@@ -203,7 +204,6 @@ def preview_csv_funcionarios():
             'novos': novos,
             'existentes': existentes,
             'erros': erros,
-            'colunas_ausentes': colunas_ausentes,
             'itens': itens
         }), 200
 
