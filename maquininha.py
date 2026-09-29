@@ -339,12 +339,28 @@ def comprar_maquininha():
                     QTD_PARCELA
                 )
                 VALUES (?, ?, ?, ?, ?, ?)
+                RETURNING ID_COMPRA
             """, (
                 id_cartao,
                 valor,
                 data_compra,
                 1,
                 valor_parcela,
+                qtd_parcela
+            ))
+
+            id_compra = cursor.fetchone()[0]
+            valor_ultima_parcela = (
+                valor - valor_parcela * Decimal(qtd_parcela - 1)
+            ).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+            cursor.execute("""
+                UPDATE FATURA_COMPRA
+                SET VALOR_PARCELA = ?
+                WHERE ID_COMPRA = ? AND NUMERO_PARCELA = ?
+            """, (
+                valor_ultima_parcela,
+                id_compra,
                 qtd_parcela
             ))
 
