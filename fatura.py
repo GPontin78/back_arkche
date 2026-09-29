@@ -71,6 +71,14 @@ def fechar_fatura(id_cartao, data_fechamento=None):
     try:
         cursor = con.cursor()
 
+        # Serializa o fechamento por cartao para evitar duas faturas iguais
+        # quando mais de um worker do Gunicorn executar o scheduler.
+        cursor.execute("""
+            UPDATE CARTAO
+            SET FECHAMENTO = FECHAMENTO
+            WHERE ID_CARTAO = ?
+        """, (id_cartao,))
+
         cursor.execute("""
             SELECT FECHAMENTO, DIA_VENCIMENTO, ID_CONTA, STATUS
             FROM CARTAO
@@ -80,6 +88,7 @@ def fechar_fatura(id_cartao, data_fechamento=None):
         cartao = cursor.fetchone()
 
         if not cartao or int(cartao[3] or 0) != 0:
+            con.rollback()
             return None
 
         dia_fechamento = int(cartao[0])
@@ -114,7 +123,12 @@ def fechar_fatura(id_cartao, data_fechamento=None):
         parcelas = cursor.fetchall()
 
         if not parcelas and id_fatura is None:
+            con.rollback()
             return None
+
+        if not parcelas and id_fatura is not None:
+            con.rollback()
+            return id_fatura
 
         if id_fatura is None:
             valor_total = sum(parcela[1] for parcela in parcelas)
