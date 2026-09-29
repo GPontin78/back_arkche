@@ -27,7 +27,16 @@ def validar_dados_funcionario(cpf, nome, salario):
         problemas.append('Salario nao informado')
     else:
         try:
-            texto_salario = str(salario_original).strip().replace('R
+            texto_salario = str(salario_original).strip().replace('R' + chr(36), '').replace(' ', '')
+            if ',' in texto_salario:
+                texto_salario = texto_salario.replace('.', '').replace(',', '.')
+            salario = Decimal(texto_salario).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+            if not salario.is_finite() or salario <= 0:
+                raise ValueError()
+        except (InvalidOperation, TypeError, ValueError):
+            salario = None
+            problemas.append('Salario invalido')
+
     return cpf, nome, salario, problemas
 
 
