@@ -1,0 +1,38 @@
+-- Normaliza os cartões legados para a regra atual do Arkhé.
+-- Regra: fechamento 10 -> vencimento 13 | fechamento 20 -> vencimento 23.
+-- Cartões antigos são aproximados ao fechamento permitido mais próximo:
+-- até dia 15 -> 10/13 | acima de 15 -> 20/23.
+--
+-- Antes de executar em produção, o SELECT abaixo permite conferir os registros afetados.
+
+SET LIST ON;
+
+SELECT ID_CARTAO, ID_CONTA, FECHAMENTO, DIA_VENCIMENTO
+FROM CARTAO
+WHERE FECHAMENTO IS NULL
+   OR FECHAMENTO NOT IN (10, 20)
+   OR DIA_VENCIMENTO IS NULL
+   OR (FECHAMENTO = 10 AND DIA_VENCIMENTO <> 13)
+   OR (FECHAMENTO = 20 AND DIA_VENCIMENTO <> 23)
+ORDER BY ID_CARTAO;
+
+UPDATE CARTAO
+SET FECHAMENTO = CASE
+        WHEN FECHAMENTO IS NULL OR FECHAMENTO <= 15 THEN 10
+        ELSE 20
+    END,
+    DIA_VENCIMENTO = CASE
+        WHEN FECHAMENTO IS NULL OR FECHAMENTO <= 15 THEN 13
+        ELSE 23
+    END
+WHERE FECHAMENTO IS NULL
+   OR FECHAMENTO NOT IN (10, 20)
+   OR DIA_VENCIMENTO IS NULL
+   OR (FECHAMENTO = 10 AND DIA_VENCIMENTO <> 13)
+   OR (FECHAMENTO = 20 AND DIA_VENCIMENTO <> 23);
+
+COMMIT;
+
+SELECT ID_CARTAO, ID_CONTA, FECHAMENTO, DIA_VENCIMENTO
+FROM CARTAO
+ORDER BY ID_CARTAO;
