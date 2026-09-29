@@ -21,6 +21,7 @@ import acesso
 import folha
 import folha_csv
 import maquininha
+import fatura
 
 
 if __name__ == '__main__':
