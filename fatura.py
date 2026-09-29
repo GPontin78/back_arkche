@@ -1,4 +1,3 @@
-import os
 from datetime import date
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -6,10 +5,23 @@ from main import app
 from banco import con
 
 
+def data_vencimento_fatura(hoje, dia_fechamento, dia_vencimento):
+    ano = hoje.year
+    mes = hoje.month
+
+    if dia_vencimento <= dia_fechamento:
+        mes += 1
+        if mes == 13:
+            mes = 1
+            ano += 1
+
+    return date(ano, mes, dia_vencimento)
+
+
 def fechar_fatura(id_cartao):
+    cursor = None
 
     try:
-
         cursor = con.cursor()
 
         cursor.execute("""
@@ -38,9 +50,9 @@ def fechar_fatura(id_cartao):
             dia_fechamento
         )
 
-        data_vencimento = date(
-            hoje.year,
-            hoje.month,
+        data_vencimento = data_vencimento_fatura(
+            hoje,
+            dia_fechamento,
             dia_vencimento
         )
 
@@ -85,10 +97,7 @@ def fechar_fatura(id_cartao):
         valor_total = 0
 
         for parcela in parcelas:
-
-            valor_parcela = parcela[1]
-
-            valor_total = valor_total + valor_parcela
+            valor_total = valor_total + parcela[1]
 
         cursor.execute("""
             INSERT INTO FATURA (
@@ -110,57 +119,65 @@ def fechar_fatura(id_cartao):
         id_fatura = cursor.fetchone()[0]
 
         for parcela in parcelas:
-
-            id_fatura_compra = parcela[0]
-
             cursor.execute("""
                 UPDATE FATURA_COMPRA
                 SET ID_FATURA = ?
                 WHERE ID_FATURA_COMPRA = ?
             """, (
                 id_fatura,
-                id_fatura_compra
+                parcela[0]
             ))
 
         con.commit()
 
+        print(
+            'Fatura fechada:',
+            'conta=', id_conta,
+            'fatura=', id_fatura,
+            'valor=', valor_total,
+            'fechamento=', data_fechamento,
+            'vencimento=', data_vencimento
+        )
+
     except Exception as e:
-
         con.rollback()
-
         print('Erro ao fechar fatura:', e)
+
+    finally:
+        if cursor:
+            cursor.close()
 
 
 def verificar_fechamento():
-
     hoje = date.today()
+    cursor = None
 
-    cursor = con.cursor()
+    try:
+        cursor = con.cursor()
 
-    cursor.execute("""
-        SELECT ID_CARTAO
-        FROM CARTAO
-        WHERE FECHAMENTO = ?
-        AND STATUS = 0
-    """, (hoje.day,))
+        cursor.execute("""
+            SELECT ID_CARTAO
+            FROM CARTAO
+            WHERE FECHAMENTO = ?
+            AND STATUS = 0
+        """, (hoje.day,))
 
-    cartoes = cursor.fetchall()
+        cartoes = cursor.fetchall()
+
+    finally:
+        if cursor:
+            cursor.close()
 
     for cartao in cartoes:
-
-        id_cartao = cartao[0]
-
-        fechar_fatura(id_cartao)
+        fechar_fatura(cartao[0])
 
 
 def executar_com_contexto(funcao):
-
     with app.app_context():
-
         funcao()
 
 
-scheduler = BackgroundScheduler()
+scheduler = BackgroundScheduler(timezone='America/Sao_Paulo')
 
 scheduler.add_job(
     lambda: executar_com_contexto(verificar_fechamento),
@@ -168,10 +185,23 @@ scheduler.add_job(
     hour=11,
     minute=19,
     id='fechamento_fatura',
-    replace_existing=True
+    replace_existing=True,
+    coalesce=True,
+    misfire_grace_time=3600
 )
 
 
-if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+def iniciar_scheduler_faturas():
+    if scheduler.running:
+        return
 
     scheduler.start()
+    print('Scheduler de faturas iniciado - America/Sao_Paulo - fechamento diario 11:19')
+
+    try:
+        executar_com_contexto(verificar_fechamento)
+    except Exception as e:
+        print('Erro na verificacao inicial de faturas:', e)
+
+
+iniciar_scheduler_faturas()
