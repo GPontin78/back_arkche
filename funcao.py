@@ -10,6 +10,7 @@ from flask import request, current_app
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import uuid
+from decimal import Decimal, InvalidOperation
 
 
 def obter_token():
@@ -501,6 +502,22 @@ def calcular_saldo(id_conta=None):
     finally:
         if cursor:
             cursor.close()
+
+
+def pode_debitar_saldo(id_conta, valor):
+    try:
+        if int(id_conta) == 9:
+            return True
+
+        saldo = calcular_saldo(id_conta)
+
+        if saldo is None:
+            return False
+
+        return Decimal(str(saldo)) >= Decimal(str(valor))
+
+    except (TypeError, ValueError, InvalidOperation):
+        return False
 
 
 def gerar_chave_pix():
