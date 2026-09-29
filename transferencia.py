@@ -1,7 +1,7 @@
 from flask import jsonify, request
 from main import app
 from banco import con
-from funcao import descobre_id_conta, data_atual, calcular_saldo, pode_debitar_saldo
+from funcao import descobre_id_conta, data_atual, pode_debitar_saldo
 import uuid
 
 @app.route('/adicionar_cobranca', methods=['POST'])
