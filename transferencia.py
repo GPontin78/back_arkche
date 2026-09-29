@@ -94,8 +94,7 @@ def baixar_cobranca():
         if id_conta == id_recebedor:
             return jsonify({'mensagem': 'A conta recebedora nao pode pagar o proprio boleto'}), 400
 
-        saldo = calcular_saldo(id_conta)
-        if saldo < valor:
+        if not pode_debitar_saldo(id_conta, valor):
             return jsonify({'mensagem': 'Saldo insuficiente para pagar a cobranca'}), 400
 
         data_movimentacao = data_atual()
@@ -172,11 +171,8 @@ def adicionar_pix():
         if id_pagador == id_recebedor:
             return jsonify({'mensagem': 'Nao e possivel fazer Pix para a mesma conta'}), 400
 
-        saldo = calcular_saldo(id_pagador)
-        print("ID PAGADOR:", id_pagador, "TIPO:", type(id_pagador), "SALDO:", saldo, "VALOR:", valor)
-        if id_pagador != 9:
-            if saldo < valor:
-                return jsonify({'mensagem': 'Saldo insuficiente para realizar o Pix'}), 400
+        if not pode_debitar_saldo(id_pagador, valor):
+            return jsonify({'mensagem': 'Saldo insuficiente para realizar o Pix'}), 400
 
         data_movimentacao = data_atual()
 
