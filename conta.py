@@ -826,8 +826,8 @@ def esqueci_pin():
 
             cursor.execute(
                 """INSERT INTO RECUPERACAO_SENHA
-                   (ID_USUARIO, TOKEN_HASH, EXPIRA_EM, CRIADO_EM)
-                   VALUES (?, ?, ?, ?)""",
+                   (ID_USUARIO, CODIGO, TOKEN_HASH, EXPIRA_EM, CRIADO_EM)
+                   VALUES (?, 0, ?, ?, ?)""",
                 (id_usuario, token_hash, expira_em, data_atual())
             )
 
