@@ -9,4 +9,4 @@ DB_USER = os.environ.get('DB_USER', 'SYSDBA')
 DB_PASSWORD = os.environ.get('DB_PASSWORD','sysdba')
 
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:5173')
-COOKIE_SECURE = os.environ.get('COOKIE_SECURE', 'false').lower() == 'true'
+COOKIE_SECURE = os.environ.get('COOKIE_SECURE', 'true' if FRONTEND_URL.startswith('https://') else 'false').lower() == 'true'
