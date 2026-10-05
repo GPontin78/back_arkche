@@ -1,7 +1,8 @@
 from flask import jsonify, request, make_response, render_template
+import datetime
 from main import app
 from banco import con
-from funcao import gerar_token, gerar_token_usuario, descobre_id_usuario, descobre_id_conta, criptografar_pin, verificar_pin, verificar_pin_usuario, usuario_pode_acessar_conta, listar_contas_usuario, dados_usuario, dados_conta, gerar_codigo, enviando_email, data_atual, preparar_sessao_facial, confirmar_sessao_facial
+from funcao import gerar_token, gerar_token_usuario, descobre_id_usuario, descobre_id_conta, criptografar_pin, verificar_pin, verificar_pin_usuario, usuario_pode_acessar_conta, listar_contas_usuario, dados_usuario, dados_conta, enviando_email, data_atual, preparar_sessao_facial, confirmar_sessao_facial, gerar_token_aleatorio, hash_token_simples
 
 
 @app.route('/facial/preparar_cadastro', methods=['POST'])
@@ -686,8 +687,11 @@ def sessao():
 
 @app.route('/esqueci_pin', methods=['POST'])
 def esqueci_pin():
-    dados = request.get_json()
-    email = dados.get('email')
+    dados = request.get_json() or {}
+    email = str(dados.get('email') or '').strip().lower()
+
+    if not email:
+        return jsonify({'mensagem': 'Informe seu email'}), 400
 
     cursor = None
 
@@ -695,55 +699,96 @@ def esqueci_pin():
         cursor = con.cursor()
 
         cursor.execute(
-            "SELECT ID_USUARIO FROM USUARIO WHERE EMAIL = ?",
+            "SELECT ID_USUARIO, NOME FROM USUARIO WHERE LOWER(EMAIL) = ?",
             (email,)
         )
 
         usuario = cursor.fetchone()
 
-        if not usuario:
-            return jsonify({
-                'mensagem': 'Email não encontrado'
-            }), 404
+        if usuario:
+            id_usuario = usuario[0]
+            nome = usuario[1]
+            token = gerar_token_aleatorio()
+            token_hash = hash_token_simples(token)
+            criado_em = data_atual()
+            expira_em = criado_em + datetime.timedelta(minutes=15)
 
-        id_usuario = usuario[0]
-        codigo = gerar_codigo()
+            cursor.execute(
+                "DELETE FROM RECUPERACAO_SENHA WHERE ID_USUARIO = ?",
+                (id_usuario,)
+            )
 
-        cursor.execute(
-            "DELETE FROM RECUPERACAO_SENHA WHERE ID_USUARIO = ?",
-            (id_usuario,)
-        )
+            cursor.execute(
+                """INSERT INTO RECUPERACAO_SENHA
+                   (ID_USUARIO, CODIGO, TOKEN_HASH, EXPIRA_EM, CRIADO_EM, UTILIZADO_EM)
+                   VALUES (?, 0, ?, ?, ?, NULL)""",
+                (id_usuario, token_hash, expira_em, criado_em)
+            )
 
-        cursor.execute(
-            """INSERT INTO RECUPERACAO_SENHA
-               (ID_USUARIO, CODIGO)
-               VALUES (?, ?)""",
-            (id_usuario, codigo)
-        )
+            con.commit()
 
-        con.commit()
+            link = app.config['FRONTEND_URL'].rstrip('/') + '/redefinir-pin#token=' + token
 
-        html = render_template(
-            'codigo_verificacao.html',
-            codigo=codigo
-        )
+            html = render_template(
+                'recuperacao_pin.html',
+                nome=nome,
+                link=link
+            )
 
-        enviando_email(
-            email,
-            'Código de Recuperação de PIN - Banco Arkhé',
-            html
-        )
+            enviando_email(
+                email,
+                'Redefinição de PIN - Banco Arkhé',
+                html
+            )
 
         return jsonify({
-            'mensagem': 'Código enviado com sucesso'
+            'mensagem': 'Se este email estiver cadastrado, enviaremos um link para redefinir o PIN.'
         }), 200
 
     except Exception as e:
         con.rollback()
+        print('ERRO ESQUECI PIN:', e)
 
         return jsonify({
-            'mensagem': f'Erro ao enviar código: {e}'
+            'mensagem': 'Não foi possível iniciar a recuperação agora'
         }), 500
+
+    finally:
+        if cursor:
+            cursor.close()
+
+
+@app.route('/verificar_token_pin', methods=['POST'])
+def verificar_token_pin():
+    dados = request.get_json() or {}
+    token = dados.get('token')
+
+    if not token:
+        return jsonify({'mensagem': 'Link inválido ou expirado'}), 400
+
+    cursor = None
+
+    try:
+        cursor = con.cursor()
+        token_hash = hash_token_simples(token)
+
+        cursor.execute(
+            """SELECT ID_RECUPERACAO_SENHA
+               FROM RECUPERACAO_SENHA
+               WHERE TOKEN_HASH = ?
+                 AND EXPIRA_EM > ?
+                 AND UTILIZADO_EM IS NULL""",
+            (token_hash, data_atual())
+        )
+
+        if not cursor.fetchone():
+            return jsonify({'mensagem': 'Link inválido ou expirado'}), 400
+
+        return jsonify({'mensagem': 'Link válido'}), 200
+
+    except Exception as e:
+        print('ERRO VERIFICAR TOKEN PIN:', e)
+        return jsonify({'mensagem': 'Não foi possível validar o link'}), 500
 
     finally:
         if cursor:
@@ -752,61 +797,19 @@ def esqueci_pin():
 
 @app.route('/verificar_codigo', methods=['POST'])
 def verificar_codigo():
-    dados = request.get_json()
-    email = dados.get('email')
-    codigo = dados.get('codigo')
+    return jsonify({
+        'mensagem': 'A recuperação por código foi substituída pelo link enviado por email.'
+    }), 410
 
-    cursor = None
-
-    try:
-        cursor = con.cursor()
-
-        cursor.execute(
-            """SELECT R.CODIGO
-               FROM USUARIO U
-               INNER JOIN RECUPERACAO_SENHA R
-               ON U.ID_USUARIO = R.ID_USUARIO
-               WHERE U.EMAIL = ?""",
-            (email,)
-        )
-
-        resultado = cursor.fetchone()
-
-        if not resultado:
-            return jsonify({
-                'mensagem': 'Código inválido'
-            }), 400
-
-        codigo_banco = str(resultado[0])
-
-        if str(codigo) != codigo_banco:
-            return jsonify({
-                'mensagem': 'Código inválido'
-            }), 400
-
-        return jsonify({
-            'mensagem': 'Código válido'
-        }), 200
-
-    except Exception as e:
-        return jsonify({
-            'mensagem': f'Erro ao verificar código: {e}'
-        }), 500
-
-    finally:
-        if cursor:
-            cursor.close()
 
 @app.route('/trocar_pin', methods=['POST'])
 def trocar_pin():
     dados = request.get_json() or {}
-
-    email = dados.get('email')
-    codigo = dados.get('codigo')
+    token = dados.get('token')
     novo_pin = dados.get('novo_pin')
 
-    if not email or not codigo or novo_pin is None:
-        return jsonify({'mensagem': 'Email, código e novo PIN são obrigatórios'}), 400
+    if not token or novo_pin is None:
+        return jsonify({'mensagem': 'Link e novo PIN são obrigatórios'}), 400
 
     novo_pin = str(novo_pin)
 
@@ -817,22 +820,27 @@ def trocar_pin():
 
     try:
         cursor = con.cursor()
+        token_hash = hash_token_simples(token)
+        agora = data_atual()
 
         cursor.execute(
-            """SELECT U.ID_USUARIO, U.PIN_HASH
-               FROM USUARIO U
-               INNER JOIN RECUPERACAO_SENHA R ON R.ID_USUARIO = U.ID_USUARIO
-               WHERE U.EMAIL = ? AND R.CODIGO = ?""",
-            (email, codigo)
+            """SELECT R.ID_RECUPERACAO_SENHA, U.ID_USUARIO, U.PIN_HASH
+               FROM RECUPERACAO_SENHA R
+               INNER JOIN USUARIO U ON U.ID_USUARIO = R.ID_USUARIO
+               WHERE R.TOKEN_HASH = ?
+                 AND R.EXPIRA_EM > ?
+                 AND R.UTILIZADO_EM IS NULL""",
+            (token_hash, agora)
         )
 
-        usuario = cursor.fetchone()
+        recuperacao = cursor.fetchone()
 
-        if not usuario:
-            return jsonify({'mensagem': 'Código inválido'}), 400
+        if not recuperacao:
+            return jsonify({'mensagem': 'Link inválido ou expirado'}), 400
 
-        id_usuario = usuario[0]
-        pin_atual = usuario[1]
+        id_recuperacao = recuperacao[0]
+        id_usuario = recuperacao[1]
+        pin_atual = recuperacao[2]
 
         if pin_atual and verificar_pin(novo_pin, pin_atual):
             return jsonify({'mensagem': 'O novo PIN não pode ser igual ao PIN atual'}), 400
@@ -854,9 +862,10 @@ def trocar_pin():
         )
 
         cursor.execute(
-            """DELETE FROM RECUPERACAO_SENHA
-               WHERE ID_USUARIO = ?""",
-            (id_usuario,)
+            """UPDATE RECUPERACAO_SENHA
+               SET UTILIZADO_EM = ?
+               WHERE ID_RECUPERACAO_SENHA = ?""",
+            (agora, id_recuperacao)
         )
 
         con.commit()
@@ -871,6 +880,7 @@ def trocar_pin():
     finally:
         if cursor:
             cursor.close()
+
 
 @app.route('/buscar_contas_usuario', methods=['POST'])
 def buscar_contas_usuario():
