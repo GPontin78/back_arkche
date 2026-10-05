@@ -63,6 +63,8 @@ def adicionar_usuario():
     pin = request.form.get('pin')
     tipo_conta = request.form.get('tipo_conta')
     tipo = request.form.get('tipo')
+    face_token = request.form.get('face_token')
+    face_session_token = request.form.get('face_session_token')
 
     data_nascimento = request.form.get('data_nascimento')
 
