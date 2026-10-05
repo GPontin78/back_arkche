@@ -10,6 +10,9 @@ from flask import request, current_app
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import uuid
+import hashlib
+import secrets
+import requests
 from decimal import Decimal, InvalidOperation
 
 
@@ -453,6 +456,191 @@ def verificar_pin_usuario(id_usuario, pin):
     finally:
         if cursor:
             cursor.close()
+
+
+def gerar_token_aleatorio():
+    return secrets.token_urlsafe(32)
+
+
+def hash_token_simples(token):
+    return hashlib.sha256(str(token).encode('utf-8')).hexdigest()
+
+
+def gerar_token_facial(session_id, modo, id_usuario=None, cpf=None):
+    payload = {
+        'escopo': 'facial',
+        'session_id': str(session_id),
+        'modo': modo,
+        'exp': datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=20)
+    }
+
+    if id_usuario is not None:
+        payload['id_usuario'] = int(id_usuario)
+
+    if cpf:
+        payload['cpf'] = str(cpf)
+
+    return jwt.encode(
+        payload,
+        current_app.config['SECRET_KEY'],
+        algorithm='HS256'
+    )
+
+
+def ler_token_facial(token):
+    try:
+        payload = jwt.decode(
+            token,
+            current_app.config['SECRET_KEY'],
+            algorithms=['HS256']
+        )
+
+        if payload.get('escopo') != 'facial':
+            return None
+
+        return payload
+
+    except Exception:
+        return None
+
+
+def preparar_sessao_facial(cpf, nome=None, email=None, telefone=None, id_usuario=None):
+    api_url = os.getenv('FACE_API_URL')
+    client_id = os.getenv('FACE_CLIENT_ID')
+    client_secret = os.getenv('FACE_CLIENT_SECRET')
+
+    if not api_url or not client_id or not client_secret:
+        return None
+
+    headers = {
+        'X-Client-Id': client_id,
+        'X-Client-Secret': client_secret
+    }
+
+    try:
+        resposta = requests.post(
+            api_url + '/v1/verifications',
+            headers=headers,
+            json={
+                'cpf': str(cpf),
+                'purpose': 'login',
+                'ttl_minutes': 10
+            },
+            timeout=20
+        )
+
+        modo = 'login'
+
+        if resposta.status_code == 404:
+            resposta = requests.post(
+                api_url + '/v1/enrollments',
+                headers=headers,
+                json={
+                    'cpf': str(cpf),
+                    'external_user_id': str(id_usuario) if id_usuario is not None else None,
+                    'display_name': nome,
+                    'email': email or None,
+                    'phone': telefone or None,
+                    'consent': {
+                        'accepted': True,
+                        'version': 'arkhe-termos-v1',
+                        'purpose': 'Cadastro e autenticação facial no Banco Arkhé'
+                    },
+                    'ttl_minutes': 15
+                },
+                timeout=20
+            )
+            modo = 'cadastro'
+
+        if not resposta.ok:
+            print('ERRO PREPARAR FACE:', resposta.status_code, resposta.text)
+            return None
+
+        sessao = resposta.json()
+
+        return {
+            'modo': modo,
+            'sessao': sessao,
+            'face_token': gerar_token_facial(
+                sessao.get('session_id'),
+                modo,
+                id_usuario=id_usuario,
+                cpf=cpf
+            )
+        }
+
+    except Exception as e:
+        print('ERRO PREPARAR FACE:', e)
+        return None
+
+
+def confirmar_sessao_facial(face_token, session_token, id_usuario=None, cpf=None):
+    payload = ler_token_facial(face_token)
+
+    if not payload or not session_token:
+        return False
+
+    if id_usuario is not None and payload.get('id_usuario') != int(id_usuario):
+        return False
+
+    if cpf and str(payload.get('cpf')) != str(cpf):
+        return False
+
+    session_id = payload.get('session_id')
+    modo = payload.get('modo')
+    api_url = os.getenv('FACE_API_URL')
+
+    if not api_url or not session_id or modo not in ('login', 'cadastro'):
+        return False
+
+    caminho = 'verifications' if modo == 'login' else 'enrollments'
+
+    try:
+        resposta = requests.get(
+            f'{api_url}/v1/{caminho}/{session_id}',
+            headers={'Authorization': f'Bearer {session_token}'},
+            timeout=20
+        )
+
+        if not resposta.ok:
+            print('ERRO CONFIRMAR FACE:', resposta.status_code, resposta.text)
+            return False
+
+        resultado = resposta.json()
+
+        if modo == 'login':
+            return resultado.get('status') == 'matched' and resultado.get('matched') is True
+
+        return resultado.get('status') == 'completed'
+
+    except Exception as e:
+        print('ERRO CONFIRMAR FACE:', e)
+        return False
+
+
+def enviar_codigo_telefone(telefone, codigo, canal):
+    webhook = os.getenv('PIX_OTP_WEBHOOK_URL')
+
+    if not webhook:
+        return False
+
+    try:
+        resposta = requests.post(
+            webhook,
+            json={
+                'telefone': str(telefone),
+                'codigo': str(codigo),
+                'canal': str(canal).upper(),
+                'origem': 'BANCO_ARKHE'
+            },
+            timeout=15
+        )
+
+        return resposta.ok
+
+    except Exception as e:
+        print('ERRO ENVIO CODIGO TELEFONE:', e)
+        return False
 
 
 def gerar_codigo():
