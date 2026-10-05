@@ -58,7 +58,10 @@ def buscar_cartao_fisico(uid):
                 CA.LIMITE,
                 CA.STATUS,
                 C.ID_USUARIO,
-                U.NOME
+                U.NOME,
+                CA.TENTATIVAS_PIN,
+                CA.MOTIVO_BLOQUEIO,
+                CA.DATA_BLOQUEIO
             FROM CARTAO CA
             INNER JOIN CONTA C ON C.ID_CONTA = CA.ID_CONTA
             INNER JOIN USUARIO U ON U.ID_USUARIO = C.ID_USUARIO
@@ -66,6 +69,65 @@ def buscar_cartao_fisico(uid):
         """, (id_cartao,))
 
         return cursor.fetchone()
+
+    finally:
+        if cursor:
+            cursor.close()
+
+
+def registrar_erro_pin(id_cartao, tentativas_atuais):
+    tentativas = min(int(tentativas_atuais or 0) + 1, 3)
+    bloqueado = tentativas >= 3
+
+    cursor = None
+
+    try:
+        cursor = con.cursor()
+
+        if bloqueado:
+            cursor.execute("""
+                UPDATE CARTAO
+                SET TENTATIVAS_PIN = 3,
+                    STATUS = 1,
+                    MOTIVO_BLOQUEIO = 'PIN',
+                    DATA_BLOQUEIO = ?
+                WHERE ID_CARTAO = ?
+            """, (data_atual(), id_cartao))
+        else:
+            cursor.execute("""
+                UPDATE CARTAO
+                SET TENTATIVAS_PIN = ?
+                WHERE ID_CARTAO = ?
+            """, (tentativas, id_cartao))
+
+        con.commit()
+        return tentativas, bloqueado
+
+    except Exception:
+        con.rollback()
+        raise
+
+    finally:
+        if cursor:
+            cursor.close()
+
+
+def limpar_erros_pin(id_cartao):
+    cursor = None
+
+    try:
+        cursor = con.cursor()
+        cursor.execute("""
+            UPDATE CARTAO
+            SET TENTATIVAS_PIN = 0
+            WHERE ID_CARTAO = ?
+              AND TENTATIVAS_PIN <> 0
+        """, (id_cartao,))
+        con.commit()
+
+    except Exception:
+        con.rollback()
+        raise
 
     finally:
         if cursor:
@@ -229,6 +291,7 @@ def comprar_maquininha():
     status_cartao = cartao[4]
     id_usuario = cartao[5]
     nome_usuario = cartao[6]
+    tentativas_pin = cartao[7] or 0
 
     if status_cartao == 1:
         return jsonify({
@@ -247,11 +310,26 @@ def comprar_maquininha():
     resultado_pin = verificar_pin_usuario(id_usuario, pin)
 
     if not resultado_pin.get('valido'):
+        tentativas_pin, bloqueado = registrar_erro_pin(id_cartao, tentativas_pin)
+        restantes = max(0, 3 - tentativas_pin)
+
+        if bloqueado:
+            return jsonify({
+                'aprovado': False,
+                'codigo': 'CARTAO_BLOQUEADO',
+                'mensagem': 'Cartao bloqueado apos 3 tentativas de PIN incorretas',
+                'tentativas_restantes': 0
+            }), 423
+
         return jsonify({
             'aprovado': False,
             'codigo': 'PIN_INVALIDO',
-            'mensagem': 'PIN invalido'
+            'mensagem': f'PIN invalido. Restam {restantes} tentativa(s)',
+            'tentativas_restantes': restantes
         }), 401
+
+    if tentativas_pin > 0:
+        limpar_erros_pin(id_cartao)
 
     data_compra = data_atual()
 
