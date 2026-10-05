@@ -122,6 +122,15 @@ def adicionar_usuario():
                 'mensagem': 'CNPJ, nome fantasia e razão social são obrigatórios para conta PJ'
             }), 400
 
+    if not confirmar_sessao_facial(
+        face_token,
+        face_session_token,
+        cpf=cpf
+    ):
+        return jsonify({
+            'mensagem': 'Reconhecimento facial não confirmado'
+        }), 401
+
     cursor = None
 
     try:
