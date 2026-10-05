@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <title>Redefinição de PIN - Banco Arkhé</title>
+</head>
+<body style="margin:0;background:#f5f2e9;font-family:Arial,sans-serif;color:#1c1c17;">
+  <div style="max-width:560px;margin:0 auto;padding:32px 20px;">
+    <div style="background:#ffffff;border:1px solid #ddd7ca;border-radius:18px;padding:32px;">
+      <div style="font-size:24px;font-weight:700;color:#0d4d4d;margin-bottom:6px;">ARKHÉ</div>
+      <div style="font-size:12px;letter-spacing:1.5px;color:#66746f;margin-bottom:28px;">BANCO DIGITAL DIDÁTICO</div>
+
+      <h1 style="font-size:24px;margin:0 0 14px;">Redefina seu PIN</h1>
+      <p style="font-size:15px;line-height:1.6;margin:0 0 12px;">Olá{% if nome %}, {{ nome }}{% endif %}.</p>
+      <p style="font-size:15px;line-height:1.6;margin:0 0 24px;">
+        Recebemos uma solicitação para alterar o PIN da sua conta Arkhé.
+        O link abaixo é válido por 15 minutos e pode ser usado uma única vez.
+      </p>
+
+      <a href="{{ link }}" style="display:inline-block;background:#0d4d4d;color:#ffffff;text-decoration:none;font-weight:700;padding:14px 22px;border-radius:10px;">
+        Criar novo PIN
+      </a>
+
+      <p style="font-size:13px;line-height:1.6;color:#66746f;margin:26px 0 0;">
+        Se você não solicitou essa alteração, ignore este e-mail. Seu PIN atual continuará válido.
+      </p>
+    </div>
+
+    <p style="font-size:11px;line-height:1.5;color:#7d817e;text-align:center;margin:18px 0 0;">
+      Banco Arkhé — ambiente acadêmico de demonstração.
+    </p>
+  </div>
+</body>
+</html>
