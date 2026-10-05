@@ -51,7 +51,10 @@ def serializar_cartao(cartao):
         'limite_disponivel': limite_total - limite_utilizado,
         'dia_vencimento': cartao[6],
         'dia_fechamento': cartao[7],
-        'status': int(cartao[8] or 0)
+        'status': int(cartao[8] or 0),
+        'tentativas_pin': int(cartao[9] or 0),
+        'motivo_bloqueio': cartao[10],
+        'data_bloqueio': str(cartao[11]) if cartao[11] else None
     }
 
 
@@ -67,7 +70,7 @@ def buscar_cartao():
     try:
         cursor = con.cursor()
 
-        cursor.execute("""SELECT ID_CARTAO, ID_CONTA, NUMERO_CARTAO, VENCIMENTO, CVV, LIMITE, DIA_VENCIMENTO, FECHAMENTO, STATUS
+        cursor.execute("""SELECT ID_CARTAO, ID_CONTA, NUMERO_CARTAO, VENCIMENTO, CVV, LIMITE, DIA_VENCIMENTO, FECHAMENTO, STATUS, TENTATIVAS_PIN, MOTIVO_BLOQUEIO, DATA_BLOQUEIO
                           FROM CARTAO
                           WHERE ID_CONTA = ?""", (id_conta,))
 
@@ -371,7 +374,7 @@ def adicionar_cartao():
 
         cursor = con.cursor()
 
-        cursor.execute("""SELECT ID_CARTAO, ID_CONTA, NUMERO_CARTAO, VENCIMENTO, CVV, LIMITE, DIA_VENCIMENTO, FECHAMENTO, STATUS
+        cursor.execute("""SELECT ID_CARTAO, ID_CONTA, NUMERO_CARTAO, VENCIMENTO, CVV, LIMITE, DIA_VENCIMENTO, FECHAMENTO, STATUS, TENTATIVAS_PIN, MOTIVO_BLOQUEIO, DATA_BLOQUEIO
                           FROM CARTAO
                           WHERE ID_CONTA = ?""", (id_conta,))
 
@@ -403,7 +406,7 @@ def adicionar_cartao():
 
         con.commit()
 
-        cursor.execute("""SELECT ID_CARTAO, ID_CONTA, NUMERO_CARTAO, VENCIMENTO, CVV, LIMITE, DIA_VENCIMENTO, FECHAMENTO, STATUS
+        cursor.execute("""SELECT ID_CARTAO, ID_CONTA, NUMERO_CARTAO, VENCIMENTO, CVV, LIMITE, DIA_VENCIMENTO, FECHAMENTO, STATUS, TENTATIVAS_PIN, MOTIVO_BLOQUEIO, DATA_BLOQUEIO
                           FROM CARTAO
                           WHERE ID_CONTA = ? AND NUMERO_CARTAO = ?""", (id_conta, numero_cartao))
 
@@ -432,6 +435,8 @@ def bloquear_cartao():
         if id_conta is None:
             return jsonify({'mensagem': 'Usuario nao logado'}), 403
 
+        dados = request.get_json(silent=True) or {}
+        bloqueado = dados.get('bloqueado')
         cursor = con.cursor()
 
         cursor.execute("""SELECT ID_CARTAO, STATUS
@@ -444,24 +449,34 @@ def bloquear_cartao():
             return jsonify({'mensagem': 'Cartao nao encontrado'}), 404
 
         id_cartao = cartao[0]
-        status = cartao[1]
+        status_atual = int(cartao[1] or 0)
 
-        if status == 0:
-            status = 1
-
+        if bloqueado is None:
+            novo_status = 0 if status_atual == 1 else 1
         else:
-            status = 0
+            novo_status = 1 if bool(bloqueado) else 0
 
-        cursor.execute("""UPDATE CARTAO
-                          SET STATUS = ?
-                          WHERE ID_CARTAO = ?""",
-                       (status, id_cartao))
+        if novo_status == 1:
+            cursor.execute("""UPDATE CARTAO
+                              SET STATUS = 1,
+                                  MOTIVO_BLOQUEIO = 'MANUAL',
+                                  DATA_BLOQUEIO = ?
+                              WHERE ID_CARTAO = ?""",
+                           (data_atual(), id_cartao))
+        else:
+            cursor.execute("""UPDATE CARTAO
+                              SET STATUS = 0,
+                                  TENTATIVAS_PIN = 0,
+                                  MOTIVO_BLOQUEIO = NULL,
+                                  DATA_BLOQUEIO = NULL
+                              WHERE ID_CARTAO = ?""",
+                           (id_cartao,))
 
         con.commit()
 
         return jsonify({
-            'mensagem': 'Status do cartao alterado com sucesso',
-            'status': status
+            'mensagem': 'Cartao bloqueado com sucesso' if novo_status == 1 else 'Cartao desbloqueado com sucesso',
+            'status': novo_status
         }), 200
 
     except Exception as e:
