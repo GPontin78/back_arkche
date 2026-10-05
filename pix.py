@@ -1,12 +1,11 @@
 from flask import jsonify, request
 import hashlib
 import os
-import random
 import requests
 
 from main import app
 from banco import con
-from funcao import descobre_id_conta, dados_usuario, gerar_chave_pix, validar_chave_pix, criptografar_pin, verificar_pin, enviando_email, data_atual
+from funcao import descobre_id_conta, dados_usuario, gerar_chave_pix, validar_chave_pix, enviando_email, data_atual
 
 
 def garantir_linha_chave_pix(cursor, id_conta):
@@ -25,61 +24,123 @@ def cancelar_verificacoes_pendentes(cursor, id_conta, tipo_chave):
     )
 
 
-def enviar_codigo_telefone(telefone, canal, codigo):
-    sid = os.getenv('TWILIO_ACCOUNT_SID')
-    token = os.getenv('TWILIO_AUTH_TOKEN')
-    numero = os.getenv('TWILIO_PHONE_NUMBER')
-    whatsapp = os.getenv('TWILIO_WHATSAPP_NUMBER')
-
-    if not sid or not token:
-        return False, 'O provedor de telefone ainda não foi configurado no servidor.'
-
-    telefone = ''.join(c for c in str(telefone) if c.isdigit())
+def normalizar_telefone_twilio(telefone):
+    telefone = ''.join(c for c in str(telefone or '') if c.isdigit())
 
     if len(telefone) in (10, 11):
         telefone = '55' + telefone
 
-    telefone = '+' + telefone
-    mensagem = f'Seu código de confirmação Pix do Banco Arkhé é {codigo}. Ele expira em 5 minutos.'
+    return '+' + telefone
 
-    if canal in ('SMS', 'WHATSAPP'):
-        origem = whatsapp if canal == 'WHATSAPP' else numero
 
-        if not origem:
-            return False, 'Este canal ainda não foi configurado no servidor.'
+def mensagem_erro_twilio(resposta, canal):
+    try:
+        erro = resposta.json()
+    except Exception:
+        erro = {}
 
-        destino = f'whatsapp:{telefone}' if canal == 'WHATSAPP' else telefone
-        origem = f'whatsapp:{origem}' if canal == 'WHATSAPP' and not str(origem).startswith('whatsapp:') else origem
+    codigo = erro.get('code')
+    mensagem = str(erro.get('message') or '')
 
+    print('TWILIO VERIFY ERRO:', resposta.status_code, codigo, mensagem[:300])
+
+    if resposta.status_code in (401, 403):
+        return 'A integração com a Twilio não está autenticada. Confira as credenciais no servidor.'
+
+    if resposta.status_code == 404:
+        return 'O serviço de verificação da Twilio não foi encontrado. Confira o Service SID.'
+
+    if codigo in (60203, 60207, 60212, 60624, 60626):
+        return 'Muitas tentativas de envio em pouco tempo. Aguarde alguns minutos e tente novamente.'
+
+    if codigo in (60006, 60200):
+        return 'O telefone cadastrado não foi aceito pela Twilio. Confira o número e tente novamente.'
+
+    if codigo == 60610:
+        return 'A Twilio não oferece este canal para o telefone ou país informado nesta conta.'
+
+    if codigo in (14111,):
+        return 'Este telefone ainda não está verificado na sua conta Twilio de teste.'
+
+    if codigo in (68008, 63008):
+        return 'O WhatsApp ainda não está configurado no serviço Twilio Verify.'
+
+    if codigo == 60217:
+        return 'O serviço Twilio Verify precisa ser configurado antes de enviar códigos.'
+
+    return f'Não foi possível enviar o código por {canal.lower()}. Código Twilio: {codigo or resposta.status_code}.'
+
+
+def iniciar_twilio_verify(telefone, canal):
+    sid = os.getenv('TWILIO_ACCOUNT_SID')
+    token = os.getenv('TWILIO_AUTH_TOKEN')
+    service_sid = os.getenv('TWILIO_VERIFY_SERVICE_SID')
+
+    if not sid or not token or not service_sid:
+        return False, 'O Twilio Verify ainda não foi configurado no servidor.'
+
+    canais = {
+        'SMS': 'sms',
+        'WHATSAPP': 'whatsapp',
+        'LIGACAO': 'call'
+    }
+
+    canal_twilio = canais.get(canal)
+
+    if not canal_twilio:
+        return False, 'Canal de confirmação inválido.'
+
+    try:
         resposta = requests.post(
-            f'https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json',
-            auth=(sid, token),
-            data={'From': origem, 'To': destino, 'Body': mensagem},
-            timeout=20
-        )
-
-    elif canal == 'LIGACAO':
-        if not numero:
-            return False, 'O canal de ligação ainda não foi configurado no servidor.'
-
-        resposta = requests.post(
-            f'https://api.twilio.com/2010-04-01/Accounts/{sid}/Calls.json',
+            f'https://verify.twilio.com/v2/Services/{service_sid}/Verifications',
             auth=(sid, token),
             data={
-                'From': numero,
-                'To': telefone,
-                'Twiml': f'<Response><Say language="pt-BR">Seu código de confirmação Pix é {codigo}</Say></Response>'
+                'To': normalizar_telefone_twilio(telefone),
+                'Channel': canal_twilio
             },
             timeout=20
         )
-
-    else:
-        return False, 'Canal inválido.'
+    except requests.RequestException as e:
+        print('TWILIO VERIFY INDISPONIVEL:', e)
+        return False, 'A Twilio está temporariamente indisponível. Tente novamente em instantes.'
 
     if not resposta.ok:
-        return False, 'Não foi possível enviar o código por este canal.'
+        return False, mensagem_erro_twilio(resposta, canal)
+
+    resultado = resposta.json()
+
+    if resultado.get('status') != 'pending':
+        return False, 'A Twilio não iniciou a confirmação deste telefone.'
 
     return True, None
+
+
+def confirmar_twilio_verify(telefone, codigo):
+    sid = os.getenv('TWILIO_ACCOUNT_SID')
+    token = os.getenv('TWILIO_AUTH_TOKEN')
+    service_sid = os.getenv('TWILIO_VERIFY_SERVICE_SID')
+
+    if not sid or not token or not service_sid:
+        return False, 'O Twilio Verify ainda não foi configurado no servidor.'
+
+    try:
+        resposta = requests.post(
+            f'https://verify.twilio.com/v2/Services/{service_sid}/VerificationCheck',
+            auth=(sid, token),
+            data={
+                'To': normalizar_telefone_twilio(telefone),
+                'Code': codigo
+            },
+            timeout=20
+        )
+    except requests.RequestException as e:
+        print('TWILIO VERIFY CHECK INDISPONIVEL:', e)
+        return False, 'A Twilio está temporariamente indisponível. Tente novamente em instantes.'
+
+    if not resposta.ok:
+        return False, mensagem_erro_twilio(resposta, 'confirmação')
+
+    return resposta.json().get('status') == 'approved', None
 
 
 @app.route('/adicionar_chave_pix', methods=['POST'])
@@ -284,15 +345,12 @@ def iniciar_verificacao_telefone_pix():
     if validar_chave_pix(telefone, 'chave_pix_telefone', 1):
         return jsonify({'mensagem': 'Este telefone já é uma chave Pix'}), 400
 
-    codigo = str(random.randint(100000, 999999))
-    codigo_hash = criptografar_pin(codigo)
-    expira_em = data_atual() + __import__('datetime').timedelta(minutes=5)
-
-    enviado, erro_envio = enviar_codigo_telefone(telefone, canal, codigo)
+    enviado, erro_envio = iniciar_twilio_verify(telefone, canal)
 
     if not enviado:
         return jsonify({'mensagem': erro_envio}), 503
 
+    expira_em = data_atual() + __import__('datetime').timedelta(minutes=10)
     cursor = None
 
     try:
@@ -301,10 +359,10 @@ def iniciar_verificacao_telefone_pix():
 
         cursor.execute(
             """INSERT INTO VERIFICACAO_PIX
-               (ID_CONTA, TIPO_CHAVE, VALOR_CHAVE, CANAL, CODIGO_HASH, EXPIRA_EM, TENTATIVAS, STATUS, DATA_CRIACAO)
-               VALUES (?, 'TELEFONE', ?, ?, ?, ?, 0, 0, ?)
+               (ID_CONTA, TIPO_CHAVE, VALOR_CHAVE, CANAL, EXPIRA_EM, TENTATIVAS, STATUS, DATA_CRIACAO)
+               VALUES (?, 'TELEFONE', ?, ?, ?, 0, 0, ?)
                RETURNING ID_VERIFICACAO""",
-            (id_conta, telefone, canal, codigo_hash, expira_em, data_atual())
+            (id_conta, telefone, canal, expira_em, data_atual())
         )
 
         id_verificacao = cursor.fetchone()[0]
@@ -312,7 +370,8 @@ def iniciar_verificacao_telefone_pix():
 
         return jsonify({
             'mensagem': 'Código enviado com sucesso.',
-            'id_verificacao': id_verificacao
+            'id_verificacao': id_verificacao,
+            'canal': canal
         }), 200
 
     except Exception as e:
@@ -344,7 +403,7 @@ def confirmar_verificacao_telefone_pix():
         cursor = con.cursor()
 
         cursor.execute(
-            """SELECT VALOR_CHAVE, CODIGO_HASH, TENTATIVAS, EXPIRA_EM
+            """SELECT VALOR_CHAVE, TENTATIVAS, EXPIRA_EM
                FROM VERIFICACAO_PIX
                WHERE ID_VERIFICACAO = ? AND ID_CONTA = ?
                AND TIPO_CHAVE = 'TELEFONE' AND STATUS = 0""",
@@ -354,18 +413,24 @@ def confirmar_verificacao_telefone_pix():
         verificacao = cursor.fetchone()
 
         if not verificacao:
-            return jsonify({'mensagem': 'Confirmação não encontrada'}), 404
+            return jsonify({'mensagem': 'Confirmação não encontrada ou já encerrada'}), 404
 
-        telefone, codigo_hash, tentativas, expira_em = verificacao
+        telefone, tentativas, expira_em = verificacao
 
         if expira_em <= data_atual():
             cursor.execute("UPDATE VERIFICACAO_PIX SET STATUS = 2 WHERE ID_VERIFICACAO = ?", (id_verificacao,))
             con.commit()
             return jsonify({'mensagem': 'O código expirou. Solicite outro.'}), 400
 
-        if not verificar_pin(codigo, codigo_hash):
+        aprovado, erro_twilio = confirmar_twilio_verify(telefone, codigo)
+
+        if erro_twilio:
+            return jsonify({'mensagem': erro_twilio}), 503
+
+        if not aprovado:
             tentativas = int(tentativas or 0) + 1
             status = 3 if tentativas >= 5 else 0
+
             cursor.execute(
                 "UPDATE VERIFICACAO_PIX SET TENTATIVAS = ?, STATUS = ? WHERE ID_VERIFICACAO = ?",
                 (tentativas, status, id_verificacao)
