@@ -2,7 +2,7 @@ from flask import jsonify, request
 import datetime
 from main import app
 from banco import con
-from funcao import descobre_id_usuario, descobre_id_conta, criptografar_pin, data_atual
+from funcao import descobre_id_usuario, descobre_id_conta, criptografar_pin, data_atual, confirmar_sessao_facial
 
 
 @app.route('/verificar_usuario', methods=['POST'])
