@@ -16,7 +16,6 @@ import pix
 import pdf 
 import api
 import cartao
-import compra 
 import acesso
 import folha
 import folha_csv
