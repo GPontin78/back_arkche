@@ -5,7 +5,7 @@ import requests
 
 from main import app
 from banco import con
-from funcao import descobre_id_conta, dados_usuario, gerar_chave_pix, validar_chave_pix, enviando_email, data_atual
+from funcao import descobre_id_conta, dados_usuario, gerar_chave_pix, validar_chave_pix, enviando_email, montar_email_arkhe, data_atual
 
 
 def garantir_linha_chave_pix(cursor, id_conta):
@@ -241,15 +241,16 @@ def iniciar_verificacao_email_pix():
         con.commit()
 
         link = app.config['FRONTEND_URL'].rstrip('/') + '/confirmar-chave-pix#token=' + token
-        html = f"""
-        <div style="font-family:Arial,sans-serif;max-width:560px;margin:auto;padding:24px">
-            <h2>Confirme sua chave Pix</h2>
-            <p>Você pediu para cadastrar <strong>{email}</strong> como chave Pix no Banco Arkhé.</p>
-            <p>O link é válido por 15 minutos e funciona uma única vez.</p>
-            <p style="margin:28px 0"><a href="{link}" style="background:#0D4D4D;color:white;text-decoration:none;padding:12px 18px;border-radius:8px">Confirmar chave Pix</a></p>
-            <p style="font-size:13px;color:#66746F">Se você não solicitou este cadastro, ignore este e-mail.</p>
-        </div>
-        """
+        html = montar_email_arkhe(
+            titulo='Confirme sua chave Pix',
+            texto='Você iniciou o cadastro do seu e-mail como chave Pix no Banco Arkhé. Confirme a posse deste endereço para concluir o cadastro.',
+            preheader='Confirme seu e-mail para ativar a chave Pix.',
+            destaque_titulo='Chave a confirmar',
+            destaque_valor=email,
+            botao_texto='Confirmar chave Pix',
+            botao_url=link,
+            aviso='Este link expira em 15 minutos e funciona uma única vez. Se você não solicitou este cadastro, ignore a mensagem.'
+        )
 
         enviando_email(email, 'Confirme sua chave Pix - Banco Arkhé', html)
 
@@ -335,7 +336,7 @@ def iniciar_verificacao_telefone_pix():
         return jsonify({'mensagem': 'Usuario nao logado'}), 403
 
     if canal not in ('SMS', 'WHATSAPP', 'LIGACAO'):
-        return jsonify({'mensagem': 'Escolha SMS, WhatsApp ou ligação'}), 400
+        return jsonify({'mensagem': 'Escolha SMS ou ligação'}), 400
 
     telefone = ''.join(c for c in str(usuario.get('telefone') or '') if c.isdigit())
 
