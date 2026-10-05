@@ -1,33 +1,141 @@
 from flask import jsonify, request, make_response, render_template
 import os
 import requests
+import jwt
+import hashlib
+import secrets
+import datetime
 from main import app
 from banco import con
-from funcao import gerar_token, gerar_token_usuario, descobre_id_usuario, descobre_id_conta, criptografar_pin, verificar_pin, verificar_pin_usuario, usuario_pode_acessar_conta, listar_contas_usuario, dados_usuario, dados_conta, gerar_codigo, enviando_email, data_atual
+from funcao import gerar_token, gerar_token_usuario, descobre_id_usuario, descobre_id_conta, criptografar_pin, verificar_pin, verificar_pin_usuario, usuario_pode_acessar_conta, listar_contas_usuario, dados_usuario, dados_conta, enviando_email, data_atual
 
 
-def criar_sessao_facial(cpf):
+def cabecalho_face():
+    return {
+        'X-Client-Id': os.getenv('FACE_CLIENT_ID'),
+        'X-Client-Secret': os.getenv('FACE_CLIENT_SECRET')
+    }
+
+
+def criar_sessao_facial_verificacao(cpf, finalidade='login'):
     resposta = requests.post(
         os.getenv('FACE_API_URL') + '/v1/verifications',
-        headers={
-            'X-Client-Id': os.getenv('FACE_CLIENT_ID'),
-            'X-Client-Secret': os.getenv('FACE_CLIENT_SECRET')
-        },
+        headers=cabecalho_face(),
+        json={'cpf': cpf, 'purpose': finalidade, 'ttl_minutes': 10},
+        timeout=20
+    )
+
+    if not resposta.ok:
+        return None, resposta.status_code
+
+    return resposta.json(), resposta.status_code
+
+
+def criar_sessao_facial_cadastro(cpf, nome, email, telefone):
+    resposta = requests.post(
+        os.getenv('FACE_API_URL') + '/v1/enrollments',
+        headers=cabecalho_face(),
         json={
             'cpf': cpf,
-            'purpose': 'login',
-            'ttl_minutes': 10
+            'display_name': nome,
+            'email': email,
+            'phone': telefone,
+            'consent': {
+                'accepted': True,
+                'version': 'arkhe-termos-v1',
+                'purpose': 'Cadastro e autenticação facial no Banco Arkhé'
+            },
+            'ttl_minutes': 15
         },
         timeout=20
     )
 
-    print('FACE STATUS:', resposta.status_code)
-    print('FACE RESPOSTA:', resposta.text)
-
     if not resposta.ok:
-        return None
+        return None, resposta.status_code
 
-    return resposta.json()
+    return resposta.json(), resposta.status_code
+
+
+def gerar_desafio_facial(id_usuario, sessao_id, modo):
+    payload = {
+        'id_usuario': int(id_usuario),
+        'sessao_id': str(sessao_id),
+        'modo': modo,
+        'exp': datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=15)
+    }
+
+    return jwt.encode(payload, app.config['SECRET_KEY'], algorithm='HS256')
+
+
+def confirmar_desafio_facial(desafio, id_usuario, sessao_id):
+    try:
+        payload = jwt.decode(desafio, app.config['SECRET_KEY'], algorithms=['HS256'])
+
+        if int(payload.get('id_usuario')) != int(id_usuario):
+            return False, None
+
+        if str(payload.get('sessao_id')) != str(sessao_id):
+            return False, None
+
+        modo = payload.get('modo')
+
+        if modo not in ('login', 'cadastro'):
+            return False, None
+
+        resposta = requests.get(
+            os.getenv('FACE_API_URL') + f"/v1/{'verifications' if modo == 'login' else 'enrollments'}/{sessao_id}",
+            headers=cabecalho_face(),
+            timeout=20
+        )
+
+        if not resposta.ok:
+            return False, modo
+
+        resultado = resposta.json()
+
+        if modo == 'login':
+            return resultado.get('status') == 'matched' and resultado.get('matched') is True, modo
+
+        return resultado.get('status') == 'completed', modo
+
+    except Exception:
+        return False, None
+
+
+@app.route('/facial/verificacao', methods=['POST'])
+def iniciar_verificacao_facial():
+    dados = request.get_json() or {}
+    cpf = dados.get('cpf')
+    finalidade = dados.get('finalidade', 'cadastro_conta')
+
+    if not cpf:
+        return jsonify({'mensagem': 'CPF não informado'}), 400
+
+    sessao, status = criar_sessao_facial_verificacao(cpf, finalidade)
+
+    if not sessao:
+        return jsonify({'mensagem': 'Identidade facial não encontrada'}), status
+
+    return jsonify(sessao), 201
+
+
+@app.route('/facial/cadastro', methods=['POST'])
+def iniciar_cadastro_facial():
+    dados = request.get_json() or {}
+    cpf = dados.get('cpf')
+    nome = dados.get('nome')
+    email = dados.get('email')
+    telefone = dados.get('telefone')
+
+    if not cpf or not nome:
+        return jsonify({'mensagem': 'CPF e nome são obrigatórios'}), 400
+
+    sessao, status = criar_sessao_facial_cadastro(cpf, nome, email, telefone)
+
+    if not sessao:
+        return jsonify({'mensagem': 'Não foi possível iniciar o cadastro facial'}), status
+
+    return jsonify(sessao), 201
 
 
 @app.route('/login_usuario', methods=['POST'])
@@ -36,8 +144,8 @@ def login_usuario():
 
     cpf = dados.get('cpf')
     pin = dados.get('pin')
-    cadastro_facial = dados.get('cadastro_facial', False)
-    mobile = dados.get('mobile', False)
+    desafio_facial = dados.get('desafio_facial')
+    sessao_facial_id = dados.get('sessao_facial_id')
 
     if not cpf or pin is None:
         return jsonify({'mensagem': 'CPF e PIN são obrigatórios'}), 400
@@ -64,7 +172,7 @@ def login_usuario():
         email = usuario[2]
         telefone = usuario[3]
         cpf_usuario = usuario[4]
-        status = usuario[5]
+        status_usuario = usuario[5]
         primeiro_acesso = usuario[6]
 
         resultado_pin = verificar_pin_usuario(id_usuario, pin)
@@ -76,47 +184,59 @@ def login_usuario():
             }), 401
 
         if not resultado_pin['valido']:
-            return jsonify({
-                'mensagem': 'CPF ou PIN inválido'
-            }), 401
-
-        if not cadastro_facial:
-            if mobile:
-                sessao_facial = criar_sessao_facial(cpf_usuario)
-
-                if not sessao_facial:
-                    return jsonify({
-                        'mensagem': 'Não foi possível iniciar o reconhecimento facial'
-                    }), 500
-
-                return jsonify({
-                    'mensagem': 'Credenciais válidas',
-                    'reconhecimento_facial_pendente': True,
-                    'sessao_facial': sessao_facial,
-                    'troca_pin_obrigatoria': bool(
-                        resultado_pin.get('legado')
-                        or resultado_pin.get('temporario')
-                        or primeiro_acesso == 1
-                    )
-                }), 200
-
-            return jsonify({
-                'mensagem': 'Credenciais válidas',
-                'reconhecimento_facial_pendente': True,
-                'troca_pin_obrigatoria': bool(
-                    resultado_pin.get('legado')
-                    or resultado_pin.get('temporario')
-                    or primeiro_acesso == 1
-                )
-            }), 200
-
-        token = gerar_token_usuario(id_usuario)
+            return jsonify({'mensagem': 'CPF ou PIN inválido'}), 401
 
         troca_pin_obrigatoria = bool(
             resultado_pin.get('legado')
             or resultado_pin.get('temporario')
             or primeiro_acesso == 1
         )
+
+        if not desafio_facial or not sessao_facial_id:
+            sessao_facial, status_face = criar_sessao_facial_verificacao(cpf_usuario, 'login')
+            modo_facial = 'login'
+
+            if not sessao_facial and status_face == 404:
+                sessao_facial, status_face = criar_sessao_facial_cadastro(
+                    cpf_usuario,
+                    nome,
+                    email,
+                    telefone
+                )
+                modo_facial = 'cadastro'
+
+            if not sessao_facial:
+                return jsonify({
+                    'mensagem': 'Não foi possível iniciar o reconhecimento facial'
+                }), 500
+
+            desafio = gerar_desafio_facial(
+                id_usuario,
+                sessao_facial.get('session_id'),
+                modo_facial
+            )
+
+            return jsonify({
+                'mensagem': 'Credenciais válidas',
+                'reconhecimento_facial_pendente': True,
+                'sessao_facial': sessao_facial,
+                'modo_facial': modo_facial,
+                'desafio_facial': desafio,
+                'troca_pin_obrigatoria': troca_pin_obrigatoria
+            }), 200
+
+        facial_valida, _modo = confirmar_desafio_facial(
+            desafio_facial,
+            id_usuario,
+            sessao_facial_id
+        )
+
+        if not facial_valida:
+            return jsonify({
+                'mensagem': 'Reconhecimento facial não confirmado'
+            }), 401
+
+        token = gerar_token_usuario(id_usuario)
 
         resposta = make_response(jsonify({
             'mensagem': 'Usuário autenticado com sucesso',
@@ -126,7 +246,7 @@ def login_usuario():
                 'email': email,
                 'telefone': telefone,
                 'cpf': cpf_usuario,
-                'status': status
+                'status': status_usuario
             },
             'troca_pin_obrigatoria': troca_pin_obrigatoria,
             'selecao_conta_pendente': not troca_pin_obrigatoria
@@ -136,7 +256,7 @@ def login_usuario():
             'access_token',
             token,
             httponly=True,
-            secure=False,
+            secure=app.config['COOKIE_SECURE'],
             samesite='Lax',
             path='/',
             max_age=7200
@@ -146,7 +266,6 @@ def login_usuario():
 
     except Exception as e:
         print('ERRO LOGIN USUARIO:', e)
-
         return jsonify({
             'mensagem': 'Não foi possível realizar o login. Tente novamente.'
         }), 500
@@ -155,7 +274,6 @@ def login_usuario():
         if cursor:
             cursor.close()
 
-            
 
 @app.route('/definir_pin_pessoal', methods=['POST'])
 def definir_pin_pessoal():
@@ -340,7 +458,7 @@ def selecionar_conta():
             'access_token',
             token,
             httponly=True,
-            secure=False,
+            secure=app.config['COOKIE_SECURE'],
             samesite='Lax',
             path='/',
             max_age=7200
@@ -472,7 +590,7 @@ def login():
             'access_token',
             token,
             httponly=True,
-            secure=False,
+            secure=app.config['COOKIE_SECURE'],
             samesite='Lax',
             path='/',
             max_age=7200
@@ -627,7 +745,7 @@ def adicionar_conta():
             'access_token',
             token,
             httponly=True,
-            secure=False,
+            secure=app.config['COOKIE_SECURE'],
             samesite='Lax',
             path='/',
             max_age=7200
@@ -677,8 +795,11 @@ def sessao():
 
 @app.route('/esqueci_pin', methods=['POST'])
 def esqueci_pin():
-    dados = request.get_json()
-    email = dados.get('email')
+    dados = request.get_json() or {}
+    email = str(dados.get('email') or '').strip().lower()
+
+    if not email:
+        return jsonify({'mensagem': 'Informe seu e-mail'}), 400
 
     cursor = None
 
@@ -686,55 +807,94 @@ def esqueci_pin():
         cursor = con.cursor()
 
         cursor.execute(
-            "SELECT ID_USUARIO FROM USUARIO WHERE EMAIL = ?",
+            "SELECT ID_USUARIO FROM USUARIO WHERE LOWER(EMAIL) = ?",
             (email,)
         )
 
         usuario = cursor.fetchone()
 
-        if not usuario:
-            return jsonify({
-                'mensagem': 'Email não encontrado'
-            }), 404
+        if usuario:
+            id_usuario = usuario[0]
+            token = secrets.token_urlsafe(32)
+            token_hash = hashlib.sha256(token.encode('utf-8')).hexdigest()
+            expira_em = data_atual() + datetime.timedelta(minutes=15)
 
-        id_usuario = usuario[0]
-        codigo = gerar_codigo()
+            cursor.execute(
+                "DELETE FROM RECUPERACAO_SENHA WHERE ID_USUARIO = ?",
+                (id_usuario,)
+            )
 
-        cursor.execute(
-            "DELETE FROM RECUPERACAO_SENHA WHERE ID_USUARIO = ?",
-            (id_usuario,)
-        )
+            cursor.execute(
+                """INSERT INTO RECUPERACAO_SENHA
+                   (ID_USUARIO, TOKEN_HASH, EXPIRA_EM, CRIADO_EM)
+                   VALUES (?, ?, ?, ?)""",
+                (id_usuario, token_hash, expira_em, data_atual())
+            )
 
-        cursor.execute(
-            """INSERT INTO RECUPERACAO_SENHA
-               (ID_USUARIO, CODIGO)
-               VALUES (?, ?)""",
-            (id_usuario, codigo)
-        )
+            con.commit()
 
-        con.commit()
+            link = app.config['FRONTEND_URL'].rstrip('/') + '/redefinir-pin#token=' + token
+            html = f"""
+            <div style="font-family:Arial,sans-serif;max-width:560px;margin:auto;padding:24px">
+                <h2 style="margin-bottom:8px">Redefinição do PIN Arkhé</h2>
+                <p>Recebemos uma solicitação para criar um novo PIN para sua conta.</p>
+                <p>Este link é válido por 15 minutos e pode ser usado uma única vez.</p>
+                <p style="margin:28px 0">
+                    <a href="{link}" style="background:#0D4D4D;color:white;text-decoration:none;padding:12px 18px;border-radius:8px">
+                        Criar novo PIN
+                    </a>
+                </p>
+                <p style="font-size:13px;color:#66746F">Se você não pediu esta alteração, ignore este e-mail.</p>
+            </div>
+            """
 
-        html = render_template(
-            'codigo_verificacao.html',
-            codigo=codigo
-        )
-
-        enviando_email(
-            email,
-            'Código de Recuperação de PIN - Banco Arkhé',
-            html
-        )
+            enviando_email(
+                email,
+                'Redefinição de PIN - Banco Arkhé',
+                html
+            )
 
         return jsonify({
-            'mensagem': 'Código enviado com sucesso'
+            'mensagem': 'Se o e-mail estiver cadastrado, você receberá um link para redefinir seu PIN.'
         }), 200
 
     except Exception as e:
         con.rollback()
+        print('ERRO RECUPERACAO PIN:', e)
+        return jsonify({'mensagem': 'Não foi possível iniciar a recuperação do PIN'}), 500
 
-        return jsonify({
-            'mensagem': f'Erro ao enviar código: {e}'
-        }), 500
+    finally:
+        if cursor:
+            cursor.close()
+
+
+@app.route('/verificar_token_pin', methods=['POST'])
+def verificar_token_pin():
+    dados = request.get_json() or {}
+    token = dados.get('token')
+
+    if not token:
+        return jsonify({'mensagem': 'Link inválido'}), 400
+
+    token_hash = hashlib.sha256(str(token).encode('utf-8')).hexdigest()
+    cursor = None
+
+    try:
+        cursor = con.cursor()
+
+        cursor.execute(
+            """SELECT ID_RECUPERACAO_SENHA
+               FROM RECUPERACAO_SENHA
+               WHERE TOKEN_HASH = ?
+               AND UTILIZADO_EM IS NULL
+               AND EXPIRA_EM > ?""",
+            (token_hash, data_atual())
+        )
+
+        if not cursor.fetchone():
+            return jsonify({'mensagem': 'Este link é inválido ou expirou'}), 400
+
+        return jsonify({'mensagem': 'Link válido'}), 200
 
     finally:
         if cursor:
@@ -743,87 +903,50 @@ def esqueci_pin():
 
 @app.route('/verificar_codigo', methods=['POST'])
 def verificar_codigo():
-    dados = request.get_json()
-    email = dados.get('email')
-    codigo = dados.get('codigo')
+    return jsonify({
+        'mensagem': 'A recuperação por código foi substituída pelo link enviado por e-mail.'
+    }), 410
 
-    cursor = None
-
-    try:
-        cursor = con.cursor()
-
-        cursor.execute(
-            """SELECT R.CODIGO
-               FROM USUARIO U
-               INNER JOIN RECUPERACAO_SENHA R
-               ON U.ID_USUARIO = R.ID_USUARIO
-               WHERE U.EMAIL = ?""",
-            (email,)
-        )
-
-        resultado = cursor.fetchone()
-
-        if not resultado:
-            return jsonify({
-                'mensagem': 'Código inválido'
-            }), 400
-
-        codigo_banco = str(resultado[0])
-
-        if str(codigo) != codigo_banco:
-            return jsonify({
-                'mensagem': 'Código inválido'
-            }), 400
-
-        return jsonify({
-            'mensagem': 'Código válido'
-        }), 200
-
-    except Exception as e:
-        return jsonify({
-            'mensagem': f'Erro ao verificar código: {e}'
-        }), 500
-
-    finally:
-        if cursor:
-            cursor.close()
 
 @app.route('/trocar_pin', methods=['POST'])
 def trocar_pin():
     dados = request.get_json() or {}
 
-    email = dados.get('email')
-    codigo = dados.get('codigo')
+    token = dados.get('token')
     novo_pin = dados.get('novo_pin')
 
-    if not email or not codigo or novo_pin is None:
-        return jsonify({'mensagem': 'Email, código e novo PIN são obrigatórios'}), 400
+    if not token or novo_pin is None:
+        return jsonify({'mensagem': 'Link e novo PIN são obrigatórios'}), 400
 
     novo_pin = str(novo_pin)
 
     if len(novo_pin) != 6 or not novo_pin.isdigit():
         return jsonify({'mensagem': 'O PIN deve possuir exatamente 6 números'}), 400
 
+    token_hash = hashlib.sha256(str(token).encode('utf-8')).hexdigest()
     cursor = None
 
     try:
         cursor = con.cursor()
 
         cursor.execute(
-            """SELECT U.ID_USUARIO, U.PIN_HASH
+            """SELECT U.ID_USUARIO, U.PIN_HASH, R.ID_RECUPERACAO_SENHA
                FROM USUARIO U
                INNER JOIN RECUPERACAO_SENHA R ON R.ID_USUARIO = U.ID_USUARIO
-               WHERE U.EMAIL = ? AND R.CODIGO = ?""",
-            (email, codigo)
+               WHERE R.TOKEN_HASH = ?
+               AND R.UTILIZADO_EM IS NULL
+               AND R.EXPIRA_EM > ?""",
+            (token_hash, data_atual())
         )
 
         usuario = cursor.fetchone()
 
         if not usuario:
-            return jsonify({'mensagem': 'Código inválido'}), 400
+            return jsonify({'mensagem': 'Este link é inválido ou expirou'}), 400
 
         id_usuario = usuario[0]
         pin_atual = usuario[1]
+        id_recuperacao = usuario[2]
 
         if pin_atual and verificar_pin(novo_pin, pin_atual):
             return jsonify({'mensagem': 'O novo PIN não pode ser igual ao PIN atual'}), 400
@@ -845,9 +968,10 @@ def trocar_pin():
         )
 
         cursor.execute(
-            """DELETE FROM RECUPERACAO_SENHA
-               WHERE ID_USUARIO = ?""",
-            (id_usuario,)
+            """UPDATE RECUPERACAO_SENHA
+               SET UTILIZADO_EM = ?
+               WHERE ID_RECUPERACAO_SENHA = ?""",
+            (data_atual(), id_recuperacao)
         )
 
         con.commit()
@@ -862,6 +986,7 @@ def trocar_pin():
     finally:
         if cursor:
             cursor.close()
+
 
 @app.route('/buscar_contas_usuario', methods=['POST'])
 def buscar_contas_usuario():
