@@ -34,7 +34,12 @@ def enviar_codigo_telefone(telefone, canal, codigo):
     if not sid or not token:
         return False, 'O provedor de telefone ainda não foi configurado no servidor.'
 
-    telefone = '+' + ''.join(c for c in str(telefone) if c.isdigit())
+    telefone = ''.join(c for c in str(telefone) if c.isdigit())
+
+    if len(telefone) in (10, 11):
+        telefone = '55' + telefone
+
+    telefone = '+' + telefone
     mensagem = f'Seu código de confirmação Pix do Banco Arkhé é {codigo}. Ele expira em 5 minutos.'
 
     if canal in ('SMS', 'WHATSAPP'):
