@@ -158,7 +158,6 @@ def verificar_fechamento():
             SELECT ID_CARTAO
             FROM CARTAO
             WHERE FECHAMENTO = ?
-            AND STATUS = 0
         """, (hoje.day,))
 
         cartoes = cursor.fetchall()
