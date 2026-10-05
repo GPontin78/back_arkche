@@ -26,8 +26,10 @@ def criar_sessao_facial_verificacao(cpf, finalidade='login'):
     )
 
     if not resposta.ok:
+        print('FACE VERIFICACAO ERRO:', resposta.status_code, resposta.text[:500])
         return None, resposta.status_code
 
+    print('FACE VERIFICACAO OK:', resposta.status_code)
     return resposta.json(), resposta.status_code
 
 
@@ -56,8 +58,10 @@ def criar_sessao_facial_cadastro(cpf, nome, email, telefone):
     )
 
     if not resposta.ok:
+        print('FACE CADASTRO ERRO:', resposta.status_code, resposta.text[:500])
         return None, resposta.status_code
 
+    print('FACE CADASTRO OK:', resposta.status_code)
     return resposta.json(), resposta.status_code
 
 
