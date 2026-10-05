@@ -18,19 +18,24 @@ def cabecalho_face():
 
 
 def criar_sessao_facial_verificacao(cpf, finalidade='login'):
-    resposta = requests.post(
-        os.getenv('FACE_API_URL') + '/v1/verifications',
-        headers=cabecalho_face(),
-        json={'cpf': cpf, 'purpose': finalidade, 'ttl_minutes': 10},
-        timeout=20
-    )
+    try:
+        resposta = requests.post(
+            os.getenv('FACE_API_URL') + '/v1/verifications',
+            headers=cabecalho_face(),
+            json={'cpf': cpf, 'purpose': finalidade, 'ttl_minutes': 10},
+            timeout=20
+        )
 
-    if not resposta.ok:
-        print('FACE VERIFICACAO ERRO:', resposta.status_code, resposta.text[:500])
-        return None, resposta.status_code
+        if not resposta.ok:
+            print('FACE VERIFICACAO ERRO:', resposta.status_code, resposta.text[:500])
+            return None, resposta.status_code
 
-    print('FACE VERIFICACAO OK:', resposta.status_code)
-    return resposta.json(), resposta.status_code
+        print('FACE VERIFICACAO OK:', resposta.status_code)
+        return resposta.json(), resposta.status_code
+
+    except requests.RequestException as e:
+        print('FACE VERIFICACAO INDISPONIVEL:', e)
+        return None, 503
 
 
 def criar_sessao_facial(cpf):
@@ -39,30 +44,35 @@ def criar_sessao_facial(cpf):
 
 
 def criar_sessao_facial_cadastro(cpf, nome, email, telefone):
-    resposta = requests.post(
-        os.getenv('FACE_API_URL') + '/v1/enrollments',
-        headers=cabecalho_face(),
-        json={
-            'cpf': cpf,
-            'display_name': nome,
-            'email': email,
-            'phone': telefone,
-            'consent': {
-                'accepted': True,
-                'version': 'arkhe-termos-v1',
-                'purpose': 'Cadastro e autenticação facial no Banco Arkhé'
+    try:
+        resposta = requests.post(
+            os.getenv('FACE_API_URL') + '/v1/enrollments',
+            headers=cabecalho_face(),
+            json={
+                'cpf': cpf,
+                'display_name': nome,
+                'email': email,
+                'phone': telefone,
+                'consent': {
+                    'accepted': True,
+                    'version': 'arkhe-termos-v1',
+                    'purpose': 'Cadastro e autenticação facial no Banco Arkhé'
+                },
+                'ttl_minutes': 15
             },
-            'ttl_minutes': 15
-        },
-        timeout=20
-    )
+            timeout=20
+        )
 
-    if not resposta.ok:
-        print('FACE CADASTRO ERRO:', resposta.status_code, resposta.text[:500])
-        return None, resposta.status_code
+        if not resposta.ok:
+            print('FACE CADASTRO ERRO:', resposta.status_code, resposta.text[:500])
+            return None, resposta.status_code
 
-    print('FACE CADASTRO OK:', resposta.status_code)
-    return resposta.json(), resposta.status_code
+        print('FACE CADASTRO OK:', resposta.status_code)
+        return resposta.json(), resposta.status_code
+
+    except requests.RequestException as e:
+        print('FACE CADASTRO INDISPONIVEL:', e)
+        return None, 503
 
 
 def gerar_desafio_facial(id_usuario, sessao_id, modo):
@@ -215,6 +225,21 @@ def login_usuario():
                 modo_facial = 'cadastro'
 
             if not sessao_facial:
+                if status_face == 429:
+                    return jsonify({
+                        'mensagem': 'Muitas verificações faciais em pouco tempo. Aguarde alguns segundos e tente novamente.'
+                    }), 429
+
+                if status_face in (500, 502, 503, 504):
+                    return jsonify({
+                        'mensagem': 'O serviço de reconhecimento facial está temporariamente indisponível.'
+                    }), 503
+
+                if status_face == 401:
+                    return jsonify({
+                        'mensagem': 'A integração com o reconhecimento facial não está autenticada.'
+                    }), 503
+
                 return jsonify({
                     'mensagem': 'Não foi possível iniciar o reconhecimento facial'
                 }), 500
