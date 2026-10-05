@@ -1,33 +1,35 @@
 from flask import jsonify, request, make_response, render_template
-import os
-import requests
 from main import app
 from banco import con
-from funcao import gerar_token, gerar_token_usuario, descobre_id_usuario, descobre_id_conta, criptografar_pin, verificar_pin, verificar_pin_usuario, usuario_pode_acessar_conta, listar_contas_usuario, dados_usuario, dados_conta, gerar_codigo, enviando_email, data_atual
+from funcao import gerar_token, gerar_token_usuario, descobre_id_usuario, descobre_id_conta, criptografar_pin, verificar_pin, verificar_pin_usuario, usuario_pode_acessar_conta, listar_contas_usuario, dados_usuario, dados_conta, gerar_codigo, enviando_email, data_atual, preparar_sessao_facial, confirmar_sessao_facial
 
 
-def criar_sessao_facial(cpf):
-    resposta = requests.post(
-        os.getenv('FACE_API_URL') + '/v1/verifications',
-        headers={
-            'X-Client-Id': os.getenv('FACE_CLIENT_ID'),
-            'X-Client-Secret': os.getenv('FACE_CLIENT_SECRET')
-        },
-        json={
-            'cpf': cpf,
-            'purpose': 'login',
-            'ttl_minutes': 10
-        },
-        timeout=20
+@app.route('/facial/preparar_cadastro', methods=['POST'])
+def preparar_cadastro_facial():
+    dados = request.get_json() or {}
+    cpf = dados.get('cpf')
+    nome = dados.get('nome')
+    email = dados.get('email')
+    telefone = dados.get('telefone')
+
+    if not cpf or not nome or not email:
+        return jsonify({'mensagem': 'CPF, nome e email são obrigatórios'}), 400
+
+    preparacao = preparar_sessao_facial(
+        cpf,
+        nome=nome,
+        email=email,
+        telefone=telefone
     )
 
-    print('FACE STATUS:', resposta.status_code)
-    print('FACE RESPOSTA:', resposta.text)
+    if not preparacao:
+        return jsonify({'mensagem': 'Não foi possível iniciar o reconhecimento facial'}), 500
 
-    if not resposta.ok:
-        return None
-
-    return resposta.json()
+    return jsonify({
+        'modo': preparacao['modo'],
+        'sessao': preparacao['sessao'],
+        'face_token': preparacao['face_token']
+    }), 200
 
 
 @app.route('/login_usuario', methods=['POST'])
@@ -36,8 +38,8 @@ def login_usuario():
 
     cpf = dados.get('cpf')
     pin = dados.get('pin')
-    cadastro_facial = dados.get('cadastro_facial', False)
-    mobile = dados.get('mobile', False)
+    face_token = dados.get('face_token')
+    face_session_token = dados.get('face_session_token')
 
     if not cpf or pin is None:
         return jsonify({'mensagem': 'CPF e PIN são obrigatórios'}), 400
@@ -80,35 +82,42 @@ def login_usuario():
                 'mensagem': 'CPF ou PIN inválido'
             }), 401
 
-        if not cadastro_facial:
-            if mobile:
-                sessao_facial = criar_sessao_facial(cpf_usuario)
+        if not face_token:
+            preparacao_facial = preparar_sessao_facial(
+                cpf_usuario,
+                nome=nome,
+                email=email,
+                telefone=telefone,
+                id_usuario=id_usuario
+            )
 
-                if not sessao_facial:
-                    return jsonify({
-                        'mensagem': 'Não foi possível iniciar o reconhecimento facial'
-                    }), 500
-
+            if not preparacao_facial:
                 return jsonify({
-                    'mensagem': 'Credenciais válidas',
-                    'reconhecimento_facial_pendente': True,
-                    'sessao_facial': sessao_facial,
-                    'troca_pin_obrigatoria': bool(
-                        resultado_pin.get('legado')
-                        or resultado_pin.get('temporario')
-                        or primeiro_acesso == 1
-                    )
-                }), 200
+                    'mensagem': 'Não foi possível iniciar o reconhecimento facial'
+                }), 500
 
             return jsonify({
                 'mensagem': 'Credenciais válidas',
                 'reconhecimento_facial_pendente': True,
+                'sessao_facial': preparacao_facial['sessao'],
+                'modo_facial': preparacao_facial['modo'],
+                'face_token': preparacao_facial['face_token'],
                 'troca_pin_obrigatoria': bool(
                     resultado_pin.get('legado')
                     or resultado_pin.get('temporario')
                     or primeiro_acesso == 1
                 )
             }), 200
+
+        if not confirmar_sessao_facial(
+            face_token,
+            face_session_token,
+            id_usuario=id_usuario,
+            cpf=cpf_usuario
+        ):
+            return jsonify({
+                'mensagem': 'Reconhecimento facial não confirmado'
+            }), 401
 
         token = gerar_token_usuario(id_usuario)
 
@@ -136,7 +145,7 @@ def login_usuario():
             'access_token',
             token,
             httponly=True,
-            secure=False,
+            secure=app.config['COOKIE_SECURE'],
             samesite='Lax',
             path='/',
             max_age=7200
@@ -340,7 +349,7 @@ def selecionar_conta():
             'access_token',
             token,
             httponly=True,
-            secure=False,
+            secure=app.config['COOKIE_SECURE'],
             samesite='Lax',
             path='/',
             max_age=7200
@@ -472,7 +481,7 @@ def login():
             'access_token',
             token,
             httponly=True,
-            secure=False,
+            secure=app.config['COOKIE_SECURE'],
             samesite='Lax',
             path='/',
             max_age=7200
@@ -627,7 +636,7 @@ def adicionar_conta():
             'access_token',
             token,
             httponly=True,
-            secure=False,
+            secure=app.config['COOKIE_SECURE'],
             samesite='Lax',
             path='/',
             max_age=7200
