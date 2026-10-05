@@ -813,18 +813,28 @@ def descobrir_tipo_movimentacao(id_pagador, valor, id_cobranca, tipo_cobranca):
     return 'Pix'
 
 
-def linha_comprovante(pdf, y, titulo, valor):
-    pdf.setFont('Helvetica', 7)
-    pdf.setFillColor(HexColor('#666666'))
-    pdf.drawString(25 * mm, y, titulo.upper())
+def titulo_comprovante(tipo_movimentacao):
+    if tipo_movimentacao == 'Pagamento de boleto':
+        return 'COMPROVANTE DE PAGAMENTO'
 
-    pdf.setFont('Helvetica-Bold', 10)
-    pdf.setFillColor(black)
-    pdf.drawString(25 * mm, y - 5 * mm, texto_limitado(valor, 75))
+    if tipo_movimentacao == 'Credito inicial':
+        return 'COMPROVANTE DE CREDITO'
 
-    pdf.setStrokeColor(HexColor('#E5E5E5'))
-    pdf.setLineWidth(0.4)
-    pdf.line(25 * mm, y - 9 * mm, 185 * mm, y - 9 * mm)
+    return 'COMPROVANTE DE PIX'
+
+
+def campo_comprovante(pdf, x, y, titulo, valor, limite=54):
+    pdf.setFillColor(HexColor('#667085'))
+    pdf.setFont('Helvetica-Bold', 6.5)
+    pdf.drawString(x, y, titulo.upper())
+
+    pdf.setFillColor(HexColor('#111111'))
+    pdf.setFont('Helvetica-Bold', 9.5)
+    pdf.drawString(
+        x,
+        y - 5 * mm,
+        texto_limitado(valor, limite)
+    )
 
 
 @app.route('/comprovante/<int:id_movimentacao>', methods=['GET'])
@@ -966,260 +976,288 @@ def comprovante(id_movimentacao):
 
         pdf.setAuthor('Banco Arkhé')
 
-        pdf.setFillColor(HexColor('#073E3E'))
-        pdf.rect(
-            0,
-            240 * mm,
-            210 * mm,
-            57 * mm,
-            stroke=0,
-            fill=1
-        )
+        titulo_documento = titulo_comprovante(tipo_movimentacao)
 
         pdf.setFillColor(HexColor('#FFFFFF'))
-
-        pdf.setFont(
-            'Helvetica-Bold',
-            24
-        )
-
-        pdf.drawString(
-            25 * mm,
-            277 * mm,
-            'ARKHÉ'
-        )
-
-        pdf.setFont(
-            'Helvetica',
-            8
-        )
-
-        pdf.drawString(
-            25 * mm,
-            270 * mm,
-            'BANCO DIGITAL DIDATICO'
-        )
-
-        pdf.setFont(
-            'Helvetica-Bold',
-            13
-        )
-
-        pdf.drawRightString(
-            185 * mm,
-            277 * mm,
-            'COMPROVANTE'
-        )
-
-        pdf.setFillColor(
-            HexColor('#147D64')
-        )
-
-        pdf.circle(
-            105 * mm,
-            228 * mm,
-            12 * mm,
+        pdf.rect(
+            0,
+            0,
+            210 * mm,
+            297 * mm,
             stroke=0,
             fill=1
         )
 
-        pdf.setFillColor(
-            HexColor('#FFFFFF')
+        pdf.setFillColor(HexColor('#111111'))
+        pdf.setFont('Helvetica-Bold', 23)
+        pdf.drawString(15 * mm, 277 * mm, 'ARKHÉ')
+
+        pdf.setFont('Helvetica-Bold', 7)
+        pdf.drawString(15 * mm, 271.5 * mm, 'BANCO DIGITAL DIDÁTICO')
+
+        pdf.setFont('Helvetica-Bold', 11)
+        pdf.drawRightString(195 * mm, 277 * mm, titulo_documento)
+
+        pdf.setFont('Helvetica', 6)
+        pdf.setFillColor(HexColor('#667085'))
+        pdf.drawRightString(
+            195 * mm,
+            271.5 * mm,
+            'DOCUMENTO INTERNO • BANCO ARKHÉ'
         )
 
-        pdf.setFont(
-            'Helvetica-Bold',
-            12
+        pdf.setStrokeColor(HexColor('#111111'))
+        pdf.setLineWidth(1)
+        pdf.line(15 * mm, 267 * mm, 195 * mm, 267 * mm)
+
+        pdf.setFillColor(HexColor('#F3FAF7'))
+        pdf.roundRect(
+            15 * mm,
+            244 * mm,
+            180 * mm,
+            17 * mm,
+            3 * mm,
+            stroke=0,
+            fill=1
         )
 
-        pdf.drawCentredString(
-            105 * mm,
-            226 * mm,
-            'OK'
+        pdf.setFillColor(HexColor('#147D64'))
+        pdf.circle(
+            24 * mm,
+            252.5 * mm,
+            2.2 * mm,
+            stroke=0,
+            fill=1
         )
 
-        pdf.setFillColor(
-            HexColor('#147D64')
+        pdf.setFont('Helvetica-Bold', 8)
+        pdf.drawString(
+            30 * mm,
+            250.2 * mm,
+            'TRANSAÇÃO CONCLUÍDA'
         )
 
-        pdf.setFont(
-            'Helvetica-Bold',
-            10
-        )
-
-        pdf.drawCentredString(
-            105 * mm,
-            209 * mm,
-            'PAGAMENTO CONCLUIDO'
-        )
-
-        pdf.setFillColor(
-            HexColor('#111111')
-        )
-
-        pdf.setFont(
-            'Helvetica-Bold',
-            25
-        )
-
-        pdf.drawCentredString(
-            105 * mm,
-            194 * mm,
-            formatar_moeda(valor)
-        )
-
-        pdf.setFont(
-            'Helvetica',
-            8
-        )
-
-        pdf.setFillColor(
-            HexColor('#666666')
-        )
-
-        pdf.drawCentredString(
-            105 * mm,
-            185 * mm,
-            tipo_movimentacao
-        )
-
-        linha_comprovante(
-            pdf,
-            168 * mm,
-            'Data e hora',
+        pdf.setFillColor(HexColor('#667085'))
+        pdf.setFont('Helvetica', 7)
+        pdf.drawRightString(
+            187 * mm,
+            250.2 * mm,
             formatar_data_hora(data_movimentacao)
         )
 
-        linha_comprovante(
+        pdf.setStrokeColor(HexColor('#E4E7EC'))
+        pdf.setLineWidth(0.7)
+        pdf.roundRect(
+            15 * mm,
+            208 * mm,
+            180 * mm,
+            29 * mm,
+            3 * mm,
+            stroke=1,
+            fill=0
+        )
+
+        pdf.setFillColor(HexColor('#667085'))
+        pdf.setFont('Helvetica-Bold', 6.5)
+        pdf.drawString(
+            22 * mm,
+            228 * mm,
+            'VALOR DA TRANSAÇÃO'
+        )
+
+        pdf.setFillColor(HexColor('#111111'))
+        pdf.setFont('Helvetica-Bold', 24)
+        pdf.drawString(
+            22 * mm,
+            216 * mm,
+            formatar_moeda(valor)
+        )
+
+        pdf.setFillColor(HexColor('#667085'))
+        pdf.setFont('Helvetica', 8)
+        pdf.drawRightString(
+            187 * mm,
+            216.8 * mm,
+            tipo_movimentacao
+        )
+
+        pdf.setFillColor(HexColor('#111111'))
+        pdf.setFont('Helvetica-Bold', 8)
+        pdf.drawString(15 * mm, 194 * mm, 'ORIGEM')
+
+        pdf.setStrokeColor(HexColor('#E4E7EC'))
+        pdf.setLineWidth(0.5)
+        pdf.line(15 * mm, 190 * mm, 195 * mm, 190 * mm)
+
+        campo_comprovante(
             pdf,
-            150 * mm,
+            20 * mm,
+            182 * mm,
             'Pagador',
             pagador
         )
 
-        linha_comprovante(
+        campo_comprovante(
             pdf,
-            132 * mm,
-            'CPF / CNPJ do pagador',
+            110 * mm,
+            182 * mm,
+            'CPF / CNPJ',
             documento_pagador
         )
 
-        linha_comprovante(
+        campo_comprovante(
             pdf,
-            114 * mm,
-            'Conta de origem',
-            f'{banco_pagador} - Agencia {agencia_pagador} - Conta {numero_conta_pagador}'
+            20 * mm,
+            164 * mm,
+            'Instituição',
+            banco_pagador
         )
 
-        linha_comprovante(
+        campo_comprovante(
             pdf,
-            96 * mm,
+            110 * mm,
+            164 * mm,
+            'Agência / Conta',
+            f'{agencia_pagador} / {numero_conta_pagador}'
+        )
+
+        pdf.setFillColor(HexColor('#111111'))
+        pdf.setFont('Helvetica-Bold', 8)
+        pdf.drawString(15 * mm, 145 * mm, 'DESTINO')
+
+        pdf.setStrokeColor(HexColor('#E4E7EC'))
+        pdf.line(15 * mm, 141 * mm, 195 * mm, 141 * mm)
+
+        campo_comprovante(
+            pdf,
+            20 * mm,
+            133 * mm,
             'Recebedor',
             recebedor
         )
 
-        linha_comprovante(
+        campo_comprovante(
             pdf,
-            78 * mm,
-            'CPF / CNPJ do recebedor',
+            110 * mm,
+            133 * mm,
+            'CPF / CNPJ',
             documento_recebedor
         )
 
-        linha_comprovante(
+        campo_comprovante(
             pdf,
-            60 * mm,
-            'Conta de destino',
-            f'{banco_recebedor} - Agencia {agencia_recebedor} - Conta {numero_conta_recebedor}'
+            20 * mm,
+            115 * mm,
+            'Instituição',
+            banco_recebedor
         )
 
-        pdf.setFont(
-            'Helvetica',
-            7
+        campo_comprovante(
+            pdf,
+            110 * mm,
+            115 * mm,
+            'Agência / Conta',
+            f'{agencia_recebedor} / {numero_conta_recebedor}'
         )
 
-        pdf.setFillColor(
-            HexColor('#666666')
-        )
-
-        pdf.drawString(
-            25 * mm,
-            42 * mm,
-            'IDENTIFICACAO DA TRANSACAO'
-        )
-
-        pdf.setFont(
-            'Helvetica-Bold',
-            9
-        )
-
-        pdf.setFillColor(
-            black
-        )
-
-        pdf.drawString(
-            25 * mm,
+        pdf.setFillColor(HexColor('#F9FAFB'))
+        pdf.roundRect(
+            15 * mm,
+            64 * mm,
+            180 * mm,
             36 * mm,
+            3 * mm,
+            stroke=0,
+            fill=1
+        )
+
+        pdf.setFillColor(HexColor('#111111'))
+        pdf.setFont('Helvetica-Bold', 8)
+        pdf.drawString(
+            22 * mm,
+            91 * mm,
+            'DADOS DA TRANSAÇÃO'
+        )
+
+        pdf.setFillColor(HexColor('#667085'))
+        pdf.setFont('Helvetica-Bold', 6.2)
+        pdf.drawString(
+            22 * mm,
+            82 * mm,
+            'IDENTIFICAÇÃO'
+        )
+
+        pdf.drawString(
+            108 * mm,
+            82 * mm,
+            'TIPO'
+        )
+
+        pdf.setFillColor(HexColor('#111111'))
+        pdf.setFont('Helvetica-Bold', 9)
+        pdf.drawString(
+            22 * mm,
+            76 * mm,
             f'ARKHE-{str(id_movimentacao).zfill(12)}'
         )
 
-        if id_cobranca is not None:
-            pdf.setFont('Helvetica', 7)
-            pdf.setFillColor(HexColor('#666666'))
-
-            if tipo_cobranca == 1:
-                pdf.drawRightString(185 * mm, 42 * mm, 'PIX QR CODE')
-            else:
-                pdf.drawRightString(185 * mm, 42 * mm, 'COBRANCA')
-
-            pdf.setFont('Helvetica-Bold', 9)
-            pdf.setFillColor(black)
-            pdf.drawRightString(185 * mm, 36 * mm, f'#{id_cobranca}')
+        pdf.drawString(
+            108 * mm,
+            76 * mm,
+            tipo_movimentacao
+        )
 
         if codigo_pagamento:
-            pdf.setFont('Helvetica', 6.5)
-            pdf.setFillColor(HexColor('#666666'))
+            pdf.setFillColor(HexColor('#667085'))
+            pdf.setFont('Helvetica', 7)
 
             if tipo_cobranca == 1:
-                texto_codigo = f'Codigo Pix: {codigo_pagamento}'
+                texto_codigo = f'Código Pix: {codigo_pagamento}'
             else:
-                texto_codigo = f'Codigo do boleto: {codigo_pagamento}'
+                texto_codigo = f'Código do boleto: {codigo_pagamento}'
 
             pdf.drawString(
-                25 * mm,
-                27 * mm,
-                texto_codigo
+                22 * mm,
+                69 * mm,
+                texto_limitado(texto_codigo, 90)
+            )
+        elif id_cobranca is not None:
+            pdf.setFillColor(HexColor('#667085'))
+            pdf.setFont('Helvetica', 7)
+            pdf.drawString(
+                22 * mm,
+                69 * mm,
+                f'Cobrança interna #{id_cobranca}'
             )
 
-        pdf.setStrokeColor(
-            HexColor('#DDDDDD')
-        )
-
+        pdf.setStrokeColor(HexColor('#D0D5DD'))
+        pdf.setLineWidth(0.5)
         pdf.line(
-            25 * mm,
-            20 * mm,
-            185 * mm,
-            20 * mm
+            15 * mm,
+            42 * mm,
+            195 * mm,
+            42 * mm
         )
 
-        pdf.setFont(
-            'Helvetica',
-            6
-        )
-
-        pdf.setFillColor(
-            HexColor('#777777')
-        )
-
+        pdf.setFillColor(HexColor('#667085'))
+        pdf.setFont('Helvetica', 6)
         pdf.drawCentredString(
             105 * mm,
-            14 * mm,
+            34 * mm,
             'Comprovante gerado pelo Banco Arkhé'
         )
 
         pdf.drawCentredString(
             105 * mm,
-            10 * mm,
-            'Documento interno do ambiente didatico Arkhé'
+            29.5 * mm,
+            'Documento interno do ambiente didático Arkhé'
+        )
+
+        pdf.setFont('Helvetica-Bold', 6.2)
+        pdf.drawCentredString(
+            105 * mm,
+            23.5 * mm,
+            'SEM VALIDADE NO SISTEMA BANCÁRIO NACIONAL'
         )
 
         pdf.save()
