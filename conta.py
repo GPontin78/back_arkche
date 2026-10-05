@@ -7,7 +7,7 @@ import secrets
 import datetime
 from main import app
 from banco import con
-from funcao import gerar_token, gerar_token_usuario, descobre_id_usuario, descobre_id_conta, criptografar_pin, verificar_pin, verificar_pin_usuario, usuario_pode_acessar_conta, listar_contas_usuario, dados_usuario, dados_conta, enviando_email, data_atual
+from funcao import gerar_token, gerar_token_usuario, descobre_id_usuario, descobre_id_conta, criptografar_pin, verificar_pin, verificar_pin_usuario, usuario_pode_acessar_conta, listar_contas_usuario, dados_usuario, dados_conta, enviando_email, montar_email_arkhe, data_atual
 
 
 def cabecalho_face():
@@ -868,19 +868,16 @@ def esqueci_pin():
             con.commit()
 
             link = app.config['FRONTEND_URL'].rstrip('/') + '/redefinir-pin#token=' + token
-            html = f"""
-            <div style="font-family:Arial,sans-serif;max-width:560px;margin:auto;padding:24px">
-                <h2 style="margin-bottom:8px">Redefinição do PIN Arkhé</h2>
-                <p>Recebemos uma solicitação para criar um novo PIN para sua conta.</p>
-                <p>Este link é válido por 15 minutos e pode ser usado uma única vez.</p>
-                <p style="margin:28px 0">
-                    <a href="{link}" style="background:#0D4D4D;color:white;text-decoration:none;padding:12px 18px;border-radius:8px">
-                        Criar novo PIN
-                    </a>
-                </p>
-                <p style="font-size:13px;color:#66746F">Se você não pediu esta alteração, ignore este e-mail.</p>
-            </div>
-            """
+            html = montar_email_arkhe(
+                titulo='Crie um novo PIN',
+                texto='Recebemos uma solicitação para redefinir o PIN de acesso da sua conta. Use o botão abaixo para escolher um novo PIN pessoal de 6 dígitos.',
+                preheader='Redefina com segurança o PIN da sua conta Arkhé.',
+                destaque_titulo='Validade deste acesso',
+                destaque_valor='15 minutos · uso único',
+                botao_texto='Criar novo PIN',
+                botao_url=link,
+                aviso='Se você não solicitou esta alteração, ignore esta mensagem. Seu PIN atual continuará válido.'
+            )
 
             enviando_email(
                 email,
