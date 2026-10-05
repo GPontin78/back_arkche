@@ -31,6 +31,11 @@ def criar_sessao_facial_verificacao(cpf, finalidade='login'):
     return resposta.json(), resposta.status_code
 
 
+def criar_sessao_facial(cpf):
+    sessao, _status = criar_sessao_facial_verificacao(cpf, 'login')
+    return sessao
+
+
 def criar_sessao_facial_cadastro(cpf, nome, email, telefone):
     resposta = requests.post(
         os.getenv('FACE_API_URL') + '/v1/enrollments',
