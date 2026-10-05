@@ -11,6 +11,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import uuid
 from decimal import Decimal, InvalidOperation
+from html import escape as escape_html
 
 
 def normalizar_cpf(valor):
@@ -462,6 +463,118 @@ def gerar_pin_temporario():
     return str(random.randint(100000, 999999))
 
 
+def montar_email_arkhe(
+    titulo,
+    texto,
+    preheader=None,
+    botao_texto=None,
+    botao_url=None,
+    destaque_titulo=None,
+    destaque_valor=None,
+    destaque_codigo=False,
+    conteudo_extra='',
+    aviso=None
+):
+    titulo = escape_html(str(titulo or 'Banco Arkhé'))
+    texto = escape_html(str(texto or '')).replace('\n', '<br>')
+    preheader = escape_html(str(preheader or titulo))
+    botao_texto = escape_html(str(botao_texto or ''))
+    botao_url = escape_html(str(botao_url or ''), quote=True)
+    destaque_titulo = escape_html(str(destaque_titulo or ''))
+    destaque_valor = escape_html(str(destaque_valor or ''))
+    aviso = escape_html(str(aviso or '')).replace('\n', '<br>')
+
+    destaque = ''
+
+    if destaque_valor:
+        estilo_valor = "font-family:'Courier New',monospace;font-size:30px;letter-spacing:6px;" if destaque_codigo else "font-size:17px;"
+        destaque = f"""
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:26px 0;border-collapse:separate;background:#f7faf8;border:1px solid #dbe7e1;border-radius:14px;">
+            <tr><td style="padding:17px 20px;">
+                <div style="margin-bottom:5px;color:#718078;font-size:10px;font-weight:700;letter-spacing:1.4px;text-transform:uppercase;">{destaque_titulo}</div>
+                <div style="color:#0d4d4d;font-weight:800;line-height:1.35;{estilo_valor}">{destaque_valor}</div>
+            </td></tr>
+        </table>
+        """
+
+    botao = ''
+
+    if botao_texto and botao_url:
+        botao = f"""
+        <table role="presentation" cellspacing="0" cellpadding="0" border="0" align="center" style="margin:30px auto 24px;">
+            <tr><td align="center" bgcolor="#0d4d4d" style="border-radius:10px;">
+                <a href="{botao_url}" style="display:inline-block;padding:14px 25px;color:#ffffff;text-decoration:none;font-size:14px;font-weight:700;line-height:18px;">{botao_texto}</a>
+            </td></tr>
+        </table>
+        """
+
+    aviso_html = ''
+
+    if aviso:
+        aviso_html = f"""
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin-top:24px;border-collapse:separate;background:#fff9eb;border-radius:11px;">
+            <tr><td style="padding:15px 17px;color:#6d5a29;font-size:12px;line-height:19px;">
+                <strong style="display:block;margin-bottom:3px;color:#5d4a20;">Atenção</strong>
+                {aviso}
+            </td></tr>
+        </table>
+        """
+
+    return f"""<!doctype html>
+<html lang="pt-BR">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>{titulo}</title>
+</head>
+<body style="margin:0;padding:0;background:#f3f1ea;font-family:'Segoe UI',Arial,Helvetica,sans-serif;color:#1c1c17;">
+    <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;">{preheader}</div>
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;background:#f3f1ea;">
+        <tr>
+            <td align="center" style="padding:38px 14px;">
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:600px;border-collapse:separate;background:#ffffff;border:1px solid #e4e0d6;border-radius:18px;overflow:hidden;">
+                    <tr><td style="height:4px;background:#d4af37;font-size:0;line-height:0;">&nbsp;</td></tr>
+                    <tr>
+                        <td style="padding:27px 34px;background:#0d4d4d;">
+                            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+                                <tr>
+                                    <td>
+                                        <div style="color:#f3cb68;font-family:Georgia,'Times New Roman',serif;font-size:23px;font-weight:700;letter-spacing:2px;">ARKHÉ</div>
+                                        <div style="margin-top:3px;color:#a9c7c2;font-size:9px;font-weight:600;letter-spacing:2px;text-transform:uppercase;">Banco digital didático</div>
+                                    </td>
+                                    <td align="right" valign="middle">
+                                        <div style="display:inline-block;padding:6px 9px;border:1px solid rgba(255,255,255,.18);border-radius:999px;color:#dce9e6;font-size:9px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;">Comunicação segura</div>
+                                    </td>
+                                </tr>
+                            </table>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="padding:38px 38px 34px;">
+                            <div style="margin-bottom:8px;color:#137a74;font-size:10px;font-weight:800;letter-spacing:1.7px;text-transform:uppercase;">Banco Arkhé</div>
+                            <h1 style="margin:0 0 14px;color:#183735;font-family:Georgia,'Times New Roman',serif;font-size:28px;line-height:35px;font-weight:700;">{titulo}</h1>
+                            <p style="margin:0;color:#4d4635;font-size:14px;line-height:23px;">{texto}</p>
+                            {destaque}
+                            {conteudo_extra}
+                            {botao}
+                            {aviso_html}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="padding:20px 30px;background:#faf9f5;border-top:1px solid #e9e5dc;text-align:center;">
+                            <p style="margin:0 0 5px;color:#0d4d4d;font-size:11px;font-weight:700;line-height:17px;">Banco Arkhé · Ambiente educacional</p>
+                            <p style="margin:0;color:#8a8374;font-size:10px;line-height:16px;">Mensagem automática. Nunca envie seu PIN ou credenciais em resposta a este e-mail.</p>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>"""
+
+
 def enviando_email(destinatario, assunto, html):
     user_email = 'webcar89@gmail.com'
     senha = os.getenv('EMAIL_APP_PASSWORD')
@@ -469,7 +582,7 @@ def enviando_email(destinatario, assunto, html):
     try:
         msg = MIMEMultipart("alternative")
         msg['Subject'] = assunto
-        msg['From'] = user_email
+        msg['From'] = f'Banco Arkhé <{user_email}>'
         msg['To'] = destinatario
 
         msg.attach(MIMEText(html, "html"))
