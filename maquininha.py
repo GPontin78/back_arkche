@@ -58,7 +58,8 @@ def buscar_cartao_fisico(uid):
                 CA.LIMITE,
                 CA.STATUS,
                 C.ID_USUARIO,
-                U.NOME
+                U.NOME,
+                CA.TENTATIVAS_PIN
             FROM CARTAO CA
             INNER JOIN CONTA C ON C.ID_CONTA = CA.ID_CONTA
             INNER JOIN USUARIO U ON U.ID_USUARIO = C.ID_USUARIO
@@ -247,11 +248,55 @@ def comprar_maquininha():
     resultado_pin = verificar_pin_usuario(id_usuario, pin)
 
     if not resultado_pin.get('valido'):
-        return jsonify({
-            'aprovado': False,
-            'codigo': 'PIN_INVALIDO',
-            'mensagem': 'PIN invalido'
-        }), 401
+        cursor = con.cursor()
+
+        try:
+            tentativas = int(cartao[7] or 0) + 1
+
+            if tentativas >= 3:
+                tentativas = 3
+                cursor.execute(
+                    """UPDATE CARTAO
+                       SET TENTATIVAS_PIN = ?, STATUS = 1, MOTIVO_BLOQUEIO = 'PIN', DATA_BLOQUEIO = ?
+                       WHERE ID_CARTAO = ?""",
+                    (tentativas, data_atual(), id_cartao)
+                )
+                con.commit()
+
+                return jsonify({
+                    'aprovado': False,
+                    'codigo': 'CARTAO_BLOQUEADO_PIN',
+                    'mensagem': 'Cartão bloqueado após 3 tentativas de PIN incorreto',
+                    'tentativas_restantes': 0
+                }), 401
+
+            cursor.execute(
+                "UPDATE CARTAO SET TENTATIVAS_PIN = ? WHERE ID_CARTAO = ?",
+                (tentativas, id_cartao)
+            )
+            con.commit()
+
+            return jsonify({
+                'aprovado': False,
+                'codigo': 'PIN_INVALIDO',
+                'mensagem': 'PIN inválido',
+                'tentativas_restantes': 3 - tentativas
+            }), 401
+
+        finally:
+            cursor.close()
+
+    if int(cartao[7] or 0) > 0:
+        cursor = con.cursor()
+
+        try:
+            cursor.execute(
+                "UPDATE CARTAO SET TENTATIVAS_PIN = 0 WHERE ID_CARTAO = ?",
+                (id_cartao,)
+            )
+            con.commit()
+        finally:
+            cursor.close()
 
     data_compra = data_atual()
 
