@@ -185,12 +185,6 @@ def iniciar_verificacao_pix():
         codigo_hash = criptografar_pin(codigo)
         expira_em = criado_em + datetime.timedelta(minutes=5)
 
-        if not enviar_codigo_telefone(valor, codigo, canal):
-            con.rollback()
-            return jsonify({
-                'mensagem': 'O canal de confirmacao por telefone ainda nao esta configurado no servidor'
-            }), 503
-
         cursor.execute(
             """INSERT INTO VERIFICACAO_PIX
                (ID_CONTA, TIPO_CHAVE, VALOR_CHAVE, CANAL, TOKEN_HASH, CODIGO_HASH,
@@ -201,6 +195,13 @@ def iniciar_verificacao_pix():
         )
 
         id_verificacao = cursor.fetchone()[0]
+
+        if not enviar_codigo_telefone(valor, codigo, canal):
+            con.rollback()
+            return jsonify({
+                'mensagem': 'O canal de confirmacao por telefone ainda nao esta configurado no servidor'
+            }), 503
+
         con.commit()
 
         return jsonify({
