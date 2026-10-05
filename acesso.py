@@ -9,6 +9,7 @@ from funcao import (
     criptografar_pin,
     gerar_pin_temporario,
     enviando_email,
+    montar_email_arkhe,
     data_atual
 )
 
@@ -107,128 +108,93 @@ def validar_cargo(cargo):
 
 
 def enviar_email_convite_existente(email, nome, empresa, cargo):
-    url_login = 'https://arkhe-frontend.zbbquj.easypanel.host/login'
-    html = f"""
-    <div style="margin:0;padding:32px 16px;background:#f6f3ea;font-family:Arial,Helvetica,sans-serif;color:#1c1c17;">
-        <div style="max-width:620px;margin:0 auto;background:#ffffff;border:1px solid #e7e2d7;border-radius:18px;overflow:hidden;box-shadow:0 12px 30px rgba(13,77,77,.08);">
-            <div style="padding:28px 32px;background:#0d4d4d;color:#ffffff;">
-                <div style="font-size:12px;font-weight:700;letter-spacing:3px;color:#f2c669;">ARKHÉ</div>
-                <h1 style="margin:10px 0 0;font-size:25px;line-height:1.25;">Você recebeu um convite</h1>
-            </div>
+    url_login = app.config['FRONTEND_URL'].rstrip('/') + '/login'
+    nome_seguro = escape(str(nome or ''))
+    empresa_segura = escape(str(empresa or ''))
+    cargo_seguro = escape(str(CARGOS.get(cargo, 'Outro')))
 
-            <div style="padding:30px 32px;">
-                <p style="margin:0 0 18px;font-size:15px;line-height:1.6;">Olá, <strong>{escape(str(nome or ''))}</strong>.</p>
+    conteudo_extra = f"""
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:26px 0 0;border-collapse:separate;background:#f7faf8;border:1px solid #dbe7e1;border-radius:14px;">
+        <tr>
+            <td style="padding:16px 18px;">
+                <div style="color:#718078;font-size:10px;font-weight:700;letter-spacing:1.3px;text-transform:uppercase;">Convite empresarial</div>
+                <div style="margin-top:5px;color:#183735;font-size:14px;line-height:21px;"><strong>{empresa_segura}</strong></div>
+                <div style="margin-top:3px;color:#66746f;font-size:12px;line-height:18px;">Perfil de acesso: <strong style="color:#0d4d4d;">{cargo_seguro}</strong></div>
+            </td>
+        </tr>
+    </table>
 
-                <p style="margin:0 0 18px;font-size:15px;line-height:1.6;">
-                    A empresa <strong>{escape(str(empresa))}</strong> convidou você para acessar a conta empresarial dela no Banco Arkhé.
-                </p>
-
-                <div style="margin:22px 0;padding:16px 18px;background:#edf7f3;border-left:4px solid #d4af37;border-radius:10px;">
-                    <div style="font-size:11px;font-weight:700;letter-spacing:1px;color:#736c5e;text-transform:uppercase;">Seu acesso</div>
-                    <div style="margin-top:6px;font-size:16px;font-weight:700;color:#0d4d4d;">{escape(CARGOS.get(cargo, 'Outro'))}</div>
-                </div>
-
-                <h2 style="margin:26px 0 10px;font-size:18px;color:#0d4d4d;">Como aceitar</h2>
-                <p style="margin:0 0 18px;font-size:15px;line-height:1.6;">
-                    É bem simples: entre novamente no Arkhé com seu <strong>CPF e PIN pessoal</strong>.
-                    Depois da validação facial, na tela <strong>“Escolha sua conta”</strong>, o convite aparecerá em
-                    <strong>“Convites pendentes”</strong>. É só aceitar e entrar na empresa.
-                </p>
-
-                <div style="text-align:center;margin:28px 0;">
-                    <a href="{url_login}" style="display:inline-block;padding:14px 26px;background:#0d4d4d;color:#ffffff;text-decoration:none;border-radius:10px;font-size:14px;font-weight:700;">
-                        Acessar o Banco Arkhé
-                    </a>
-                </div>
-
-                <p style="margin:0 0 8px;font-size:12px;line-height:1.6;color:#736c5e;">
-                    Nenhum PIN ou senha da empresa foi compartilhado. O acesso usa sua própria identidade Arkhé.
-                </p>
-                <p style="margin:0;font-size:12px;line-height:1.6;color:#8a8374;">
-                    Se o botão não abrir, acesse: <a href="{url_login}" style="color:#0d4d4d;">{url_login}</a>
-                </p>
-            </div>
-
-            <div style="padding:18px 32px;background:#fbfaf6;border-top:1px solid #eee9df;font-size:11px;line-height:1.5;color:#8a8374;">
-                Banco Arkhé · Ambiente educacional
-            </div>
-        </div>
+    <div style="margin-top:25px;">
+        <h2 style="margin:0 0 10px;color:#183735;font-size:17px;line-height:23px;">Como aceitar o convite</h2>
+        <ol style="margin:0;padding-left:20px;color:#4d4635;font-size:13px;line-height:22px;">
+            <li>Entre no Arkhé com seu CPF e PIN pessoal.</li>
+            <li>Conclua a validação facial.</li>
+            <li>Na tela de escolha de conta, localize <strong>Convites pendentes</strong>.</li>
+            <li>Aceite o convite para acessar a conta da empresa.</li>
+        </ol>
     </div>
     """
 
+    html = montar_email_arkhe(
+        titulo='Você recebeu um convite',
+        texto=f'Olá, {nome or "cliente"}. A empresa {empresa} convidou você para operar a conta empresarial dela no Banco Arkhé.',
+        preheader=f'{empresa} convidou você para acessar uma conta empresarial no Arkhé.',
+        botao_texto='Acessar o Banco Arkhé',
+        botao_url=url_login,
+        conteudo_extra=conteudo_extra,
+        aviso='O convite não compartilha PIN nem senha da empresa. O acesso usa sua própria identidade, PIN e validação facial.'
+    )
+
     enviando_email(
         email,
-        f'Você recebeu um convite no Arkhé - {empresa}',
+        f'Convite para acessar {empresa} no Banco Arkhé',
         html
     )
 
 
 def enviar_email_primeiro_acesso(email, nome, empresa, cargo, pin_temporario):
-    url_login = 'https://arkhe-frontend.zbbquj.easypanel.host/login'
-    html = f"""
-    <div style="margin:0;padding:32px 16px;background:#f6f3ea;font-family:Arial,Helvetica,sans-serif;color:#1c1c17;">
-        <div style="max-width:620px;margin:0 auto;background:#ffffff;border:1px solid #e7e2d7;border-radius:18px;overflow:hidden;box-shadow:0 12px 30px rgba(13,77,77,.08);">
-            <div style="padding:28px 32px;background:#0d4d4d;color:#ffffff;">
-                <div style="font-size:12px;font-weight:700;letter-spacing:3px;color:#f2c669;">ARKHÉ</div>
-                <h1 style="margin:10px 0 0;font-size:25px;line-height:1.25;">Seu primeiro acesso está pronto</h1>
-            </div>
+    url_login = app.config['FRONTEND_URL'].rstrip('/') + '/login'
+    empresa_segura = escape(str(empresa or ''))
+    cargo_seguro = escape(str(CARGOS.get(cargo, 'Outro')))
 
-            <div style="padding:30px 32px;">
-                <p style="margin:0 0 18px;font-size:15px;line-height:1.6;">Olá, <strong>{escape(str(nome or ''))}</strong>.</p>
+    conteudo_extra = f"""
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:0 0 24px;border-collapse:separate;background:#edf7f3;border-radius:11px;">
+        <tr>
+            <td style="padding:14px 17px;color:#0d4d4d;font-size:12px;line-height:19px;">
+                <strong style="display:block;margin-bottom:3px;">{empresa_segura}</strong>
+                Seu perfil de acesso será <strong>{cargo_seguro}</strong>.
+            </td>
+        </tr>
+    </table>
 
-                <p style="margin:0 0 18px;font-size:15px;line-height:1.6;">
-                    A empresa <strong>{escape(str(empresa))}</strong> convidou você para acessar a conta empresarial dela no Banco Arkhé.
-                </p>
-
-                <div style="margin:22px 0;padding:16px 18px;background:#edf7f3;border-left:4px solid #d4af37;border-radius:10px;">
-                    <div style="font-size:11px;font-weight:700;letter-spacing:1px;color:#736c5e;text-transform:uppercase;">Seu acesso</div>
-                    <div style="margin-top:6px;font-size:16px;font-weight:700;color:#0d4d4d;">{escape(CARGOS.get(cargo, 'Outro'))}</div>
-                </div>
-
-                <p style="margin:24px 0 8px;font-size:13px;font-weight:700;color:#736c5e;text-transform:uppercase;letter-spacing:1px;">PIN temporário</p>
-                <div style="font-size:30px;font-weight:800;letter-spacing:7px;padding:18px;text-align:center;background:#fbfaf6;border:1px solid #e7e2d7;border-radius:12px;color:#0d4d4d;">
-                    {escape(str(pin_temporario))}
-                </div>
-                <p style="margin:9px 0 22px;font-size:12px;line-height:1.6;color:#8a8374;">
-                    Este PIN expira em 24 horas e será usado somente no seu primeiro acesso.
-                </p>
-
-                <h2 style="margin:26px 0 12px;font-size:18px;color:#0d4d4d;">O que fazer agora</h2>
-                <ol style="margin:0 0 22px;padding-left:22px;font-size:15px;line-height:1.8;">
-                    <li>Acesse o Arkhé pelo botão abaixo.</li>
-                    <li>Entre com seu <strong>CPF</strong> e o <strong>PIN temporário</strong> acima.</li>
-                    <li>Conclua a validação facial.</li>
-                    <li>Crie seu <strong>PIN pessoal de 6 dígitos</strong>.</li>
-                    <li>Na tela <strong>“Escolha sua conta”</strong>, aceite o convite em <strong>“Convites pendentes”</strong>.</li>
-                    <li>Depois disso, a conta da empresa ficará disponível para você entrar normalmente.</li>
-                </ol>
-
-                <div style="text-align:center;margin:28px 0;">
-                    <a href="{url_login}" style="display:inline-block;padding:14px 26px;background:#0d4d4d;color:#ffffff;text-decoration:none;border-radius:10px;font-size:14px;font-weight:700;">
-                        Fazer meu primeiro acesso
-                    </a>
-                </div>
-
-                <div style="margin-top:24px;padding:14px 16px;background:#fff8e8;border-radius:10px;font-size:12px;line-height:1.6;color:#6d5a29;">
-                    Seu cadastro foi criado para permitir o acesso à empresa que enviou o convite.
-                    Você não recebeu automaticamente uma conta bancária própria.
-                </div>
-
-                <p style="margin:18px 0 0;font-size:12px;line-height:1.6;color:#8a8374;">
-                    Se o botão não abrir, acesse: <a href="{url_login}" style="color:#0d4d4d;">{url_login}</a>
-                </p>
-            </div>
-
-            <div style="padding:18px 32px;background:#fbfaf6;border-top:1px solid #eee9df;font-size:11px;line-height:1.5;color:#8a8374;">
-                Banco Arkhé · Ambiente educacional
-            </div>
-        </div>
+    <div style="margin-top:24px;">
+        <h2 style="margin:0 0 10px;color:#183735;font-size:17px;line-height:23px;">Seu primeiro acesso</h2>
+        <ol style="margin:0;padding-left:20px;color:#4d4635;font-size:13px;line-height:22px;">
+            <li>Acesse o Arkhé e informe seu CPF.</li>
+            <li>Use o PIN temporário acima.</li>
+            <li>Conclua o cadastro ou a validação facial.</li>
+            <li>Crie seu PIN pessoal de 6 dígitos.</li>
+            <li>Em <strong>Convites pendentes</strong>, aceite o acesso à empresa.</li>
+        </ol>
     </div>
     """
 
+    html = montar_email_arkhe(
+        titulo='Seu primeiro acesso está pronto',
+        texto=f'Olá, {nome or "cliente"}. Você foi convidado para acessar a conta empresarial de {empresa} no Banco Arkhé.',
+        preheader='Use seu PIN temporário para concluir o primeiro acesso ao Banco Arkhé.',
+        destaque_titulo='PIN temporário · válido por 24 horas',
+        destaque_valor=pin_temporario,
+        destaque_codigo=True,
+        botao_texto='Fazer meu primeiro acesso',
+        botao_url=url_login,
+        conteudo_extra=conteudo_extra,
+        aviso='Este PIN é temporário e deve ser usado somente por você. Depois do primeiro acesso, crie seu PIN pessoal. O convite não cria automaticamente uma conta bancária própria.'
+    )
+
     enviando_email(
         email,
-        f'Seu acesso ao Arkhé - {empresa}',
+        f'Seu primeiro acesso ao Banco Arkhé - {empresa}',
         html
     )
 
