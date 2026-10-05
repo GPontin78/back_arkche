@@ -51,7 +51,10 @@ def serializar_cartao(cartao):
         'limite_disponivel': limite_total - limite_utilizado,
         'dia_vencimento': cartao[6],
         'dia_fechamento': cartao[7],
-        'status': int(cartao[8] or 0)
+        'status': int(cartao[8] or 0),
+        'tentativas_pin': int(cartao[9] or 0),
+        'motivo_bloqueio': cartao[10],
+        'data_bloqueio': str(cartao[11]) if cartao[11] else None
     }
 
 
@@ -67,7 +70,7 @@ def buscar_cartao():
     try:
         cursor = con.cursor()
 
-        cursor.execute("""SELECT ID_CARTAO, ID_CONTA, NUMERO_CARTAO, VENCIMENTO, CVV, LIMITE, DIA_VENCIMENTO, FECHAMENTO, STATUS
+        cursor.execute("""SELECT ID_CARTAO, ID_CONTA, NUMERO_CARTAO, VENCIMENTO, CVV, LIMITE, DIA_VENCIMENTO, FECHAMENTO, STATUS, TENTATIVAS_PIN, MOTIVO_BLOQUEIO, DATA_BLOQUEIO
                           FROM CARTAO
                           WHERE ID_CONTA = ?""", (id_conta,))
 
@@ -371,7 +374,7 @@ def adicionar_cartao():
 
         cursor = con.cursor()
 
-        cursor.execute("""SELECT ID_CARTAO, ID_CONTA, NUMERO_CARTAO, VENCIMENTO, CVV, LIMITE, DIA_VENCIMENTO, FECHAMENTO, STATUS
+        cursor.execute("""SELECT ID_CARTAO, ID_CONTA, NUMERO_CARTAO, VENCIMENTO, CVV, LIMITE, DIA_VENCIMENTO, FECHAMENTO, STATUS, TENTATIVAS_PIN, MOTIVO_BLOQUEIO, DATA_BLOQUEIO
                           FROM CARTAO
                           WHERE ID_CONTA = ?""", (id_conta,))
 
@@ -403,7 +406,7 @@ def adicionar_cartao():
 
         con.commit()
 
-        cursor.execute("""SELECT ID_CARTAO, ID_CONTA, NUMERO_CARTAO, VENCIMENTO, CVV, LIMITE, DIA_VENCIMENTO, FECHAMENTO, STATUS
+        cursor.execute("""SELECT ID_CARTAO, ID_CONTA, NUMERO_CARTAO, VENCIMENTO, CVV, LIMITE, DIA_VENCIMENTO, FECHAMENTO, STATUS, TENTATIVAS_PIN, MOTIVO_BLOQUEIO, DATA_BLOQUEIO
                           FROM CARTAO
                           WHERE ID_CONTA = ? AND NUMERO_CARTAO = ?""", (id_conta, numero_cartao))
 
@@ -426,52 +429,55 @@ def adicionar_cartao():
 
 @app.route('/bloquear_cartao', methods=['PUT'])
 def bloquear_cartao():
+    dados = request.get_json() or {}
+    bloqueado = dados.get('bloqueado')
+
+    if bloqueado not in (True, False):
+        return jsonify({'mensagem': 'Informe se o cartão deve ficar bloqueado ou desbloqueado'}), 400
+
+    id_conta = descobre_id_conta()
+
+    if id_conta is None:
+        return jsonify({'mensagem': 'Usuario nao logado'}), 403
+
+    cursor = None
+
     try:
-        id_conta = descobre_id_conta()
-
-        if id_conta is None:
-            return jsonify({'mensagem': 'Usuario nao logado'}), 403
-
         cursor = con.cursor()
 
-        cursor.execute("""SELECT ID_CARTAO, STATUS
-                          FROM CARTAO
-                          WHERE ID_CONTA = ?""", (id_conta,))
-
+        cursor.execute("SELECT ID_CARTAO FROM CARTAO WHERE ID_CONTA = ?", (id_conta,))
         cartao = cursor.fetchone()
 
         if not cartao:
             return jsonify({'mensagem': 'Cartao nao encontrado'}), 404
 
-        id_cartao = cartao[0]
-        status = cartao[1]
-
-        if status == 0:
+        if bloqueado:
+            cursor.execute(
+                """UPDATE CARTAO
+                   SET STATUS = 1, MOTIVO_BLOQUEIO = 'MANUAL', DATA_BLOQUEIO = ?
+                   WHERE ID_CARTAO = ?""",
+                (data_atual(), cartao[0])
+            )
+            mensagem = 'Cartão bloqueado com sucesso'
             status = 1
-
         else:
+            cursor.execute(
+                """UPDATE CARTAO
+                   SET STATUS = 0, TENTATIVAS_PIN = 0, MOTIVO_BLOQUEIO = NULL, DATA_BLOQUEIO = NULL
+                   WHERE ID_CARTAO = ?""",
+                (cartao[0],)
+            )
+            mensagem = 'Cartão desbloqueado com sucesso'
             status = 0
-
-        cursor.execute("""UPDATE CARTAO
-                          SET STATUS = ?
-                          WHERE ID_CARTAO = ?""",
-                       (status, id_cartao))
 
         con.commit()
 
-        return jsonify({
-            'mensagem': 'Status do cartao alterado com sucesso',
-            'status': status
-        }), 200
+        return jsonify({'mensagem': mensagem, 'status': status}), 200
 
     except Exception as e:
         con.rollback()
-
-        return jsonify({
-            'mensagem': 'Erro ao alterar status do cartao',
-            'erro': str(e)
-        }), 500
+        return jsonify({'mensagem': 'Erro ao alterar status do cartao', 'erro': str(e)}), 500
 
     finally:
-        if 'cursor' in locals() and cursor:
+        if cursor:
             cursor.close()
