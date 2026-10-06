@@ -22,6 +22,7 @@ import folha_csv
 import maquininha
 import fatura
 import mcp_internal
+import whatsapp
 
 
 if __name__ == '__main__':
