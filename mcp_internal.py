@@ -193,6 +193,20 @@ def limitar_resultados(valor, padrao=50, maximo=200):
     return max(1, min(valor, maximo))
 
 
+def situacao_cobranca_mcp(status, vencimento):
+    status = int(status or 0)
+
+    if status == 1:
+        return 'PAGO'
+
+    hoje = datetime.datetime.now(ZoneInfo('America/Sao_Paulo')).date()
+
+    if vencimento and vencimento < hoje:
+        return 'VENCIDO'
+
+    return 'PENDENTE'
+
+
 def obter_periodo_extrato_mcp():
     data_inicio = request.args.get('data_inicio')
     data_fim = request.args.get('data_fim')
@@ -382,16 +396,24 @@ def mcp_consultar_dda():
                 'valor': float(cobranca[1] or 0),
                 'data_vencimento': str(cobranca[2]) if cobranca[2] else None,
                 'status': int(cobranca[3] or 0),
-                'situacao': 'PAGO' if int(cobranca[3] or 0) == 1 else 'PENDENTE',
+                'situacao': situacao_cobranca_mcp(cobranca[3], cobranca[2]),
                 'codigo_pagamento': cobranca[4],
                 'recebedor': nome_cliente_mcp(
                     cobranca[5], cobranca[6], cobranca[7], cobranca[8]
                 )
             })
 
+        cursor.execute(
+            """SELECT COUNT(*)
+               FROM COBRANCA
+               WHERE ID_PAGADOR = ? AND TIPO_COBRANCA = 0 AND STATUS = 0""",
+            (id_conta,)
+        )
+        total_pendentes = int(cursor.fetchone()[0] or 0)
+
         return jsonify({
             'dda': boletos,
-            'pendentes': sum(1 for boleto in boletos if boleto['status'] == 0)
+            'total_pendentes': total_pendentes
         }), 200
 
     except Exception as e:
@@ -450,7 +472,7 @@ def mcp_consultar_boletos():
                 'valor': float(cobranca[3] or 0),
                 'data_vencimento': str(cobranca[4]) if cobranca[4] else None,
                 'status': int(cobranca[5] or 0),
-                'situacao': 'PAGO' if int(cobranca[5] or 0) == 1 else 'PENDENTE',
+                'situacao': situacao_cobranca_mcp(cobranca[5], cobranca[4]),
                 'codigo_pagamento': cobranca[6],
                 'pagador': nome_pagador,
                 'recebedor': nome_recebedor
