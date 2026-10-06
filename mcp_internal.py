@@ -5,11 +5,12 @@ from calendar import monthrange
 from zoneinfo import ZoneInfo
 
 import jwt
-from flask import jsonify, request
+from flask import jsonify, request, send_file
 
 from banco import con
 from funcao import calcular_limite_cartao, calcular_saldo, usuario_pode_acessar_conta
 from main import app
+from pdf import gerar_relatorio_funcionarios_pdf
 
 
 CARGOS = {
@@ -1117,3 +1118,98 @@ def mcp_consultar_folha(id_folha):
     finally:
         if cursor:
             cursor.close()
+
+
+
+@app.route('/internal/mcp/relatorios/funcionarios', methods=['GET'])
+def mcp_gerar_relatorio_funcionarios():
+    contexto, erro = autenticar_requisicao_mcp()
+
+    if erro:
+        return erro
+
+    _permissao, erro = autorizar_rh_mcp(contexto)
+
+    if erro:
+        return erro
+
+    agora = datetime.datetime.now(datetime.timezone.utc)
+    expira_em = agora + datetime.timedelta(minutes=5)
+
+    token = jwt.encode(
+        {
+            'id_usuario': contexto['id_usuario'],
+            'id_conta': contexto['id_conta'],
+            'escopo': 'mcp_arquivo_funcionarios',
+            'iat': agora,
+            'exp': expira_em
+        },
+        app.config['SECRET_KEY'],
+        algorithm='HS256'
+    )
+
+    return jsonify({
+        'arquivo': 'relatorio_funcionarios_arkhe.pdf',
+        'mime_type': 'application/pdf',
+        'download_path': f'/mcp/arquivos/funcionarios/{token}',
+        'expira_em': expira_em.isoformat()
+    }), 200
+
+
+@app.route('/mcp/arquivos/funcionarios/<token>', methods=['GET'])
+def mcp_baixar_relatorio_funcionarios(token):
+    try:
+        payload = jwt.decode(
+            token,
+            app.config['SECRET_KEY'],
+            algorithms=['HS256']
+        )
+    except jwt.ExpiredSignatureError:
+        return jsonify({'mensagem': 'Este link de relatório expirou'}), 410
+    except Exception:
+        return jsonify({'mensagem': 'Link de relatório inválido'}), 401
+
+    if payload.get('escopo') != 'mcp_arquivo_funcionarios':
+        return jsonify({'mensagem': 'Link de relatório inválido'}), 401
+
+    try:
+        id_usuario = int(payload['id_usuario'])
+        id_conta = int(payload['id_conta'])
+    except (KeyError, TypeError, ValueError):
+        return jsonify({'mensagem': 'Link de relatório inválido'}), 401
+
+    if not usuario_pode_acessar_conta(id_usuario, id_conta):
+        return jsonify({'mensagem': 'Acesso ao relatório não permitido'}), 403
+
+    contexto = {
+        'id_usuario': id_usuario,
+        'id_conta': id_conta,
+        'canal': 'arquivo_mcp'
+    }
+
+    _permissao, erro = autorizar_rh_mcp(contexto)
+
+    if erro:
+        return erro
+
+    try:
+        relatorio = gerar_relatorio_funcionarios_pdf(id_conta)
+
+        if not relatorio:
+            return jsonify({'mensagem': 'Empresa não encontrada'}), 404
+
+        resposta = send_file(
+            relatorio['arquivo'],
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=relatorio['nome']
+        )
+        resposta.headers['Cache-Control'] = 'no-store, private, max-age=0'
+        resposta.headers['Pragma'] = 'no-cache'
+        resposta.headers['X-Content-Type-Options'] = 'nosniff'
+
+        return resposta
+
+    except Exception as e:
+        print('ERRO MCP RELATORIO FUNCIONARIOS:', e)
+        return jsonify({'mensagem': 'Erro ao gerar relatório de funcionários'}), 500
