@@ -1345,7 +1345,7 @@ def gerar_relatorio_funcionarios_pdf(id_conta):
         largura_pagina = 210 * mm
         altura_pagina = 297 * mm
         largura_util = 180 * mm
-        linhas_por_pagina = 24
+        linhas_por_pagina = 22
         paginas = max(1, (len(funcionarios) + linhas_por_pagina - 1) // linhas_por_pagina)
 
         def cabecalho(numero_pagina):
