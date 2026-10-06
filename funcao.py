@@ -70,6 +70,25 @@ def gerar_token(id_usuario, id_conta):
     )
 
 
+def gerar_token_mcp(id_usuario, id_conta, canal='whatsapp', minutos=30):
+    """Gera uma sessão curta para uso pelo MCP sem expor o cookie do cliente."""
+    agora = datetime.datetime.now(datetime.timezone.utc)
+    payload = {
+        'id_usuario': int(id_usuario),
+        'id_conta': int(id_conta),
+        'escopo': 'mcp',
+        'canal': str(canal),
+        'iat': agora,
+        'exp': agora + datetime.timedelta(minutes=int(minutos))
+    }
+
+    return jwt.encode(
+        payload,
+        current_app.config['SECRET_KEY'],
+        algorithm='HS256'
+    )
+
+
 def descobre_id_usuario():
     token = obter_token()
 
