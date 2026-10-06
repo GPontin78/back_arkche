@@ -710,3 +710,410 @@ def mcp_listar_chaves_pix():
     finally:
         if cursor:
             cursor.close()
+
+
+
+STATUS_FOLHA_MCP = {
+    0: 'PENDENTE',
+    1: 'PRONTA',
+    2: 'PROCESSANDO',
+    3: 'PAGA',
+    4: 'PARCIAL'
+}
+
+STATUS_ITEM_FOLHA_MCP = {
+    0: 'PENDENTE',
+    1: 'PRONTO',
+    2: 'PAGO'
+}
+
+
+def mascarar_cpf_mcp(valor):
+    cpf = ''.join(numero for numero in str(valor or '') if numero.isdigit())
+
+    if len(cpf) != 11:
+        return None
+
+    return '***.***.***-' + cpf[-2:]
+
+
+def autorizar_rh_mcp(contexto):
+    """Restringe dados de funcionários e folha ao proprietário ou RH ativo."""
+    cursor = None
+
+    try:
+        cursor = con.cursor()
+        cursor.execute(
+            """SELECT ID_USUARIO, TIPO_CONTA
+               FROM CONTA
+               WHERE ID_CONTA = ?""",
+            (contexto['id_conta'],)
+        )
+        conta = cursor.fetchone()
+
+        if not conta:
+            return None, (jsonify({'mensagem': 'Conta não encontrada'}), 404)
+
+        if conta[1] != 1:
+            return None, (jsonify({
+                'mensagem': 'Funcionários e folha estão disponíveis apenas para conta PJ'
+            }), 403)
+
+        if conta[0] == contexto['id_usuario']:
+            return {
+                'vinculo': 'proprietario',
+                'cargo': None,
+                'cargo_nome': 'Proprietário'
+            }, None
+
+        cursor.execute(
+            """SELECT CARGO
+               FROM ACESSO_CONTA
+               WHERE ID_CONTA = ? AND ID_USUARIO = ? AND STATUS = 1""",
+            (contexto['id_conta'], contexto['id_usuario'])
+        )
+        acesso = cursor.fetchone()
+
+        if not acesso:
+            return None, (jsonify({
+                'mensagem': 'Usuário sem acesso ativo à empresa'
+            }), 403)
+
+        cargo = int(acesso[0])
+
+        if cargo != 3:
+            return None, (jsonify({
+                'mensagem': 'Seu cargo não permite consultar funcionários ou folha'
+            }), 403)
+
+        return {
+            'vinculo': 'acesso',
+            'cargo': cargo,
+            'cargo_nome': CARGOS.get(cargo, 'Outro')
+        }, None
+
+    finally:
+        if cursor:
+            cursor.close()
+
+
+@app.route('/internal/mcp/funcionarios', methods=['GET'])
+def mcp_listar_funcionarios():
+    contexto, erro = autenticar_requisicao_mcp()
+
+    if erro:
+        return erro
+
+    _permissao, erro = autorizar_rh_mcp(contexto)
+
+    if erro:
+        return erro
+
+    id_conta = contexto['id_conta']
+    cursor = None
+
+    try:
+        cursor = con.cursor()
+        cursor.execute(
+            """SELECT F.ID_FUNCIONARIO, F.CPF, F.NOME, F.SALARIO,
+                      F.STATUS, F.DATA_CADASTRO,
+                      CASE WHEN EXISTS (
+                          SELECT 1
+                          FROM CONTA C
+                          WHERE C.ID_USUARIO = F.ID_USUARIO
+                            AND C.TIPO_CONTA = 0
+                      ) THEN 1 ELSE 0 END AS POSSUI_CONTA_PF
+               FROM FUNCIONARIO F
+               WHERE F.ID_CONTA_EMPRESA = ?
+               ORDER BY F.STATUS DESC, F.NOME""",
+            (id_conta,)
+        )
+
+        funcionarios = []
+        total_ativos = 0
+        total_inativos = 0
+        folha_mensal_ativa = 0.0
+
+        for funcionario in cursor.fetchall():
+            status = int(funcionario[4] or 0)
+            salario = float(funcionario[3] or 0)
+
+            if status == 1:
+                total_ativos += 1
+                folha_mensal_ativa += salario
+            else:
+                total_inativos += 1
+
+            funcionarios.append({
+                'id_funcionario': funcionario[0],
+                'nome': funcionario[2],
+                'cpf_mascarado': mascarar_cpf_mcp(funcionario[1]),
+                'salario': salario,
+                'status': status,
+                'status_nome': 'ATIVO' if status == 1 else 'INATIVO',
+                'data_cadastro': str(funcionario[5]) if funcionario[5] else None,
+                'possui_conta_arkhe': bool(funcionario[6])
+            })
+
+        return jsonify({
+            'resumo': {
+                'total_funcionarios': len(funcionarios),
+                'ativos': total_ativos,
+                'inativos': total_inativos,
+                'folha_mensal_ativa': round(folha_mensal_ativa, 2)
+            },
+            'funcionarios': funcionarios
+        }), 200
+
+    except Exception as e:
+        print('ERRO MCP LISTAR FUNCIONARIOS:', e)
+        return jsonify({'mensagem': 'Erro ao consultar funcionários'}), 500
+
+    finally:
+        if cursor:
+            cursor.close()
+
+
+@app.route('/internal/mcp/funcionarios/<int:id_funcionario>', methods=['GET'])
+def mcp_consultar_funcionario(id_funcionario):
+    contexto, erro = autenticar_requisicao_mcp()
+
+    if erro:
+        return erro
+
+    _permissao, erro = autorizar_rh_mcp(contexto)
+
+    if erro:
+        return erro
+
+    cursor = None
+
+    try:
+        cursor = con.cursor()
+        cursor.execute(
+            """SELECT F.ID_FUNCIONARIO, F.CPF, F.NOME, F.SALARIO,
+                      F.STATUS, F.DATA_CADASTRO,
+                      CASE WHEN EXISTS (
+                          SELECT 1
+                          FROM CONTA C
+                          WHERE C.ID_USUARIO = F.ID_USUARIO
+                            AND C.TIPO_CONTA = 0
+                      ) THEN 1 ELSE 0 END AS POSSUI_CONTA_PF
+               FROM FUNCIONARIO F
+               WHERE F.ID_FUNCIONARIO = ?
+                 AND F.ID_CONTA_EMPRESA = ?""",
+            (id_funcionario, contexto['id_conta'])
+        )
+        funcionario = cursor.fetchone()
+
+        if not funcionario:
+            return jsonify({'mensagem': 'Funcionário não encontrado'}), 404
+
+        status = int(funcionario[4] or 0)
+
+        return jsonify({
+            'id_funcionario': funcionario[0],
+            'nome': funcionario[2],
+            'cpf_mascarado': mascarar_cpf_mcp(funcionario[1]),
+            'salario': float(funcionario[3] or 0),
+            'status': status,
+            'status_nome': 'ATIVO' if status == 1 else 'INATIVO',
+            'data_cadastro': str(funcionario[5]) if funcionario[5] else None,
+            'possui_conta_arkhe': bool(funcionario[6])
+        }), 200
+
+    except Exception as e:
+        print('ERRO MCP CONSULTAR FUNCIONARIO:', e)
+        return jsonify({'mensagem': 'Erro ao consultar funcionário'}), 500
+
+    finally:
+        if cursor:
+            cursor.close()
+
+
+@app.route('/internal/mcp/folhas', methods=['GET'])
+def mcp_listar_folhas():
+    contexto, erro = autenticar_requisicao_mcp()
+
+    if erro:
+        return erro
+
+    _permissao, erro = autorizar_rh_mcp(contexto)
+
+    if erro:
+        return erro
+
+    limite = limitar_resultados(request.args.get('limite'), padrao=12, maximo=60)
+    cursor = None
+
+    try:
+        cursor = con.cursor()
+        cursor.execute(
+            """SELECT FP.ID_FOLHA, FP.COMPETENCIA_MES, FP.COMPETENCIA_ANO,
+                      FP.STATUS, FP.DATA_CRIACAO, FP.DATA_PAGAMENTO,
+                      CAST(COALESCE(SUM(FI.VALOR), 0) AS DECIMAL(18,2)),
+                      CAST(COALESCE(SUM(CASE WHEN FI.STATUS = 2 THEN FI.VALOR ELSE 0 END), 0) AS DECIMAL(18,2)),
+                      CAST(COALESCE(SUM(CASE WHEN FI.STATUS = 1 THEN FI.VALOR ELSE 0 END), 0) AS DECIMAL(18,2)),
+                      CAST(COALESCE(SUM(CASE WHEN FI.STATUS = 0 THEN FI.VALOR ELSE 0 END), 0) AS DECIMAL(18,2)),
+                      COUNT(FI.ID_FOLHA_ITEM),
+                      SUM(CASE WHEN FI.STATUS = 2 THEN 1 ELSE 0 END),
+                      SUM(CASE WHEN FI.STATUS = 1 THEN 1 ELSE 0 END),
+                      SUM(CASE WHEN FI.STATUS = 0 THEN 1 ELSE 0 END)
+               FROM FOLHA_PAGAMENTO FP
+               LEFT JOIN FOLHA_ITEM FI ON FI.ID_FOLHA = FP.ID_FOLHA
+               WHERE FP.ID_CONTA_EMPRESA = ?
+               GROUP BY FP.ID_FOLHA, FP.COMPETENCIA_MES, FP.COMPETENCIA_ANO,
+                        FP.STATUS, FP.DATA_CRIACAO, FP.DATA_PAGAMENTO
+               ORDER BY FP.COMPETENCIA_ANO DESC,
+                        FP.COMPETENCIA_MES DESC,
+                        FP.ID_FOLHA DESC""",
+            (contexto['id_conta'],)
+        )
+
+        folhas = []
+
+        for folha in cursor.fetchall()[:limite]:
+            status = int(folha[3] or 0)
+
+            folhas.append({
+                'id_folha': folha[0],
+                'mes': folha[1],
+                'ano': folha[2],
+                'status': status,
+                'status_nome': STATUS_FOLHA_MCP.get(status, 'DESCONHECIDO'),
+                'data_criacao': str(folha[4]) if folha[4] else None,
+                'data_pagamento': str(folha[5]) if folha[5] else None,
+                'total': float(folha[6] or 0),
+                'total_pago': float(folha[7] or 0),
+                'total_valido': float(folha[8] or 0),
+                'total_pendente': float(folha[9] or 0),
+                'quantidade_funcionarios': int(folha[10] or 0),
+                'quantidade_pagos': int(folha[11] or 0),
+                'quantidade_validos': int(folha[12] or 0),
+                'quantidade_pendentes': int(folha[13] or 0)
+            })
+
+        return jsonify({
+            'folhas': folhas,
+            'quantidade_retornada': len(folhas)
+        }), 200
+
+    except Exception as e:
+        print('ERRO MCP LISTAR FOLHAS:', e)
+        return jsonify({'mensagem': 'Erro ao consultar folhas'}), 500
+
+    finally:
+        if cursor:
+            cursor.close()
+
+
+@app.route('/internal/mcp/folhas/<int:id_folha>', methods=['GET'])
+def mcp_consultar_folha(id_folha):
+    contexto, erro = autenticar_requisicao_mcp()
+
+    if erro:
+        return erro
+
+    _permissao, erro = autorizar_rh_mcp(contexto)
+
+    if erro:
+        return erro
+
+    cursor = None
+
+    try:
+        cursor = con.cursor()
+        cursor.execute(
+            """SELECT ID_FOLHA, COMPETENCIA_MES, COMPETENCIA_ANO,
+                      STATUS, DATA_CRIACAO, DATA_PAGAMENTO
+               FROM FOLHA_PAGAMENTO
+               WHERE ID_FOLHA = ? AND ID_CONTA_EMPRESA = ?""",
+            (id_folha, contexto['id_conta'])
+        )
+        folha = cursor.fetchone()
+
+        if not folha:
+            return jsonify({'mensagem': 'Folha não encontrada'}), 404
+
+        cursor.execute(
+            """SELECT ID_FOLHA_ITEM, ID_FUNCIONARIO, ID_CONTA_DESTINO,
+                      CPF, NOME, VALOR, STATUS, ERRO,
+                      ID_MOVIMENTACAO, DATA_PAGAMENTO
+               FROM FOLHA_ITEM
+               WHERE ID_FOLHA = ?
+               ORDER BY NOME""",
+            (id_folha,)
+        )
+
+        itens = []
+        total = 0.0
+        total_valido = 0.0
+        total_pendente = 0.0
+        total_pago = 0.0
+
+        for item in cursor.fetchall():
+            valor = float(item[5] or 0)
+            status_item = int(item[6] or 0)
+            total += valor
+
+            if status_item == 0:
+                total_pendente += valor
+            elif status_item == 1:
+                total_valido += valor
+            elif status_item == 2:
+                total_pago += valor
+
+            itens.append({
+                'id_item': item[0],
+                'id_funcionario': item[1],
+                'nome': item[4],
+                'cpf_mascarado': mascarar_cpf_mcp(item[3]),
+                'valor': valor,
+                'status': status_item,
+                'status_nome': STATUS_ITEM_FOLHA_MCP.get(
+                    status_item,
+                    'DESCONHECIDO'
+                ),
+                'possui_conta_destino': item[2] is not None,
+                'erro': item[7],
+                'id_movimentacao': item[8],
+                'data_pagamento': str(item[9]) if item[9] else None
+            })
+
+        status_folha = int(folha[3] or 0)
+
+        return jsonify({
+            'id_folha': folha[0],
+            'mes': folha[1],
+            'ano': folha[2],
+            'status': status_folha,
+            'status_nome': STATUS_FOLHA_MCP.get(
+                status_folha,
+                'DESCONHECIDO'
+            ),
+            'data_criacao': str(folha[4]) if folha[4] else None,
+            'data_pagamento': str(folha[5]) if folha[5] else None,
+            'total': round(total, 2),
+            'total_valido': round(total_valido, 2),
+            'total_pendente': round(total_pendente, 2),
+            'total_pago': round(total_pago, 2),
+            'quantidade_funcionarios': len(itens),
+            'quantidade_validos': sum(
+                1 for item in itens if item['status'] == 1
+            ),
+            'quantidade_pendentes': sum(
+                1 for item in itens if item['status'] == 0
+            ),
+            'quantidade_pagos': sum(
+                1 for item in itens if item['status'] == 2
+            ),
+            'itens': itens
+        }), 200
+
+    except Exception as e:
+        print('ERRO MCP CONSULTAR FOLHA:', e)
+        return jsonify({'mensagem': 'Erro ao consultar folha'}), 500
+
+    finally:
+        if cursor:
+            cursor.close()
