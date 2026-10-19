@@ -61,6 +61,12 @@ def autenticar_requisicao_mcp():
     if not usuario_pode_acessar_conta(id_usuario, id_conta):
         return None, (jsonify({'mensagem': 'Usuário sem acesso à conta selecionada'}), 403)
 
+    if payload.get('canal') == 'whatsapp':
+        from whatsapp import autorizar_sessao_whatsapp, normalizar_telefone_whatsapp
+        telefone = normalizar_telefone_whatsapp(payload.get('telefone'))
+        if request.method != 'GET' or not telefone or not autorizar_sessao_whatsapp(id_usuario, id_conta, telefone, request.path):
+            return None, (jsonify({'mensagem': 'Consulta não autorizada para este WhatsApp ou cargo'}), 403)
+
     return {
         'id_usuario': id_usuario,
         'id_conta': id_conta,
