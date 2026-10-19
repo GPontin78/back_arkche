@@ -10,10 +10,10 @@ from flask import jsonify, request
 from banco import con
 from funcao import gerar_token_mcp, listar_contas_usuario, usuario_pode_acessar_conta
 from main import app
+from whatsapp_permissoes import capacidades_whatsapp
 
 
 CARGOS_WHATSAPP = {0: 'Administrativo', 1: 'Financeiro', 2: 'Contador', 3: 'RH', 4: 'Compras', 5: 'Outro'}
-CARGOS_FINANCEIROS = (0, 1, 2)
 DURACAO_CODIGO_MINUTOS = 10
 DURACAO_SESSAO_MINUTOS = 30
 
@@ -86,14 +86,6 @@ def validar_origem_web():
     if origem != permitida:
         return jsonify({'mensagem': 'Origem da solicitação não autorizada'}), 403
     return None
-
-
-def capacidades_whatsapp(conta):
-    if conta['tipo_conta'] == 0:
-        return {'financeiro': conta['vinculo'] == 'titular', 'rh': False}
-    if conta['vinculo'] == 'proprietario':
-        return {'financeiro': True, 'rh': True}
-    return {'financeiro': conta.get('cargo') in CARGOS_FINANCEIROS, 'rh': conta.get('cargo') == 3}
 
 
 def obter_configuracao(cursor, id_usuario, id_conta):
