@@ -25,6 +25,7 @@ import maquininha
 import fatura
 import mcp_internal
 import whatsapp
+import whatsapp_configuracao
 
 
 if __name__ == '__main__':
