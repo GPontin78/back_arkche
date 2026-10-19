@@ -67,7 +67,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "${ARKHE_BACKEND_URL}/internal/whatsapp/selecionar-conta",
+        "url": "={{ $env.ARKHE_BACKEND_URL + '/internal/whatsapp/selecionar-conta' }}",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendHeaders": false,
@@ -141,7 +141,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "${ARKHE_BACKEND_URL}/internal/whatsapp/encerrar",
+        "url": "={{ $env.ARKHE_BACKEND_URL + '/internal/whatsapp/encerrar' }}",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendHeaders": false,
@@ -215,7 +215,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "${ARKHE_BACKEND_URL}/internal/whatsapp/sessao",
+        "url": "={{ $env.ARKHE_BACKEND_URL + '/internal/whatsapp/sessao' }}",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendHeaders": false,
@@ -253,7 +253,7 @@
           "conditions": [
             {
               "id": "cond-11",
-              "leftValue": "={{ $json.autenticado }}",
+              "leftValue": "={{ String($json.autenticado) }}",
               "rightValue": "true",
               "operator": {
                 "type": "string",
