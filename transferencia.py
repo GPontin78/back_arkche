@@ -3,6 +3,52 @@ from main import app
 from banco import con
 from funcao import descobre_id_conta, data_atual, pode_debitar_saldo
 import uuid
+import fdb
+from reportlab.graphics import renderSVG
+from reportlab.graphics.barcode.qr import QrCodeWidget
+from reportlab.graphics.shapes import Drawing
+
+
+def criar_pix_para_conta(id_recebedor, dados):
+    # O import local evita ciclo entre as rotas internas e as rotas da API.
+    from api import valor_monetario_api
+
+    if not isinstance(dados, dict):
+        return jsonify({'mensagem': 'Envie um objeto JSON'}), 400
+    valor_livre = dados.get('valor_livre', False)
+    if not isinstance(valor_livre, bool):
+        return jsonify({'mensagem': 'valor_livre deve ser true ou false'}), 400
+    valor = None if valor_livre else valor_monetario_api(dados.get('valor'))
+    if not valor_livre and valor is None:
+        return jsonify({'mensagem': 'Informe um valor positivo em reais ou valor_livre: true'}), 400
+
+    cursor = None
+    try:
+        codigo = 'ARKHEPIX:' + uuid.uuid4().hex.upper()
+        desenho = Drawing(256, 256)
+        desenho.add(QrCodeWidget(codigo, barWidth=256, barHeight=256, barBorder=4, barLevel='M'))
+        imagem = renderSVG.drawToString(desenho)
+        cursor = con.cursor()
+        cursor.execute(
+            """INSERT INTO COBRANCA
+               (ID_PAGADOR, ID_RECEBEDOR, VALOR, DATA_VENCIMENTO, CODIGO_PAGAMENTO, STATUS, TIPO_COBRANCA)
+               VALUES (NULL, ?, ?, NULL, ?, 0, 1) RETURNING ID_COBRANCA""",
+            (id_recebedor, valor, codigo)
+        )
+        id_cobranca = cursor.fetchone()[0]
+        con.commit()
+        return jsonify({
+            'mensagem': 'QR Code Pix criado com sucesso',
+            'id_cobranca': id_cobranca, 'codigo_pagamento': codigo,
+            'valor': float(valor) if valor is not None else None,
+            'valor_livre': valor_livre, 'qr_code_svg': imagem, 'status': 0, 'tipo_cobranca': 1
+        }), 201
+    except Exception:
+        con.rollback()
+        return jsonify({'mensagem': 'Erro ao gerar QR Code Pix'}), 500
+    finally:
+        if cursor:
+            cursor.close()
 
 @app.route('/adicionar_cobranca', methods=['POST'])
 def adicionar_cobranca():
@@ -61,7 +107,11 @@ def adicionar_cobranca():
 
 @app.route('/baixar_cobranca', methods=['POST'])
 def baixar_cobranca():
-    dados = request.get_json()
+    from api import valor_monetario_api
+
+    dados = request.get_json(silent=True)
+    if not isinstance(dados, dict):
+        return jsonify({'mensagem': 'Envie um objeto JSON'}), 400
     id_cobranca = dados.get('id_cobranca')
 
     id_conta = descobre_id_conta()
@@ -74,7 +124,7 @@ def baixar_cobranca():
     try:
         cursor = con.cursor()
 
-        cursor.execute("""SELECT ID_COBRANCA, ID_PAGADOR, ID_RECEBEDOR, VALOR, STATUS
+        cursor.execute("""SELECT ID_COBRANCA, ID_PAGADOR, ID_RECEBEDOR, VALOR, STATUS, TIPO_COBRANCA
                           FROM COBRANCA
                           WHERE ID_COBRANCA = ?""",
                        (id_cobranca,))
@@ -85,22 +135,43 @@ def baixar_cobranca():
             return jsonify({'mensagem': 'Cobranca nao encontrada'}), 404
 
         id_recebedor = cobranca[2]
-        valor = cobranca[3]
-        status = cobranca[4]
-
-        if status == 1:
-            return jsonify({'mensagem': 'Cobranca ja foi paga'}), 400
-
         if id_conta == id_recebedor:
             return jsonify({'mensagem': 'A conta recebedora nao pode pagar o proprio boleto'}), 400
 
+        for conta in sorted({id_conta, id_recebedor}):
+            cursor.execute('SELECT ID_CONTA FROM CONTA WHERE ID_CONTA = ? WITH LOCK', (conta,))
+            if not cursor.fetchone():
+                con.rollback()
+                return jsonify({'mensagem': 'Conta nao encontrada'}), 404
+        cursor.execute(
+            'SELECT VALOR, STATUS, TIPO_COBRANCA FROM COBRANCA WHERE ID_COBRANCA = ? WITH LOCK',
+            (id_cobranca,)
+        )
+        valor, status, tipo = cursor.fetchone()
+        if status != 0:
+            con.rollback()
+            return jsonify({'mensagem': 'Cobranca ja paga ou indisponivel'}), 400
+        if tipo == 1 and valor is None:
+            valor = valor_monetario_api(dados.get('valor'))
+        elif dados.get('valor') is not None and valor_monetario_api(dados['valor']) != valor:
+            con.rollback()
+            return jsonify({'mensagem': 'O valor desta cobranca e fixo e nao pode ser alterado'}), 400
+        if valor is None or valor <= 0:
+            con.rollback()
+            return jsonify({'mensagem': 'Informe um valor positivo para pagar este QR Code'}), 400
         if not pode_debitar_saldo(id_conta, valor):
+            con.rollback()
             return jsonify({'mensagem': 'Saldo insuficiente para pagar a cobranca'}), 400
 
         data_movimentacao = data_atual()
 
-        cursor.execute("""UPDATE COBRANCA SET STATUS = 1 WHERE ID_COBRANCA = ?""",
-                       (id_cobranca,))
+        cursor.execute("""UPDATE COBRANCA SET STATUS = 1, VALOR = ?,
+                          ID_PAGADOR = COALESCE(ID_PAGADOR, ?)
+                          WHERE ID_COBRANCA = ? AND STATUS = 0 RETURNING ID_COBRANCA""",
+                       (valor, id_conta, id_cobranca))
+        if not cursor.fetchone():
+            con.rollback()
+            return jsonify({'mensagem': 'Cobranca ja paga ou indisponivel'}), 409
 
         cursor.execute("""INSERT INTO MOVIMENTACAO (ID_PAGADOR, ID_RECEBEDOR, VALOR, DATA_MOVIMENTACAO, ID_COBRANCA)
                           VALUES (?, ?, ?, ?, ?) RETURNING ID_MOVIMENTACAO""",
@@ -112,9 +183,12 @@ def baixar_cobranca():
 
         return jsonify({
             'mensagem': 'Cobranca paga com sucesso',
-            'id_movimentacao': id_movimentacao
+            'id_movimentacao': id_movimentacao, 'valor': float(valor)
         }), 200
 
+    except fdb.TransactionConflict:
+        con.rollback()
+        return jsonify({'mensagem': 'Pagamento concorrente. Confira a cobranca antes de tentar novamente'}), 409
     except Exception as e:
         con.rollback()
         print("ERRO:", e)
@@ -374,7 +448,8 @@ def buscar_cobranca_codigo():
             'id_cobranca': cobranca[0],
             'id_pagador': cobranca[1],
             'id_recebedor': cobranca[2],
-            'valor': float(cobranca[3]),
+            'valor': float(cobranca[3]) if cobranca[3] is not None else None,
+            'valor_livre': cobranca[7] == 1 and cobranca[3] is None,
             'data_vencimento': str(cobranca[4]) if cobranca[4] else None,
             'codigo_pagamento': cobranca[5],
             'status': cobranca[6],
@@ -392,45 +467,9 @@ def buscar_cobranca_codigo():
 
 @app.route('/criar_cobranca_pix', methods=['POST'])
 def criar_cobranca_pix():
-    dados = request.get_json()
-    valor = dados.get('valor')
     id_recebedor = descobre_id_conta()
 
     if not id_recebedor:
         return jsonify({'mensagem': 'Usuario nao logado'}), 403
 
-    if valor is None:
-        return jsonify({'mensagem': 'Valor nao informado'}), 400
-
-    cursor = None
-
-    try:
-        cursor = con.cursor()
-
-        codigo_pagamento = 'ARKHEPIX:' + uuid.uuid4().hex.upper()
-
-        cursor.execute("""INSERT INTO COBRANCA (ID_PAGADOR, ID_RECEBEDOR, VALOR, DATA_VENCIMENTO, CODIGO_PAGAMENTO, STATUS, TIPO_COBRANCA)
-                          VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING ID_COBRANCA""",
-                       (None, id_recebedor, valor, None, codigo_pagamento, 0, 1))
-
-        id_cobranca = cursor.fetchone()[0]
-
-        con.commit()
-
-        return jsonify({
-            'mensagem': 'Cobranca Pix criada com sucesso',
-            'id_cobranca': id_cobranca,
-            'codigo_pagamento': codigo_pagamento,
-            'valor': valor,
-            'status': 0,
-            'tipo_cobranca': 1
-        }), 201
-
-    except Exception as e:
-        con.rollback()
-        print("ERRO:", e)
-        return jsonify({'mensagem': 'Erro ao criar cobranca Pix'}), 500
-
-    finally:
-        if cursor:
-            cursor.close()
+    return criar_pix_para_conta(id_recebedor, request.get_json(silent=True))

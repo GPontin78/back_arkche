@@ -4,6 +4,20 @@ from banco import con
 from funcao import descobre_id_conta, criptografar_pin, verificar_pin, calcular_saldo
 import uuid
 import datetime
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+
+
+def valor_monetario_api(valor):
+    try:
+        valor = Decimal(str(valor))
+        if not valor.is_finite() or valor <= 0:
+            return None
+        valor = valor.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        if valor <= 0 or valor > Decimal('9999999999999.99'):
+            return None
+        return valor
+    except (InvalidOperation, TypeError, ValueError):
+        return None
 
 
 def autenticar_integracao():
@@ -351,54 +365,15 @@ def api_resumo_financeiro():
 
 
 @app.route('/api/v1/cobrancas/pix', methods=['POST'])
+@app.route('/api/v1/cobrancas/pix/qrcode', methods=['POST'])
 def api_criar_cobranca_pix():
     integracao, erro = autenticar_integracao()
 
     if erro:
         return erro
 
-    dados = request.get_json() or {}
-    valor = dados.get('valor')
-    id_recebedor = integracao['id_conta']
-
-    if valor is None:
-        return jsonify({'mensagem': 'Valor nao informado'}), 400
-
-    try:
-        valor = float(valor)
-    except (TypeError, ValueError):
-        return jsonify({'mensagem': 'Valor invalido'}), 400
-
-    if valor <= 0:
-        return jsonify({'mensagem': 'O valor deve ser maior que zero'}), 400
-
-    cursor = con.cursor()
-
-    try:
-        codigo_pagamento = 'ARKHEPIX:' + uuid.uuid4().hex.upper()
-
-        cursor.execute("""INSERT INTO COBRANCA (ID_PAGADOR, ID_RECEBEDOR, VALOR, DATA_VENCIMENTO, CODIGO_PAGAMENTO, STATUS, TIPO_COBRANCA) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING ID_COBRANCA""",
-                       (None, id_recebedor, valor, None, codigo_pagamento, 0, 1))
-
-        id_cobranca = cursor.fetchone()[0]
-
-        con.commit()
-
-        return jsonify({
-            'id_cobranca': id_cobranca,
-            'valor': valor,
-            'codigo_pagamento': codigo_pagamento,
-            'status': 0,
-            'tipo_cobranca': 1
-        }), 201
-
-    except Exception as e:
-        con.rollback()
-        print('ERRO API CRIAR COBRANCA PIX:', e)
-        return jsonify({'mensagem': 'Erro ao criar cobranca Pix'}), 500
-
-    finally:
-        cursor.close()
+    from transferencia import criar_pix_para_conta
+    return criar_pix_para_conta(integracao['id_conta'], request.get_json(silent=True))
 
 
 @app.route('/api/v1/cobrancas/pix/<int:id_cobranca>', methods=['GET'])
@@ -423,7 +398,8 @@ def api_consultar_cobranca_pix(id_cobranca):
         return jsonify({
             'id_cobranca': cobranca[0],
             'id_recebedor': cobranca[1],
-            'valor': float(cobranca[2]),
+            'valor': float(cobranca[2]) if cobranca[2] is not None else None,
+            'valor_livre': cobranca[2] is None,
             'codigo_pagamento': cobranca[3],
             'status': cobranca[4],
             'tipo_cobranca': cobranca[5]

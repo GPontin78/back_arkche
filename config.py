@@ -10,3 +10,5 @@ DB_PASSWORD = os.environ.get('DB_PASSWORD','sysdba')
 
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:5173')
 COOKIE_SECURE = os.environ.get('COOKIE_SECURE', 'true' if FRONTEND_URL.startswith('https://') else 'false').lower() == 'true'
+# Conta do banco que antecipa vendas a credito; segue a conta 9 do sistema atual.
+CONTA_LIQUIDACAO_CARTAO = int(os.environ.get('CONTA_LIQUIDACAO_CARTAO', '9'))

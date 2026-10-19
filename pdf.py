@@ -210,6 +210,10 @@ def boleto_pdf(id_cobranca):
     if not id_conta:
         return jsonify({'mensagem': 'Usuario nao logado'}), 403
 
+    return gerar_boleto_pdf(id_cobranca, id_conta)
+
+
+def gerar_boleto_pdf(id_cobranca, id_conta):
     cursor = con.cursor()
 
     cursor.execute("""

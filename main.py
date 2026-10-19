@@ -15,6 +15,8 @@ import transferencia
 import pix
 import pdf 
 import api
+import api_boletos
+import api_cartao
 import cartao
 import acesso
 import folha

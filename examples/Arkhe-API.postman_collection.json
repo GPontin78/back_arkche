@@ -1,0 +1,245 @@
+{
+  "info": {
+    "name": "Arkhe - Boletos e cartao virtual",
+    "description": "Boletos, cartao e QR Code Pix com valor fixo ou escolhido por quem paga. Chamadas feitas pelo servidor do sistema integrado. Guarde os IDs retornados. Nao repita POST automaticamente apos falha de conexao. Boletos pendentes iguais e vendas iguais em cinco minutos retornam 409. Dados de exemplo ficticios.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "api_url",
+      "value": "https://arkhe-backend.zbbquj.easypanel.host"
+    },
+    {
+      "key": "client_id",
+      "value": ""
+    },
+    {
+      "key": "client_secret",
+      "value": ""
+    },
+    {
+      "key": "id_cobranca",
+      "value": "123"
+    }
+  ],
+  "item": [
+    {
+      "name": "Emitir boleto",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-Client-ID",
+            "value": "{{client_id}}"
+          },
+          {
+            "key": "X-Client-Secret",
+            "value": "{{client_secret}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{api_url}}/api/v1/cobrancas/boletos",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"documento_pagador\": \"52998224725\",\n  \"valor\": 125.5,\n  \"data_vencimento\": \"2026-11-10\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.response.code === 201) {",
+              "  const resultado = pm.response.json();",
+              "  for (const campo of [\"id_cobranca\", \"id_compra\", \"id_movimentacao\"]) {",
+              "    if (resultado[campo]) pm.collectionVariables.set(campo, String(resultado[campo]));",
+              "  }",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Consultar boleto",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-Client-ID",
+            "value": "{{client_id}}"
+          },
+          {
+            "key": "X-Client-Secret",
+            "value": "{{client_secret}}"
+          }
+        ],
+        "url": "{{api_url}}/api/v1/cobrancas/boletos/{{id_cobranca}}"
+      }
+    },
+    {
+      "name": "Baixar PDF do boleto",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-Client-ID",
+            "value": "{{client_id}}"
+          },
+          {
+            "key": "X-Client-Secret",
+            "value": "{{client_secret}}"
+          }
+        ],
+        "url": "{{api_url}}/api/v1/cobrancas/boletos/{{id_cobranca}}/pdf"
+      }
+    },
+    {
+      "name": "Venda no debito",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-Client-ID",
+            "value": "{{client_id}}"
+          },
+          {
+            "key": "X-Client-Secret",
+            "value": "{{client_secret}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{api_url}}/api/v1/vendas/cartao",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"numero_cartao\": \"2481000000000001\",\n  \"validade\": \"09/2031\",\n  \"cvv\": \"082\",\n  \"valor\": 100,\n  \"tipo\": \"DEBITO\",\n  \"parcelas\": 1\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.response.code === 201) {",
+              "  const resultado = pm.response.json();",
+              "  for (const campo of [\"id_cobranca\", \"id_compra\", \"id_movimentacao\"]) {",
+              "    if (resultado[campo]) pm.collectionVariables.set(campo, String(resultado[campo]));",
+              "  }",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Venda no credito - 3 parcelas",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-Client-ID",
+            "value": "{{client_id}}"
+          },
+          {
+            "key": "X-Client-Secret",
+            "value": "{{client_secret}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{api_url}}/api/v1/vendas/cartao",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"numero_cartao\": \"2481000000000001\",\n  \"validade\": \"09/2031\",\n  \"cvv\": \"082\",\n  \"valor\": 100,\n  \"tipo\": \"CREDITO\",\n  \"parcelas\": 3\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.response.code === 201) {",
+              "  const resultado = pm.response.json();",
+              "  for (const campo of [\"id_cobranca\", \"id_compra\", \"id_movimentacao\"]) {",
+              "    if (resultado[campo]) pm.collectionVariables.set(campo, String(resultado[campo]));",
+              "  }",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Gerar QR Code Pix - quem paga escolhe o valor",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-Client-ID",
+            "value": "{{client_id}}"
+          },
+          {
+            "key": "X-Client-Secret",
+            "value": "{{client_secret}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{api_url}}/api/v1/cobrancas/pix/qrcode",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"valor_livre\": true\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.response.code === 201) {",
+              "  const resultado = pm.response.json();",
+              "  for (const campo of [\"id_cobranca\", \"id_compra\", \"id_movimentacao\"]) {",
+              "    if (resultado[campo]) pm.collectionVariables.set(campo, String(resultado[campo]));",
+              "  }",
+              "}"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
