@@ -162,6 +162,7 @@ def whatsapp_configuracao():
                        VALUES (?, ?, ?, ?, 0)""",
                     (contexto['id_usuario'], contexto['id_conta'], contexto['telefone'], nivel)
                 )
+            cursor.execute("DELETE FROM WHATSAPP_SESSAO WHERE ID_USUARIO = ? AND ID_CONTA = ?", (contexto['id_usuario'], contexto['id_conta']))
             con.commit()
             config = obter_configuracao(cursor, contexto['id_usuario'], contexto['id_conta'])
         return jsonify(resumo_whatsapp(contexto, config)), 200
@@ -274,6 +275,12 @@ def whatsapp_selecionar_conta():
             if cursor.rowcount != 1:
                 con.rollback()
                 return jsonify({'mensagem': 'Código já utilizado'}), 401
+            validade_sessao = agora + datetime.timedelta(minutes=DURACAO_SESSAO_MINUTOS)
+            cursor.execute(
+                """UPDATE OR INSERT INTO WHATSAPP_SESSAO (ID_USUARIO, ID_CONTA, TELEFONE, VALIDA_ATE)
+                   VALUES (?, ?, ?, ?) MATCHING (ID_USUARIO)""",
+                (usuario['id_usuario'], id_conta, telefone, validade_sessao)
+            )
             con.commit()
             sessao = gerar_token_mcp(usuario['id_usuario'], id_conta, canal='whatsapp',
                                     minutos=DURACAO_SESSAO_MINUTOS, telefone=telefone)
@@ -310,6 +317,19 @@ def autorizar_sessao_whatsapp(id_usuario, id_conta, telefone, caminho):
         cursor.close()
     if not config or int(config[1]) != 1 or config[0] != telefone:
         return False
+    cursor = con.cursor()
+    try:
+        cursor.execute(
+            """SELECT VALIDA_ATE FROM WHATSAPP_SESSAO
+               WHERE ID_USUARIO = ? AND ID_CONTA = ? AND TELEFONE = ?""",
+            (id_usuario, id_conta, telefone)
+        )
+        sessao = cursor.fetchone()
+    finally:
+        cursor.close()
+    agora = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    if not sessao or sessao[0] <= agora:
+        return False
     usuario = buscar_usuario_por_telefone(telefone)
     if not usuario or usuario['id_usuario'] != id_usuario:
         return False
@@ -324,3 +344,62 @@ def autorizar_sessao_whatsapp(id_usuario, id_conta, telefone, caminho):
         '/internal/mcp/saldo', '/internal/mcp/extrato', '/internal/mcp/dda',
         '/internal/mcp/boletos', '/internal/mcp/faturas',
         '/internal/mcp/limites', '/internal/mcp/chaves-pix')
+
+
+@app.route('/internal/whatsapp/sessao', methods=['POST'])
+def whatsapp_obter_sessao():
+    """O n8n obtém um token MCP curto; não armazena o token em workflows."""
+    erro = autenticar_n8n()
+    if erro:
+        return erro
+    dados = request.get_json(silent=True) or {}
+    telefone = normalizar_telefone_whatsapp(dados.get('telefone') or dados.get('chat_id'))
+    if not telefone:
+        return jsonify({'mensagem': 'Telefone inválido'}), 400
+
+    usuario = buscar_usuario_por_telefone(telefone)
+    if not usuario:
+        return jsonify({'autenticado': False, 'mensagem': 'É necessário autenticar pelo site'}), 401
+
+    cursor = con.cursor()
+    try:
+        cursor.execute(
+            """SELECT ID_CONTA, VALIDA_ATE FROM WHATSAPP_SESSAO
+               WHERE ID_USUARIO = ? AND TELEFONE = ?""",
+            (usuario['id_usuario'], telefone)
+        )
+        sessao = cursor.fetchone()
+    finally:
+        cursor.close()
+    agora = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    if not sessao or sessao[1] <= agora:
+        return jsonify({'autenticado': False, 'mensagem': 'Sessão expirada. Gere outro código no site'}), 401
+    if not autorizar_sessao_whatsapp(usuario['id_usuario'], sessao[0], telefone, '/internal/mcp/conta'):
+        return jsonify({'autenticado': False, 'mensagem': 'Acesso revogado ou não permitido'}), 403
+
+    segundos = int((sessao[1] - agora).total_seconds())
+    token = gerar_token_mcp(usuario['id_usuario'], sessao[0], canal='whatsapp',
+                            minutos=1, telefone=telefone)
+    return jsonify({'autenticado': True, 'mcp_session': token,
+                    'expira_em_segundos': min(segundos, 60)}), 200
+
+
+@app.route('/internal/whatsapp/encerrar', methods=['POST'])
+def whatsapp_encerrar_sessao():
+    erro = autenticar_n8n()
+    if erro:
+        return erro
+    dados = request.get_json(silent=True) or {}
+    telefone = normalizar_telefone_whatsapp(dados.get('telefone') or dados.get('chat_id'))
+    if not telefone:
+        return jsonify({'mensagem': 'Telefone inválido'}), 400
+    cursor = con.cursor()
+    try:
+        cursor.execute("DELETE FROM WHATSAPP_SESSAO WHERE TELEFONE = ?", (telefone,))
+        con.commit()
+        return jsonify({'mensagem': 'Sessão encerrada'}), 200
+    except Exception:
+        con.rollback()
+        return jsonify({'mensagem': 'Não foi possível encerrar a sessão'}), 500
+    finally:
+        cursor.close()
