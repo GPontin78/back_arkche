@@ -16,7 +16,7 @@ from whatsapp import autenticar_n8n, obter_contexto_web
 from whatsapp_permissoes import capacidades_whatsapp
 
 VALIDADE_MINUTOS = 10
-JID_RE = re.compile(r'^[0-9]{5,24}@(lid|c\\.us)$')
+JID_RE = re.compile(r'^[0-9]{5,24}@(lid|c\.us)$')
 
 
 def normalizar_chat_id(valor):
