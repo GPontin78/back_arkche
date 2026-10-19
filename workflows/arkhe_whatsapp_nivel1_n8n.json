@@ -1,0 +1,590 @@
+{
+  "name": "Arkhé | WhatsApp Nível 1 (piloto)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "arkhe-whatsapp-nivel1",
+        "responseMode": "onReceived",
+        "authentication": "headerAuth",
+        "options": {}
+      },
+      "id": "arkhe-wa-1",
+      "name": "Receber WAHA",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        100,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const evento = $input.first().json.body || $input.first().json;\nconst p = evento.payload || {};\nconst chatId = String(p.from || '');\nif (evento.event !== 'message' || evento.session !== 'arkhe' || p.fromMe === true || p.hasMedia === true || !chatId.endsWith('@c.us')) return [];\nconst texto = String(p.body || '').trim().slice(0, 300);\nif (!texto) return [];\nconst entrada = texto.normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase();\nconst codigo = /^\\d{8}$/.test(texto) ? texto : '';\nlet ferramenta = '';\nconst comandos = [\n  [/\\b(saldo)\\b/, 'consultar_saldo'],\n  [/\\b(extrato|movimentacoes)\\b/, 'consultar_extrato'],\n  [/\\b(dda)\\b/, 'consultar_dda'],\n  [/\\b(boletos|boleto)\\b/, 'consultar_boletos'],\n  [/\\b(faturas|fatura)\\b/, 'consultar_faturas'],\n  [/\\b(limites|limite)\\b/, 'consultar_limites'],\n  [/\\b(chaves? pix|pix chaves?)\\b/, 'listar_chaves_pix'],\n  [/\\b(funcionarios|funcionario)\\b/, 'listar_funcionarios'],\n  [/\\b(folhas|folha)\\b/, 'consultar_folhas'],\n  [/\\b(conta|dados bancarios)\\b/, 'consultar_dados_conta'],\n];\nfor (const [regra, nome] of comandos) if (regra.test(entrada)) { ferramenta = nome; break; }\nconst rota = codigo ? 'codigo' : /^(sair|encerrar|desconectar)$/.test(entrada) ? 'sair' : ferramenta ? 'consulta' : 'ajuda';\nreturn [{json:{telefone:chatId.split('@')[0],chatId,texto,rota,codigo,ferramenta}}];"
+      },
+      "id": "arkhe-wa-2",
+      "name": "Ler mensagem",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        310,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "cond-3",
+              "leftValue": "={{ $json.rota }}",
+              "rightValue": "codigo",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      },
+      "id": "arkhe-wa-3",
+      "name": "É código?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        530,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "${ARKHE_BACKEND_URL}/internal/whatsapp/selecionar-conta",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": false,
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ telefone: $('Ler mensagem').first().json.telefone, codigo: $('Ler mensagem').first().json.codigo }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "arkhe-wa-4",
+      "name": "Validar código",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        750,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const dados = $input.first().json;\nconst ok = Boolean(dados.mcp_session);\nreturn [{json:{chatId:$('Ler mensagem').first().json.chatId,text:ok ? 'Autenticação confirmada para a conta ' + dados.conta.tipo_conta + '. Sessão disponível por até 30 minutos. Digite saldo, extrato, boletos, faturas, limites, Pix, funcionários ou folhas conforme suas permissões.' : 'Código inválido ou expirado. Entre no Arkhé para gerar outro código.'}}];"
+      },
+      "id": "arkhe-wa-5",
+      "name": "Resposta autenticação",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        950,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "cond-6",
+              "leftValue": "={{ $json.rota }}",
+              "rightValue": "sair",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      },
+      "id": "arkhe-wa-6",
+      "name": "É sair?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        750,
+        430
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "${ARKHE_BACKEND_URL}/internal/whatsapp/encerrar",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": false,
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ telefone: $('Ler mensagem').first().json.telefone }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "arkhe-wa-7",
+      "name": "Encerrar sessão",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        970,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return [{json:{chatId:$('Ler mensagem').first().json.chatId,text:'Sessão encerrada. Para consultar novamente, gere um novo código no site Arkhé.'}}];"
+      },
+      "id": "arkhe-wa-8",
+      "name": "Resposta sair",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1170,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "cond-9",
+              "leftValue": "={{ $json.rota }}",
+              "rightValue": "consulta",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      },
+      "id": "arkhe-wa-9",
+      "name": "É consulta?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        970,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "${ARKHE_BACKEND_URL}/internal/whatsapp/sessao",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": false,
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ telefone: $('Ler mensagem').first().json.telefone }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "arkhe-wa-10",
+      "name": "Obter sessão MCP",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1170,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "cond-11",
+              "leftValue": "={{ $json.autenticado }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      },
+      "id": "arkhe-wa-11",
+      "name": "Sessão autenticada?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1370,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://arkhe-mcp.zbbquj.easypanel.host/mcp",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: $('Ler mensagem').first().json.ferramenta, arguments: {} } }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Arkhe-Session",
+              "value": "={{ $('Obter sessão MCP').first().json.mcp_session }}"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json, text/event-stream"
+            }
+          ]
+        }
+      },
+      "id": "arkhe-wa-12",
+      "name": "Consultar MCP",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1570,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const retorno = $input.first().json;\nlet texto = '';\nif (retorno.error || retorno.result?.isError) {\n  texto = 'Não foi possível consultar esse recurso. Verifique as permissões da sua conta.';\n} else {\n  const blocos = retorno.result?.content || [];\n  const textos = blocos.filter(x => x.type === 'text').map(x => String(x.text));\n  texto = textos.join('\\n');\n  try {\n    const json = JSON.parse(texto);\n    if ($('Ler mensagem').first().json.ferramenta === 'consultar_saldo' && json.saldo !== undefined) {\n      texto = 'Saldo disponível: ' + Number(json.saldo).toLocaleString('pt-BR', {style:'currency',currency:'BRL'});\n    } else {\n      texto = JSON.stringify(json, null, 2);\n    }\n  } catch {}\n}\nreturn [{json:{chatId:$('Ler mensagem').first().json.chatId,text:texto.slice(0,3500) || 'Não há dados disponíveis para esta consulta.'}}];"
+      },
+      "id": "arkhe-wa-13",
+      "name": "Formatar consulta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1780,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return [{json:{chatId:$('Ler mensagem').first().json.chatId,text:'Para consultar dados bancários, entre no Arkhé, abra WhatsApp na conta desejada e envie aqui o código temporário. A autenticação expira após 30 minutos.'}}];"
+      },
+      "id": "arkhe-wa-14",
+      "name": "Sessão expirada",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1570,
+        590
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return [{json:{chatId:$('Ler mensagem').first().json.chatId,text:'Atendimento Arkhé: consulte saldo, extrato, boletos, DDA, faturas, limites, chaves Pix e, para contas PJ autorizadas, funcionários e folhas. Primeiro, acesse o site Arkhé, ative o WhatsApp na sua conta e envie o código de 8 dígitos. Digite sair para encerrar a sessão.'}}];"
+      },
+      "id": "arkhe-wa-15",
+      "name": "Resposta ajuda",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1170,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://arkhe-waha.zbbquj.easypanel.host/api/sendText",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": false,
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ session: 'arkhe', chatId: $json.chatId, text: $json.text }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "arkhe-wa-16",
+      "name": "Enviar WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2010,
+        450
+      ]
+    }
+  ],
+  "connections": {
+    "Receber WAHA": {
+      "main": [
+        [
+          {
+            "node": "Ler mensagem",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ler mensagem": {
+      "main": [
+        [
+          {
+            "node": "É código?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "É código?": {
+      "main": [
+        [
+          {
+            "node": "Validar código",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "É sair?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validar código": {
+      "main": [
+        [
+          {
+            "node": "Resposta autenticação",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resposta autenticação": {
+      "main": [
+        [
+          {
+            "node": "Enviar WhatsApp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "É sair?": {
+      "main": [
+        [
+          {
+            "node": "Encerrar sessão",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "É consulta?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Encerrar sessão": {
+      "main": [
+        [
+          {
+            "node": "Resposta sair",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resposta sair": {
+      "main": [
+        [
+          {
+            "node": "Enviar WhatsApp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "É consulta?": {
+      "main": [
+        [
+          {
+            "node": "Obter sessão MCP",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Resposta ajuda",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Obter sessão MCP": {
+      "main": [
+        [
+          {
+            "node": "Sessão autenticada?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sessão autenticada?": {
+      "main": [
+        [
+          {
+            "node": "Consultar MCP",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Sessão expirada",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar MCP": {
+      "main": [
+        [
+          {
+            "node": "Formatar consulta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Formatar consulta": {
+      "main": [
+        [
+          {
+            "node": "Enviar WhatsApp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sessão expirada": {
+      "main": [
+        [
+          {
+            "node": "Enviar WhatsApp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resposta ajuda": {
+      "main": [
+        [
+          {
+            "node": "Enviar WhatsApp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "none",
+    "saveManualExecutions": false
+  },
+  "active": false,
+  "tags": []
+}
