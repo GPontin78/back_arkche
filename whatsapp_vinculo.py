@@ -5,7 +5,6 @@ executa transacoes. A identidade do remetente vem do webhook WAHA autenticado.
 """
 import datetime
 import hashlib
-import os
 import re
 import secrets
 
