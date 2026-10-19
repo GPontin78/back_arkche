@@ -92,7 +92,7 @@ def whatsapp_legado_selecionar():
 
 
 def _normalizar_telefone(valor):
-    digitos = re.sub(r"\\D", "", str(valor or ""))
+    digitos = re.sub(r"\D", "", str(valor or ""))
     if digitos.startswith("55") and len(digitos) in (12, 13):
         digitos = digitos[2:]
     return digitos if len(digitos) in (10, 11) else None
@@ -106,7 +106,7 @@ def whatsapp_criar_link():
         return erro
     if not conta["autorizado"]:
         return jsonify({"mensagem": "Autorize o WhatsApp antes de iniciar a vinculacao"}), 403
-    destino = re.sub(r"\\D", "", os.getenv("ARKHE_WHATSAPP_NUMBER", ""))
+    destino = re.sub(r"\D", "", os.getenv("ARKHE_WHATSAPP_NUMBER", ""))
     if len(destino) not in (12, 13) or not destino.startswith("55"):
         return jsonify({"mensagem": "Numero oficial do WhatsApp ainda nao configurado no servidor"}), 503
     usuario = descobre_id_usuario()
