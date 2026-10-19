@@ -70,7 +70,8 @@ def autenticar_requisicao_mcp():
     return {
         'id_usuario': id_usuario,
         'id_conta': id_conta,
-        'canal': payload.get('canal')
+        'canal': payload.get('canal'),
+        'telefone': payload.get('telefone')
     }, None
 
 
@@ -1147,6 +1148,8 @@ def mcp_gerar_relatorio_funcionarios():
             'id_usuario': contexto['id_usuario'],
             'id_conta': contexto['id_conta'],
             'escopo': 'mcp_arquivo_funcionarios',
+            'canal': contexto.get('canal'),
+            'telefone': contexto.get('telefone'),
             'iat': agora,
             'exp': expira_em
         },
@@ -1186,6 +1189,12 @@ def mcp_baixar_relatorio_funcionarios(token):
 
     if not usuario_pode_acessar_conta(id_usuario, id_conta):
         return jsonify({'mensagem': 'Acesso ao relatório não permitido'}), 403
+
+    if payload.get('canal') == 'whatsapp':
+        from whatsapp import autorizar_sessao_whatsapp, normalizar_telefone_whatsapp
+        telefone = normalizar_telefone_whatsapp(payload.get('telefone'))
+        if not telefone or not autorizar_sessao_whatsapp(id_usuario, id_conta, telefone, '/internal/mcp/relatorios/funcionarios'):
+            return jsonify({'mensagem': 'Autorização WhatsApp do relatório expirada ou revogada'}), 403
 
     contexto = {
         'id_usuario': id_usuario,
