@@ -14,7 +14,7 @@ from main import app
 from funcao import descobre_id_usuario, descobre_id_conta, usuario_pode_acessar_conta, listar_contas_usuario
 
 PREFIX = "arkhe:wa:auth:v1"
-JID_RE = re.compile(r"^[0-9]{5,24}@(lid|c\\.us)$")
+JID_RE = re.compile(r"^[0-9]{5,24}@(lid|c\.us)$")
 
 
 def store():
