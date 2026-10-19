@@ -70,7 +70,7 @@ def gerar_token(id_usuario, id_conta):
     )
 
 
-def gerar_token_mcp(id_usuario, id_conta, canal='whatsapp', minutos=30):
+def gerar_token_mcp(id_usuario, id_conta, canal='whatsapp', minutos=30, telefone=None):
     """Gera uma sessão curta para uso pelo MCP sem expor o cookie do cliente."""
     agora = datetime.datetime.now(datetime.timezone.utc)
     payload = {
@@ -78,6 +78,7 @@ def gerar_token_mcp(id_usuario, id_conta, canal='whatsapp', minutos=30):
         'id_conta': int(id_conta),
         'escopo': 'mcp',
         'canal': str(canal),
+        'telefone': telefone if canal == 'whatsapp' else None,
         'iat': agora,
         'exp': agora + datetime.timedelta(minutes=int(minutos))
     }
