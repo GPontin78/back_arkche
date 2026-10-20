@@ -167,7 +167,7 @@ def whatsapp_validar_convite():
         telefone = cursor.fetchone()
     finally:
         cursor.close()
-    if not registro or not registro[0] or not telefone or _normalizar_telefone(telefone[0]) != numero:
+    if not registro or not registro[0] or not telefone or (remetente.endswith("@c.us") and _normalizar_telefone(telefone[0]) != numero):
         return jsonify({"vinculado": False, "mensagem": "Autorizacao desativada ou telefone alterado"}), 403
     return _salvar_vinculo_whatsapp(remetente, token, registro)
 
