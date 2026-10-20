@@ -189,7 +189,6 @@ def _salvar_vinculo_whatsapp(remetente, token, registro):
     """O convite do site autoriza exclusivamente a conta nele especificada."""
     try:
         redis_cli = _redis_wa()
-        convite_hash = hashlib.sha256(str(token).encode("utf-8")).hexdigest()
         # Distinguir vinculos de contas PF e PJ. O ultimo pareamento seleciona a conta.
         # Prova de posse do numero ocorre para @c.us; @lid usa o segredo temporario
         # de uso unico emitido no site autenticado.
