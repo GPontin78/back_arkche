@@ -146,7 +146,7 @@ def whatsapp_validar_convite():
         return jsonify({"mensagem": "Servico nao autorizado"}), 401
     dados = request.get_json(silent=True) or {}
     remetente = str(dados.get("chatId", ""))
-    if not (remetente.endswith("@c.us") or remetente.endswith("@lid")) and remetente.split("@")[0].isdigit():
+    if not ((remetente.endswith("@c.us") or remetente.endswith("@lid")) and remetente.split("@")[0].isdigit()):
         return jsonify({"vinculado": False, "mensagem": "Nao foi possivel validar automaticamente o identificador do WhatsApp"}), 403
     numero = _normalizar_telefone(remetente.split("@")[0])
     try:
@@ -207,7 +207,7 @@ def _salvar_vinculo_whatsapp(remetente, token, registro):
 
 
 def _conta_vinculada(chat_id):
-    if not (chat_id.endswith("@c.us") or chat_id.endswith("@lid")) and chat_id.split("@")[0].isdigit():
+    if not ((chat_id.endswith("@c.us") or chat_id.endswith("@lid")) and chat_id.split("@")[0].isdigit()):
         return None
     valor = _redis_wa().get(_chave_remetente(chat_id))
     if not valor:
