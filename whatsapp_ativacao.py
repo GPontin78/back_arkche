@@ -15,7 +15,7 @@ from flask import jsonify, request
 from banco import con
 from main import app
 from funcao import descobre_id_usuario
-from whatsapp import _conta_configuravel, _normalizar_telefone, _redis_wa, _chave_remetente, _servico_valido
+from whatsapp import _conta_configuravel, _normalizar_telefone, _redis_wa, _chave_remetente, _conta_vinculada, _servico_valido
 
 PENDENCIA_TTL = 600
 VINCULO_TTL = 30 * 24 * 60 * 60
@@ -148,6 +148,10 @@ def whatsapp_confirmar_sem_codigo():
         return jsonify({"confirmado": False, "mensagem": "Não foi possível identificar a conversa do WhatsApp."}), 403
 
     try:
+        vinculo_existente = _conta_vinculada(chat_id)
+        if vinculo_existente:
+            return jsonify({"confirmado": True, "ja_ativo": True,
+                            "mensagem": "Seu WhatsApp já está vinculado ao Arkhé! Pode pedir seu saldo ou extrato."})
         redis_cli = _redis_wa()
         pendencia_chat = redis_cli.get(_chave_pendente_chat(chat_id))
         pendencia = json.loads(pendencia_chat) if pendencia_chat else None
