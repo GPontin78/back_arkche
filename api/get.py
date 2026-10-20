@@ -1,152 +1,12 @@
-from flask import request, jsonify
-from main import app
+"""GET routes for the Arkhe HTTP API."""
+from flask import jsonify, request
+
 from banco import con
-from funcao import descobre_id_conta, criptografar_pin, verificar_pin, calcular_saldo
-import uuid
-import datetime
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from funcao import calcular_saldo
+from main import app
+from pdf import gerar_boleto_pdf
 
-
-def valor_monetario_api(valor):
-    try:
-        valor = Decimal(str(valor))
-        if not valor.is_finite() or valor <= 0:
-            return None
-        valor = valor.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
-        if valor <= 0 or valor > Decimal('9999999999999.99'):
-            return None
-        return valor
-    except (InvalidOperation, TypeError, ValueError):
-        return None
-
-
-def autenticar_integracao():
-    client_id = request.headers.get('X-Client-ID')
-    client_secret = request.headers.get('X-Client-Secret')
-
-    if not client_id or not client_secret:
-        return None, (jsonify({'mensagem': 'Credenciais da API nao informadas'}), 401)
-
-    cursor = con.cursor()
-
-    try:
-        cursor.execute("""SELECT ID_INTEGRACAO, ID_CONTA, CLIENT_SECRET_HASH, ATIVO FROM INTEGRACAO_API WHERE CLIENT_ID = ?""", (client_id,))
-        integracao = cursor.fetchone()
-
-        if not integracao:
-            return None, (jsonify({'mensagem': 'Credenciais da API invalidas'}), 401)
-
-        id_integracao = integracao[0]
-        id_conta = integracao[1]
-        client_secret_hash = integracao[2]
-        ativo = integracao[3]
-
-        if ativo != 1:
-            return None, (jsonify({'mensagem': 'Integracao desativada'}), 403)
-
-        if not verificar_pin(client_secret, client_secret_hash):
-            return None, (jsonify({'mensagem': 'Credenciais da API invalidas'}), 401)
-
-        cursor.execute("""UPDATE INTEGRACAO_API SET ULTIMO_USO = CURRENT_TIMESTAMP WHERE ID_INTEGRACAO = ?""", (id_integracao,))
-        con.commit()
-
-        return {
-            'id_integracao': id_integracao,
-            'id_conta': id_conta
-        }, None
-
-    except Exception as e:
-        con.rollback()
-        print('ERRO AUTENTICAR INTEGRACAO:', e)
-        return None, (jsonify({'mensagem': 'Erro ao autenticar integracao'}), 500)
-
-    finally:
-        cursor.close()
-
-
-def obter_periodo():
-    data_inicio = request.args.get('data_inicio')
-    data_fim = request.args.get('data_fim')
-
-    hoje = datetime.date.today()
-
-    if not data_inicio and not data_fim:
-        data_inicio = hoje.replace(day=1).isoformat()
-        data_fim = hoje.isoformat()
-        return data_inicio, data_fim, None
-
-    if not data_inicio or not data_fim:
-        return None, None, (jsonify({'mensagem': 'Informe data_inicio e data_fim juntas'}), 400)
-
-    try:
-        inicio = datetime.date.fromisoformat(data_inicio)
-        fim = datetime.date.fromisoformat(data_fim)
-    except ValueError:
-        return None, None, (jsonify({'mensagem': 'Datas invalidas. Use o formato YYYY-MM-DD'}), 400)
-
-    if inicio > fim:
-        return None, None, (jsonify({'mensagem': 'data_inicio nao pode ser maior que data_fim'}), 400)
-
-    return inicio.isoformat(), fim.isoformat(), None
-
-
-def nome_cliente_api(nome, nome_fantasia, razao_social, tipo_conta):
-    if tipo_conta == 1:
-        return nome_fantasia or razao_social or nome or 'Conta Arkhe'
-
-    return nome or 'Conta Arkhe'
-
-
-@app.route('/integracoes/api', methods=['POST'])
-def criar_integracao_api():
-    id_conta = descobre_id_conta()
-    dados = request.get_json() or {}
-    nome = dados.get('nome')
-
-    if not id_conta:
-        return jsonify({'mensagem': 'Usuario nao logado'}), 403
-
-    if not nome:
-        return jsonify({'mensagem': 'Nome da integracao nao informado'}), 400
-
-    cursor = con.cursor()
-
-    try:
-        cursor.execute("""SELECT TIPO_CONTA FROM CONTA WHERE ID_CONTA = ?""", (id_conta,))
-        conta = cursor.fetchone()
-
-        if not conta:
-            return jsonify({'mensagem': 'Conta nao encontrada'}), 404
-
-        if conta[0] != 1:
-            return jsonify({'mensagem': 'Integracoes disponiveis apenas para contas PJ'}), 403
-
-        client_id = uuid.uuid4().hex
-        client_secret = uuid.uuid4().hex
-        client_secret_hash = criptografar_pin(client_secret)
-
-        cursor.execute("""INSERT INTO INTEGRACAO_API (ID_CONTA, NOME, CLIENT_ID, CLIENT_SECRET_HASH, ATIVO) VALUES (?, ?, ?, ?, ?) RETURNING ID_INTEGRACAO""",
-                       (id_conta, nome.strip(), client_id, client_secret_hash, 1))
-
-        id_integracao = cursor.fetchone()[0]
-
-        con.commit()
-
-        return jsonify({
-            'mensagem': 'Integracao criada com sucesso',
-            'id_integracao': id_integracao,
-            'nome': nome.strip(),
-            'client_id': client_id,
-            'client_secret': client_secret
-        }), 201
-
-    except Exception as e:
-        con.rollback()
-        print('ERRO CRIAR INTEGRACAO:', e)
-        return jsonify({'mensagem': 'Erro ao criar integracao'}), 500
-
-    finally:
-        cursor.close()
+from .common import autenticar_integracao, nome_cliente_api, obter_periodo
 
 
 @app.route('/api/v1/conta', methods=['GET'])
@@ -195,6 +55,7 @@ def api_conta():
 
     finally:
         cursor.close()
+
 
 @app.route('/api/v1/saldo', methods=['GET'])
 def api_saldo():
@@ -320,7 +181,7 @@ def api_movimentacoes():
     finally:
         cursor.close()
 
-        
+
 @app.route('/api/v1/resumo-financeiro', methods=['GET'])
 def api_resumo_financeiro():
     integracao, erro = autenticar_integracao()
@@ -362,18 +223,6 @@ def api_resumo_financeiro():
 
     finally:
         cursor.close()
-
-
-@app.route('/api/v1/cobrancas/pix', methods=['POST'])
-@app.route('/api/v1/cobrancas/pix/qrcode', methods=['POST'])
-def api_criar_cobranca_pix():
-    integracao, erro = autenticar_integracao()
-
-    if erro:
-        return erro
-
-    from transferencia import criar_pix_para_conta
-    return criar_pix_para_conta(integracao['id_conta'], request.get_json(silent=True))
 
 
 @app.route('/api/v1/cobrancas/pix/<int:id_cobranca>', methods=['GET'])
@@ -448,37 +297,53 @@ def listar_integracoes_api():
         cursor.close()
 
 
-@app.route('/integracoes/api/<int:id_integracao>/regenerar-secret', methods=['POST'])
-def regenerar_secret_integracao(id_integracao):
-    id_conta = descobre_id_conta()
-
-    if not id_conta:
-        return jsonify({'mensagem': 'Usuario nao logado'}), 403
-
-    cursor = con.cursor()
-
+@app.route('/api/v1/cobrancas/boletos/<int:id_cobranca>', methods=['GET'])
+def api_consultar_boleto(id_cobranca):
+    integracao, erro = autenticar_integracao()
+    if erro:
+        return erro
+    cursor = None
     try:
-        cursor.execute("""SELECT ID_INTEGRACAO FROM INTEGRACAO_API WHERE ID_INTEGRACAO = ? AND ID_CONTA = ?""", (id_integracao, id_conta))
-        integracao = cursor.fetchone()
-
-        if not integracao:
-            return jsonify({'mensagem': 'Integracao nao encontrada'}), 404
-
-        client_secret = uuid.uuid4().hex
-        client_secret_hash = criptografar_pin(client_secret)
-
-        cursor.execute("""UPDATE INTEGRACAO_API SET CLIENT_SECRET_HASH = ? WHERE ID_INTEGRACAO = ? AND ID_CONTA = ?""", (client_secret_hash, id_integracao, id_conta))
-        con.commit()
-
+        cursor = con.cursor()
+        cursor.execute(
+            """SELECT ID_COBRANCA, ID_PAGADOR, ID_RECEBEDOR, VALOR,
+                      DATA_VENCIMENTO, CODIGO_PAGAMENTO, STATUS
+               FROM COBRANCA WHERE ID_COBRANCA = ? AND ID_RECEBEDOR = ? AND TIPO_COBRANCA = 0""",
+            (id_cobranca, integracao['id_conta'])
+        )
+        boleto = cursor.fetchone()
+        if not boleto:
+            return jsonify({'mensagem': 'Boleto nao encontrado'}), 404
         return jsonify({
-            'mensagem': 'Novo Client Secret gerado',
-            'client_secret': client_secret
+            'id_cobranca': boleto[0], 'id_pagador': boleto[1], 'id_recebedor': boleto[2],
+            'valor': float(boleto[3]), 'data_vencimento': str(boleto[4]),
+            'codigo_pagamento': boleto[5], 'status': boleto[6], 'tipo_cobranca': 0,
+            'url_pdf': f'/api/v1/cobrancas/boletos/{boleto[0]}/pdf'
         }), 200
-
-    except Exception as e:
-        con.rollback()
-        print('ERRO REGENERAR SECRET:', e)
-        return jsonify({'mensagem': 'Erro ao gerar novo Client Secret'}), 500
-
+    except Exception:
+        return jsonify({'mensagem': 'Erro ao consultar boleto'}), 500
     finally:
-        cursor.close()
+        if cursor:
+            cursor.close()
+
+
+@app.route('/api/v1/cobrancas/boletos/<int:id_cobranca>/pdf', methods=['GET'])
+def api_boleto_pdf(id_cobranca):
+    integracao, erro = autenticar_integracao()
+    if erro:
+        return erro
+    cursor = None
+    try:
+        cursor = con.cursor()
+        cursor.execute(
+            'SELECT ID_COBRANCA FROM COBRANCA WHERE ID_COBRANCA = ? AND ID_RECEBEDOR = ? AND TIPO_COBRANCA = 0',
+            (id_cobranca, integracao['id_conta'])
+        )
+        if not cursor.fetchone():
+            return jsonify({'mensagem': 'Boleto nao encontrado'}), 404
+        return gerar_boleto_pdf(id_cobranca, integracao['id_conta'])
+    except Exception:
+        return jsonify({'mensagem': 'Erro ao gerar PDF do boleto'}), 500
+    finally:
+        if cursor:
+            cursor.close()

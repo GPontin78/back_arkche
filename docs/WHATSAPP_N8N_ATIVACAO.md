@@ -26,4 +26,4 @@ Antes de enviar a mensagem de ativação ao Gemini:
 - O token de convite expira em 10 minutos. Seu uso valida um convite e um telefone; **não cria sessão bancária nem vínculo permanente**.
 - `@lid` é recusado pela verificação atual, até existir normalização de identidade verificada pelo provedor.
 - Não persistimos JID no Firebird porque a estrutura aprovada não possui local para isso; não usar Redis de memória de chat como fonte de autorização.
-- Não conectar as rotas MCP a esse fluxo até implementar a associação persistente de identidade e validação de permissões por requisição.
+- O fluxo de ativação não consulta dados bancários; após a reconstrução da integração, consultas devem usar a API convencional com as credenciais e permissões correspondentes.

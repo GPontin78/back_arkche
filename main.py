@@ -15,17 +15,12 @@ import transferencia
 import pix
 import pdf 
 import api
-import api_boletos
-import api_cartao
 import cartao
 import acesso
 import folha
 import folha_csv
 import maquininha
 import fatura
-import mcp_internal
-import whatsapp
-import whatsapp_ativacao
 
 
 if __name__ == '__main__':
