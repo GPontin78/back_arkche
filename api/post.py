@@ -67,6 +67,7 @@ def criar_integracao_api():
         cursor.close()
 
 
+# Cria cobranca Pix: credencial empresarial original ou WhatsApp PJ nivel 3.
 @app.route('/api/v1/cobrancas/pix', methods=['POST'])
 @app.route('/api/v1/cobrancas/pix/qrcode', methods=['POST'])
 def api_criar_cobranca_pix():
@@ -117,6 +118,7 @@ def regenerar_secret_integracao(id_integracao):
         cursor.close()
 
 
+# Emite boleto em nome da conta PJ autenticada; WhatsApp exige nivel 3.
 @app.route('/api/v1/cobrancas/boletos', methods=['POST'])
 def api_criar_boleto():
     # Cobranças feitas pelo MAURO exigem nível 3, disponível apenas para PJ.
