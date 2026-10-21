@@ -579,6 +579,11 @@ def api_pagar_dda(id_cobranca):
                 con.rollback()
                 return jsonify({'mensagem': 'Boleto ja pago ou indisponivel'}), 409
             valor = Decimal(str(confirmado[0] or 0))
+            # O valor pode ter mudado antes do bloqueio; conferir o teto de novo.
+            restricao = limitar_pagamento_whatsapp(autorizacao, valor)
+            if restricao:
+                con.rollback()
+                return restricao
             if valor <= 0 or not pode_debitar_saldo(id_pagador, valor):
                 con.rollback()
                 return jsonify({'mensagem': 'Saldo insuficiente ou valor invalido'}), 400
