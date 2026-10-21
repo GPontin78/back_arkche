@@ -7,6 +7,7 @@ on:
     paths:
       - 'api/**'
       - 'tests/test_whatsapp_vinculos.py'
+      - 'tests/test_api_pagamentos_isolados.py'
       - '.github/workflows/whatsapp-autenticacao.yml'
 
 jobs:
@@ -23,3 +24,5 @@ jobs:
         run: python -m compileall -q api
       - name: Executar testes de vinculacao sem servidores externos
         run: python -m unittest discover -s tests -p test_whatsapp_vinculos.py -v
+      - name: Executar testes de Pix e DDA sem servidores externos
+        run: python -m unittest discover -s tests -p test_api_pagamentos_isolados.py -v
