@@ -70,7 +70,7 @@ NAO usar FLUSHALL/FLUSHDB. Nao compartilhar valores completos de vinculo em logs
 ## Contratos internos
 
 - `POST /internal/whatsapp/contexto` com `{"chatId":"..."}`
-  retorna `{"vinculado":true,"id_usuario":7,"conta_selecionada":20,"nivel":3,"selecao_necessaria":false,"contas":[{"id_conta":10,"tipo_conta":0,"nivel":2},{"id_conta":20,"tipo_conta":1,"nivel":3}]}`.
+  retorna `{"vinculado":true,"id_usuario":7,"conta_selecionada":20,"nivel":3,"selecao_necessaria":false,"contas":[{"id_conta":10,"tipo_conta":0,"nivel":2,"descricao":"Conta pessoal","conta_final":"0010"},{"id_conta":20,"tipo_conta":1,"nivel":3,"descricao":"Empresa ficticia","conta_final":"0020"}]}`.
 - `POST /internal/whatsapp/selecionar-conta` com `{"chatId":"...","id_conta":10}`
   retorna `{"selecionada":true,"id_conta":10,"nivel":2}`.
 - Os dois exigem `X-Arkhe-N8N-Key`. Nao sao endpoints publicos de integracao.
