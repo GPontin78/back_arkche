@@ -560,3 +560,46 @@ def api_cartao_fatura_detalhe(id_fatura):
     finally:
         if cursor:
             cursor.close()
+
+
+# Permite ao MAURO conferir o nome da conta de destino antes de oferecer o Pix.
+# A consulta é autorizada na conta WhatsApp de nivel 2 e não revela CPF, conta ou saldo.
+@app.route('/api/v1/pix/destinatario', methods=['POST'])
+def api_pix_destinatario():
+    contexto, erro = autenticar_requisicao(permitir_whatsapp=True, nivel_whatsapp=2)
+    if erro:
+        return erro
+    dados = request.get_json(silent=True)
+    if not isinstance(dados, dict):
+        return jsonify({'mensagem': 'Envie tipo_chave e chave_pix em JSON'}), 400
+    tipo = str(dados.get('tipo_chave') or '').strip().lower()
+    chave = dados.get('chave_pix')
+    colunas = {'cpf': 'CHAVE_PIX_CPF', 'cnpj': 'CHAVE_PIX_CNPJ',
+               'email': 'CHAVE_PIX_EMAIL', 'telefone': 'CHAVE_PIX_TELEFONE',
+               'aleatoria': 'CHAVE_PIX_ALEATORIA'}
+    if tipo not in colunas or not isinstance(chave, str) or not 1 <= len(chave.strip()) <= 160:
+        return jsonify({'mensagem': 'Chave Pix invalida'}), 400
+    cursor = None
+    try:
+        cursor = con.cursor()
+        cursor.execute('''SELECT C.ID_CONTA, C.TIPO_CONTA, U.NOME,
+                                 C.NOME_FANTASIA, C.RAZAO_SOCIAL
+                          FROM CHAVE_PIX K
+                          JOIN CONTA C ON C.ID_CONTA = K.ID_CONTA
+                          JOIN USUARIO U ON U.ID_USUARIO = C.ID_USUARIO
+                          WHERE K.''' + colunas[tipo] + ''' = ?''', (chave.strip(),))
+        encontrados = cursor.fetchmany(2)
+        if len(encontrados) != 1:
+            return jsonify({'encontrado': False, 'mensagem': 'Chave nao encontrada ou ambigua'}), 404
+        c = encontrados[0]
+        if int(c[0]) == int(contexto['id_conta']):
+            return jsonify({'encontrado': False, 'mensagem': 'Esta chave pertence a sua propria conta'}), 400
+        nome = nome_cliente_api(c[2], c[3], c[4], c[1])
+        return jsonify({'encontrado': True, 'destinatario': nome,
+                        'tipo_conta': 'PJ' if c[1] == 1 else 'PF'}), 200
+    except Exception:
+        app.logger.exception('Falha ao consultar destinatario Pix')
+        return jsonify({'mensagem': 'Destinatario temporariamente indisponivel'}), 500
+    finally:
+        if cursor:
+            cursor.close()
