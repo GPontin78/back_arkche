@@ -38,7 +38,39 @@ As rotas GET existentes de contas e cobrancas autorizam nivel 1.
 Criar cobranca Pix e emitir boleto pela API existente autoriza nivel 3 no canal WhatsApp (conta PJ).
 `POST /api/v1/vendas/cartao` continua exclusivamente para integracoes externas com Client ID e Secret.
 
-**Esta versao NAO habilita pagamentos de saida** (Pix enviado, DDA ou folha): essas operacoes exigem implementacao de API e protecoes adicionais, inclusive idempotencia, limites e auditoria. Elas nao devem ser liberadas apenas por adicao de um header ou alteracao de `nivel_whatsapp`.
+### Pagamentos agora incluidos na branch
+
+- `GET /api/v1/dda`: lista ate 50 boletos pendentes destinados a conta autenticada (nivel WhatsApp 1).
+- `POST /api/v1/pagamentos/pix`: realiza Pix de saida pela chave informada (nivel WhatsApp 2).
+- `POST /api/v1/pagamentos/dda/<id_cobranca>`: paga apenas boleto DDA com pagador igual a conta autenticada e status pendente (nivel WhatsApp 2).
+
+No WhatsApp nao e exigido novo PIN por pagamento, conforme a experiencia prevista; ha limite preventivo por operacao (`ARKHE_WHATSAPP_LIMITE_PAGAMENTO`, padrao R$ 1.000,00). **O nivel 2 nao deve ser entendido como autenticacao forte**: proteja WAHA/n8n, audite operacoes e disponibilize revogacao da conta pelo site.
+
+Sistemas externos podem usar essas novas rotas pela autenticacao normal somente apos o Client ID ser habilitado no ambiente `ARKHE_API_PAGAMENTOS_CLIENT_IDS`. Nenhum segredo antigo ganha automaticamente permissão para enviar dinheiro. Nao alterar a documentacao visual do frontend.
+
+Ambos os POST exigem `X-Idempotency-Key` de 8 a 128 caracteres, unico por operacao; a chave deve ser gerada pelo integrador/n8n de maneira que um retry da mesma operacao reutilize a mesma chave e uma operacao distinta use outra. O backend usa `SET NX` no Redis para impedir chamadas simultaneas, salva a resposta por sete dias e nao executa se Redis estiver fora. Falhas apos COMMIT podem gerar resultado indeterminado, requerendo consultar extrato antes de qualquer novo envio. **Sem uma referencia transacional persistente e unica no Firebird, esta versao nao garante idempotencia eterna se o Redis for apagado/expirar**.
+
+```http
+POST /api/v1/pagamentos/pix
+X-Arkhe-N8N-Key: <segredo>
+X-Arkhe-Chat-ID: <jid-waha-validado>
+X-Idempotency-Key: <id-unico-da-operacao>
+Content-Type: application/json
+
+{"tipo_chave": "cpf", "chave_pix": "52998224725", "valor": "25.00"}
+```
+
+```http
+POST /api/v1/pagamentos/dda/123
+X-Arkhe-N8N-Key: <segredo>
+X-Arkhe-Chat-ID: <jid-waha-validado>
+X-Idempotency-Key: <id-unico-da-operacao>
+Content-Type: application/json
+
+{}
+```
+
+Pagamento de folha, cartao e qualquer outra saida nao foram habilitados por este patch. O frontend original segue usando suas rotas antigas.
 
 ## Redis: formato e compatibilidade
 
@@ -83,4 +115,4 @@ Depois executar os demais testes em banco Firebird temporario, sem tocar no banc
 Testar manualmente em homologacao: ativar PF, ativar PJ no mesmo WhatsApp, listar, alternar,
 desativar uma das contas pelo site, recusar chave invalida, expirar vinculo, testar `@c.us` e `@lid` no WAHA e garantir que o workflow nao permita falsificar origem.
 
-**Observacao de versionamento:** esta branch foi criada a partir da `main` remota que ainda nao tinha os sete novos endpoints reportados pelo Codex local. Antes de integrar, reconciliar o codigo local atualizado para nao sobrescrever seus endpoints novos.
+**Observacao de versionamento:** esta branch foi criada a partir da `main` remota que ainda nao tinha os sete novos endpoints reportados pelo Codex local (consultas de cartao e chaves Pix e existencia de conta). Antes de integrar, reconciliar o codigo local atualizado para nao sobrescrever esses endpoints e aplicar `autenticar_requisicao` nas leituras que o WhatsApp deve utilizar. Nao declarar o backend completo antes dessa conciliacao e dos testes de pagamentos com Firebird de teste.
