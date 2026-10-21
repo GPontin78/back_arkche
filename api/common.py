@@ -96,3 +96,38 @@ def nome_cliente_api(nome, nome_fantasia, razao_social, tipo_conta):
         return nome_fantasia or razao_social or nome or 'Conta Arkhe'
 
     return nome or 'Conta Arkhe'
+
+
+def autenticar_requisicao(nivel_whatsapp=1, permitir_whatsapp=False):
+    """Descobre a conta autorizada usando credenciais normais OU vínculo WhatsApp.
+
+    Integrações de terceiros continuam usando X-Client-ID e X-Client-Secret.
+    O WhatsApp exige a chave privada do n8n e um chatId previamente vinculado
+    pelo site; o nível é sempre lido do Firebird, nunca recebido do cliente.
+
+    IMPORTANTE: X-Arkhe-Chat-ID só pode vir do fluxo de mensagens WAHA
+    autenticado no n8n. Nunca copie esse header do texto enviado pelo usuário.
+    """
+    tem_cliente = bool(request.headers.get("X-Client-ID") or request.headers.get("X-Client-Secret"))
+    tem_canal = bool(request.headers.get("X-Arkhe-N8N-Key") or request.headers.get("X-Arkhe-Chat-ID"))
+    if tem_cliente and tem_canal:
+        return None, (jsonify({"mensagem": "Escolha apenas um tipo de autenticacao"}), 401)
+
+    # As credenciais antigas continuam funcionando exatamente como antes.
+    if tem_cliente or not permitir_whatsapp:
+        return autenticar_integracao()
+
+    if not tem_canal:
+        return autenticar_integracao()
+
+    from .whatsapp import _servico_valido, verificar_nivel_whatsapp
+    if not _servico_valido():
+        return None, (jsonify({"mensagem": "Servico nao autorizado"}), 401)
+    chat_id = request.headers.get("X-Arkhe-Chat-ID", "")
+    if not chat_id:
+        return None, (jsonify({"mensagem": "Identificador WhatsApp nao informado"}), 400)
+    conta, mensagem = verificar_nivel_whatsapp(chat_id, nivel_whatsapp)
+    if not conta:
+        return None, (jsonify({"mensagem": mensagem}), 403)
+    return {"id_conta": conta["id_conta"], "id_usuario": conta["id_usuario"],
+            "id_integracao": None, "origem": "whatsapp", "nivel": conta["nivel"]}, None
