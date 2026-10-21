@@ -11,7 +11,8 @@ from banco import con
 from funcao import calcular_limite_cartao, calcular_saldo, criptografar_pin, data_atual, descobre_id_conta, pode_debitar_saldo
 from main import app
 
-from .common import autenticar_integracao, autenticar_requisicao, valor_monetario_api
+from .common import (autenticar_integracao, autenticar_requisicao, executar_operacao_idempotente,
+                     limitar_pagamento_whatsapp, valor_monetario_api)
 from .whatsapp import _conta_vinculada, _servico_valido
 
 
@@ -439,3 +440,166 @@ def whatsapp_consulta():
     except Exception:
         app.logger.exception("Falha na consulta bancaria do WhatsApp")
         return jsonify({"mensagem": "Consulta indisponivel no momento"}), 503
+
+
+# Envia um Pix com a conta pagadora definida EXCLUSIVAMENTE pela autenticacao.
+# API externa: credencial da propria conta PJ. WhatsApp: vinculo e nivel 2.
+# Idempotencia obrigatoria evita executar duas vezes a mesma requisicao.
+@app.route('/api/v1/pagamentos/pix', methods=['POST'])
+def api_pagar_pix():
+    autorizacao, erro = autenticar_requisicao(permitir_whatsapp=True, nivel_whatsapp=2)
+    if erro:
+        return erro
+    dados = request.get_json(silent=True)
+    if not isinstance(dados, dict):
+        return jsonify({'mensagem': 'Envie um objeto JSON'}), 400
+
+    tipo = str(dados.get('tipo_chave') or '').lower()
+    chave_pix = dados.get('chave_pix')
+    valor = valor_monetario_api(dados.get('valor'))
+    colunas = {'email': 'CHAVE_PIX_EMAIL', 'telefone': 'CHAVE_PIX_TELEFONE',
+               'cpf': 'CHAVE_PIX_CPF', 'cnpj': 'CHAVE_PIX_CNPJ',
+               'aleatoria': 'CHAVE_PIX_ALEATORIA'}
+    if tipo not in colunas or not isinstance(chave_pix, str) or not 1 <= len(chave_pix.strip()) <= 160:
+        return jsonify({'mensagem': 'Informe tipo_chave e chave_pix validos'}), 400
+    if valor is None:
+        return jsonify({'mensagem': 'Informe um valor monetario positivo'}), 400
+
+    restricao = limitar_pagamento_whatsapp(autorizacao, valor)
+    if restricao:
+        return restricao
+
+    id_pagador = autorizacao['id_conta']
+
+    def realizar():
+        cursor = None
+        try:
+            cursor = con.cursor()
+            # Nome da coluna vem de lista fixa, nunca diretamente da requisicao.
+            cursor.execute('SELECT ID_CONTA FROM CHAVE_PIX WHERE ' + colunas[tipo] + ' = ?',
+                           (chave_pix.strip(),))
+            contas = cursor.fetchall()
+            if len(contas) != 1:
+                con.rollback()
+                return jsonify({'mensagem': 'Chave Pix nao encontrada ou ambigua'}), 404
+            id_recebedor = int(contas[0][0])
+            if id_pagador == id_recebedor:
+                con.rollback()
+                return jsonify({'mensagem': 'Nao e possivel transferir para a propria conta'}), 400
+
+            # Trava contas em ordem para evitar pagamento paralelo com saldo duplicado.
+            for id_conta in sorted({id_pagador, id_recebedor}):
+                cursor.execute('SELECT ID_CONTA FROM CONTA WHERE ID_CONTA = ? WITH LOCK', (id_conta,))
+                if not cursor.fetchone():
+                    con.rollback()
+                    return jsonify({'mensagem': 'Conta indisponivel'}), 404
+            if not pode_debitar_saldo(id_pagador, valor):
+                con.rollback()
+                return jsonify({'mensagem': 'Saldo insuficiente'}), 400
+
+            cursor.execute('''INSERT INTO MOVIMENTACAO
+                              (ID_PAGADOR, ID_RECEBEDOR, VALOR, DATA_MOVIMENTACAO)
+                              VALUES (?, ?, ?, ?) RETURNING ID_MOVIMENTACAO''',
+                           (id_pagador, id_recebedor, valor, data_atual()))
+            id_movimentacao = cursor.fetchone()[0]
+            con.commit()
+            return jsonify({'mensagem': 'Pix realizado com sucesso',
+                            'id_movimentacao': id_movimentacao,
+                            'valor': float(valor), 'id_recebedor': id_recebedor}), 201
+        except fdb.TransactionConflict:
+            con.rollback()
+            return jsonify({'mensagem': 'Operacao concorrente; confira o extrato'}), 409
+        except Exception:
+            con.rollback()
+            app.logger.exception('Falha Pix API')
+            return jsonify({'mensagem': 'Nao foi possivel concluir o Pix'}), 500
+        finally:
+            if cursor:
+                cursor.close()
+
+    return executar_operacao_idempotente(autorizacao, 'pix', realizar)
+
+
+# Paga um boleto ja registrado no DDA DA CONTA autenticada.
+# WhatsApp exige nivel 2; nao aceita trocar conta pagadora no corpo do JSON.
+@app.route('/api/v1/pagamentos/dda/<int:id_cobranca>', methods=['POST'])
+def api_pagar_dda(id_cobranca):
+    autorizacao, erro = autenticar_requisicao(permitir_whatsapp=True, nivel_whatsapp=2)
+    if erro:
+        return erro
+    dados = request.get_json(silent=True)
+    if not isinstance(dados, dict) or dados:
+        return jsonify({'mensagem': 'Envie um objeto JSON vazio; valor e pagador sao definidos pelo boleto'}), 400
+    id_pagador = autorizacao['id_conta']
+
+    def realizar():
+        cursor = None
+        try:
+            cursor = con.cursor()
+            cursor.execute('''SELECT ID_RECEBEDOR, VALOR, STATUS FROM COBRANCA
+                              WHERE ID_COBRANCA = ? AND ID_PAGADOR = ? AND TIPO_COBRANCA = 0''',
+                           (id_cobranca, id_pagador))
+            boleto = cursor.fetchone()
+            if not boleto:
+                con.rollback()
+                return jsonify({'mensagem': 'Boleto nao encontrado no DDA desta conta'}), 404
+            id_recebedor, valor, status = int(boleto[0]), boleto[1], boleto[2]
+            if id_pagador == id_recebedor:
+                con.rollback()
+                return jsonify({'mensagem': 'Nao e possivel pagar boleto da propria conta'}), 400
+            if status != 0:
+                con.rollback()
+                return jsonify({'mensagem': 'Boleto ja pago ou indisponivel'}), 409
+            valor = Decimal(str(valor or 0))
+            if valor <= 0:
+                con.rollback()
+                return jsonify({'mensagem': 'Valor do boleto invalido'}), 400
+            restricao = limitar_pagamento_whatsapp(autorizacao, valor)
+            if restricao:
+                con.rollback()
+                return restricao
+
+            for id_conta in sorted({id_pagador, id_recebedor}):
+                cursor.execute('SELECT ID_CONTA FROM CONTA WHERE ID_CONTA = ? WITH LOCK', (id_conta,))
+                if not cursor.fetchone():
+                    con.rollback()
+                    return jsonify({'mensagem': 'Conta indisponivel'}), 404
+
+            cursor.execute('''SELECT VALOR, STATUS FROM COBRANCA
+                              WHERE ID_COBRANCA = ? AND ID_PAGADOR = ? AND TIPO_COBRANCA = 0 WITH LOCK''',
+                           (id_cobranca, id_pagador))
+            confirmado = cursor.fetchone()
+            if not confirmado or confirmado[1] != 0:
+                con.rollback()
+                return jsonify({'mensagem': 'Boleto ja pago ou indisponivel'}), 409
+            valor = Decimal(str(confirmado[0] or 0))
+            if valor <= 0 or not pode_debitar_saldo(id_pagador, valor):
+                con.rollback()
+                return jsonify({'mensagem': 'Saldo insuficiente ou valor invalido'}), 400
+
+            cursor.execute('''UPDATE COBRANCA SET STATUS = 1 WHERE ID_COBRANCA = ?
+                              AND ID_PAGADOR = ? AND STATUS = 0 AND TIPO_COBRANCA = 0
+                              RETURNING ID_COBRANCA''', (id_cobranca, id_pagador))
+            if not cursor.fetchone():
+                con.rollback()
+                return jsonify({'mensagem': 'Boleto ja processado'}), 409
+            cursor.execute('''INSERT INTO MOVIMENTACAO
+                              (ID_PAGADOR, ID_RECEBEDOR, VALOR, DATA_MOVIMENTACAO, ID_COBRANCA)
+                              VALUES (?, ?, ?, ?, ?) RETURNING ID_MOVIMENTACAO''',
+                           (id_pagador, id_recebedor, valor, data_atual(), id_cobranca))
+            id_movimentacao = cursor.fetchone()[0]
+            con.commit()
+            return jsonify({'mensagem': 'Boleto pago com sucesso', 'id_cobranca': id_cobranca,
+                            'id_movimentacao': id_movimentacao, 'valor': float(valor)}), 200
+        except fdb.TransactionConflict:
+            con.rollback()
+            return jsonify({'mensagem': 'Pagamento concorrente; confira o DDA'}), 409
+        except Exception:
+            con.rollback()
+            app.logger.exception('Falha pagamento DDA API')
+            return jsonify({'mensagem': 'Nao foi possivel concluir o pagamento'}), 500
+        finally:
+            if cursor:
+                cursor.close()
+
+    return executar_operacao_idempotente(autorizacao, 'dda:' + str(id_cobranca), realizar)
