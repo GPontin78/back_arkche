@@ -6,12 +6,12 @@ from funcao import calcular_saldo
 from main import app
 from pdf import gerar_boleto_pdf
 
-from .common import autenticar_integracao, nome_cliente_api, obter_periodo
+from .common import autenticar_requisicao, nome_cliente_api, obter_periodo
 
 
 @app.route('/api/v1/conta', methods=['GET'])
 def api_conta():
-    integracao, erro = autenticar_integracao()
+    integracao, erro = autenticar_requisicao(permitir_whatsapp=True, nivel_whatsapp=1)
 
     if erro:
         return erro
@@ -59,7 +59,7 @@ def api_conta():
 
 @app.route('/api/v1/saldo', methods=['GET'])
 def api_saldo():
-    integracao, erro = autenticar_integracao()
+    integracao, erro = autenticar_requisicao(permitir_whatsapp=True, nivel_whatsapp=1)
 
     if erro:
         return erro
@@ -78,7 +78,7 @@ def api_saldo():
 
 @app.route('/api/v1/movimentacoes', methods=['GET'])
 def api_movimentacoes():
-    integracao, erro = autenticar_integracao()
+    integracao, erro = autenticar_requisicao(permitir_whatsapp=True, nivel_whatsapp=1)
 
     if erro:
         return erro
@@ -184,7 +184,7 @@ def api_movimentacoes():
 
 @app.route('/api/v1/resumo-financeiro', methods=['GET'])
 def api_resumo_financeiro():
-    integracao, erro = autenticar_integracao()
+    integracao, erro = autenticar_requisicao(permitir_whatsapp=True, nivel_whatsapp=1)
 
     if erro:
         return erro
@@ -227,7 +227,7 @@ def api_resumo_financeiro():
 
 @app.route('/api/v1/cobrancas/pix/<int:id_cobranca>', methods=['GET'])
 def api_consultar_cobranca_pix(id_cobranca):
-    integracao, erro = autenticar_integracao()
+    integracao, erro = autenticar_requisicao(permitir_whatsapp=True, nivel_whatsapp=1)
 
     if erro:
         return erro
@@ -299,7 +299,7 @@ def listar_integracoes_api():
 
 @app.route('/api/v1/cobrancas/boletos/<int:id_cobranca>', methods=['GET'])
 def api_consultar_boleto(id_cobranca):
-    integracao, erro = autenticar_integracao()
+    integracao, erro = autenticar_requisicao(permitir_whatsapp=True, nivel_whatsapp=1)
     if erro:
         return erro
     cursor = None
@@ -329,7 +329,7 @@ def api_consultar_boleto(id_cobranca):
 
 @app.route('/api/v1/cobrancas/boletos/<int:id_cobranca>/pdf', methods=['GET'])
 def api_boleto_pdf(id_cobranca):
-    integracao, erro = autenticar_integracao()
+    integracao, erro = autenticar_requisicao(permitir_whatsapp=True, nivel_whatsapp=1)
     if erro:
         return erro
     cursor = None
