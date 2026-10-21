@@ -115,4 +115,26 @@ Depois executar os demais testes em banco Firebird temporario, sem tocar no banc
 Testar manualmente em homologacao: ativar PF, ativar PJ no mesmo WhatsApp, listar, alternar,
 desativar uma das contas pelo site, recusar chave invalida, expirar vinculo, testar `@c.us` e `@lid` no WAHA e garantir que o workflow nao permita falsificar origem.
 
-**Observacao de versionamento:** esta branch foi criada a partir da `main` remota que ainda nao tinha os sete novos endpoints reportados pelo Codex local (consultas de cartao e chaves Pix e existencia de conta). Antes de integrar, reconciliar o codigo local atualizado para nao sobrescrever esses endpoints e aplicar `autenticar_requisicao` nas leituras que o WhatsApp deve utilizar. Nao declarar o backend completo antes dessa conciliacao e dos testes de pagamentos com Firebird de teste.
+****Observacao de versionamento:** para não depender do checkout local do Codex, a branch reconstrói seis consultas e uma verificação de CPF/CNPJ com base nas rotas e tabelas da main. Os caminhos adotados devem ser comparados com o checkout original quando estiver disponível, mas o código remoto não depende mais dele.
+
+
+## Sete endpoints reconstruidos a partir da main remota
+
+- `GET /api/v1/chaves-pix`: chaves da conta autenticada.
+- `GET /api/v1/cartao`: cartão sem PAN completo nem CVV.
+- `GET /api/v1/cartao/compras`: compras da conta, com limite de 50.
+- `GET /api/v1/cartao/faturas`: lista de faturas, até 30.
+- `GET /api/v1/cartao/faturas/<id_fatura>`: detalhe validando titularidade.
+- `GET /api/v1/cartao/limites`: limite total, utilizado, disponível.
+- `POST /api/v1/contas/verificar-documento`: retorna somente `possui_conta`,
+  com validacao de CPF/CNPJ inclusive alfanumerico e quota por integração de
+  5 verificacoes/minuto e 50/dia, controlada em Redis com operacao atomica.
+
+As consultas permitem WhatsApp nivel 1 e a API de integracoes convencional.
+A verificacao de existencia de conta permanece exclusivamente disponivel a
+integracoes externas autenticadas, sem acesso pelo MAURO.
+
+**Importante:** a reconstrucao nao equivale a prova de compatibilidade com os
+sete endpoints nao publicados do checkout local do Codex. Os caminhos podem ser
+diferentes; nao trocar contratos de terceiros sem comparar. Revisao e testes
+contra Firebird de teste ainda sao obrigatorios antes do deploy.
