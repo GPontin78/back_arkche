@@ -308,7 +308,8 @@ def _listar_contas_autorizadas(chat_id):
     try:
         cursor.execute(
             """SELECT C.ID_CONTA, C.WHATSAPP_AUTORIZADO, C.WHATSAPP_NIVEL,
-                      C.TIPO_CONTA, U.TELEFONE
+                      C.TIPO_CONTA, U.TELEFONE, C.NOME_FANTASIA,
+                      C.RAZAO_SOCIAL, C.NUMERO_CONTA
                FROM CONTA C JOIN USUARIO U ON U.ID_USUARIO = C.ID_USUARIO
                WHERE C.ID_USUARIO = ? AND C.ID_CONTA IN (""" + placeholders + ")",
             (identidade["id_usuario"], *ids))
@@ -324,7 +325,10 @@ def _listar_contas_autorizadas(chat_id):
         if tipo == 0:
             nivel = min(nivel, 2)
         if nivel >= 1:
-            contas.append({"id_conta": int(conta[0]), "tipo_conta": tipo, "nivel": nivel})
+            # Um apelido ajuda o MAURO a diferenciar contas sem expor CPF ou CNPJ.
+            descricao = "Conta pessoal" if tipo == 0 else str(conta[5] or conta[6] or "Conta empresarial")
+            contas.append({"id_conta": int(conta[0]), "tipo_conta": tipo, "nivel": nivel,
+                           "descricao": descricao, "conta_final": str(conta[7] or "")[-4:]})
     contas.sort(key=lambda item: item["id_conta"])
     return identidade, contas
 
