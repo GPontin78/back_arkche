@@ -90,7 +90,9 @@ class CursorFalso:
         if "ID_CONTA IN (" not in comando:
             raise AssertionError("SQL inesperado: " + comando[:80])
         id_usuario, *ids = parametros
-        self.linhas = [(id_conta, autorizado, nivel, tipo, telefone)
+        self.linhas = [(id_conta, autorizado, nivel, tipo, telefone,
+                        "Empresa ficticia" if tipo == 1 else None, None,
+                        "0000" + str(id_conta))
                        for id_conta, (usuario, autorizado, nivel, tipo, telefone)
                        in self.contas.items() if id_conta in ids and usuario == id_usuario]
 
