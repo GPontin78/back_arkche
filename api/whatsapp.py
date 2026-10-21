@@ -81,6 +81,7 @@ def _servico_valido():
     return bool(segredo and recebido and secrets.compare_digest(segredo, recebido))
 
 
+# Lista as contas ativadas e permitidas para o remetente autenticado pelo n8n.
 @app.route("/internal/whatsapp/contexto", methods=["POST"])
 def whatsapp_contexto():
     if not _servico_valido():
@@ -427,6 +428,7 @@ def _descobrir_chat_destino(telefone):
     return "55" + telefone + "@c.us"
 
 
+# Inicia pelo site autenticado a ativacao de UMA conta, enviando mensagem WAHA.
 @app.route("/whatsapp/ativar", methods=["POST"])
 def whatsapp_ativar_sem_codigo():
     conta, erro = _conta_configuravel()
@@ -486,6 +488,7 @@ def whatsapp_ativar_sem_codigo():
                     "mensagem": "Mensagem enviada! Responda ATIVAR no seu WhatsApp em até 10 minutos."})
 
 
+# Confirma a resposta ATIVAR e inclui a conta no vinculo Redis do remetente.
 @app.route("/internal/whatsapp/confirmar", methods=["POST"])
 def whatsapp_confirmar_sem_codigo():
     if not _servico_valido():
