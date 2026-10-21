@@ -2,7 +2,7 @@
 import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
-from flask import jsonify, request
+from flask import current_app, jsonify, request
 
 from banco import con
 from funcao import verificar_pin
@@ -126,7 +126,11 @@ def autenticar_requisicao(nivel_whatsapp=1, permitir_whatsapp=False):
     chat_id = request.headers.get("X-Arkhe-Chat-ID", "")
     if not chat_id:
         return None, (jsonify({"mensagem": "Identificador WhatsApp nao informado"}), 400)
-    conta, mensagem = verificar_nivel_whatsapp(chat_id, nivel_whatsapp)
+    try:
+        conta, mensagem = verificar_nivel_whatsapp(chat_id, nivel_whatsapp)
+    except Exception:
+        current_app.logger.exception("Falha na autorizacao WhatsApp")
+        return None, (jsonify({"mensagem": "Autenticacao WhatsApp indisponivel"}), 503)
     if not conta:
         return None, (jsonify({"mensagem": mensagem}), 403)
     return {"id_conta": conta["id_conta"], "id_usuario": conta["id_usuario"],
