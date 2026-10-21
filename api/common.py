@@ -1,8 +1,14 @@
 """Shared helpers for the HTTP integration endpoints."""
 import datetime
+import hashlib
+import json
+import os
+import re
+
+import redis
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
-from flask import current_app, jsonify, request
+from flask import current_app, jsonify, make_response, request
 
 from banco import con
 from funcao import verificar_pin
@@ -135,3 +141,75 @@ def autenticar_requisicao(nivel_whatsapp=1, permitir_whatsapp=False):
         return None, (jsonify({"mensagem": mensagem}), 403)
     return {"id_conta": conta["id_conta"], "id_usuario": conta["id_usuario"],
             "id_integracao": None, "origem": "whatsapp", "nivel": conta["nivel"]}, None
+
+def executar_operacao_idempotente(contexto, operacao, executar):
+    """Executa POST bancario uma vez por chave e devolve a resposta em repeticoes.
+
+    A chave deve ser aleatoria e unica por operacao, enviada por um servidor
+    confiavel no header X-Idempotency-Key. O Redis bloqueia repeticoes entre
+    workers, inclusive enquanto a primeira requisicao ainda esta em andamento.
+    Falha de Redis antes da operacao: NAO realiza pagamento.
+    Falha depois do COMMIT: NAO tenta realizar outro pagamento.
+    """
+    chave_cliente = request.headers.get("X-Idempotency-Key", "")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{7,127}", chave_cliente):
+        return jsonify({"mensagem": "Envie X-Idempotency-Key unica (8 a 128 caracteres)"}), 400
+
+    endereco = os.getenv("ARKHE_WHATSAPP_REDIS_URL") or os.getenv("REDIS_URL")
+    if not endereco:
+        return jsonify({"mensagem": "Protecao de duplicidade indisponivel"}), 503
+    dados = request.get_json(silent=True)
+    if not isinstance(dados, dict):
+        return jsonify({"mensagem": "Envie um objeto JSON"}), 400
+
+    identidade = f'{contexto["id_conta"]}:{operacao}:{chave_cliente}'
+    chave = "arkhe:api:pagamento:v1:" + hashlib.sha256(identidade.encode()).hexdigest()
+    assinatura = hashlib.sha256(json.dumps(dados, sort_keys=True, separators=(",", ":"),
+                                          ensure_ascii=False).encode()).hexdigest()
+    redis_cli = redis.Redis.from_url(endereco, decode_responses=True, socket_timeout=3,
+                                    socket_connect_timeout=3)
+    pendente = json.dumps({"assinatura": assinatura, "estado": "processando"})
+    try:
+        reservado = redis_cli.set(chave, pendente, nx=True, ex=7 * 24 * 60 * 60)
+        if not reservado:
+            anterior = json.loads(redis_cli.get(chave) or "{}")
+            if anterior.get("assinatura") != assinatura:
+                return jsonify({"mensagem": "Chave reutilizada com dados diferentes"}), 409
+            if anterior.get("estado") == "concluido":
+                return current_app.response_class(anterior["corpo"], status=anterior["status"],
+                                                  mimetype="application/json")
+            return jsonify({"mensagem": "Operacao ja recebida; consulte seu extrato antes de repetir",
+                            "codigo": "OPERACAO_EM_PROCESSAMENTO"}), 409
+    except Exception:
+        current_app.logger.exception("Redis indisponivel na protecao de pagamento")
+        return jsonify({"mensagem": "Pagamento temporariamente indisponivel"}), 503
+
+    # Nao libera a chave em erro inesperado: pode ter ocorrido COMMIT antes da falha.
+    # Assim a repeticao nao movimenta dinheiro novamente sem verificacao humana.
+    resposta = make_response(executar())
+    final = {"assinatura": assinatura, "estado": "concluido",
+             "status": resposta.status_code, "corpo": resposta.get_data(as_text=True)}
+    try:
+        redis_cli.set(chave, json.dumps(final, ensure_ascii=False), ex=7 * 24 * 60 * 60)
+    except Exception:
+        current_app.logger.exception("Falha ao registrar resposta de pagamento; conferir extrato")
+        return jsonify({"mensagem": "Resultado indeterminado; confira o extrato antes de tentar novamente",
+                        "codigo": "RESULTADO_INDETERMINADO"}), 503
+    return resposta
+
+
+def limitar_pagamento_whatsapp(contexto, valor):
+    """Limite preventivo por operacao no canal, sem PIN repetido.
+
+    Este limite NAO substitui auditoria nem protecao contra sequestro do WhatsApp.
+    O titular pode desativar o canal no site a qualquer momento.
+    """
+    if contexto.get("origem") != "whatsapp":
+        return None
+    try:
+        teto = Decimal(os.getenv("ARKHE_WHATSAPP_LIMITE_PAGAMENTO", "1000.00"))
+    except (InvalidOperation, ValueError):
+        return jsonify({"mensagem": "Limite WhatsApp mal configurado"}), 503
+    if teto <= 0 or valor > teto:
+        return jsonify({"mensagem": "Valor excede o limite por operacao do WhatsApp"}), 403
+    return None
