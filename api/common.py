@@ -213,3 +213,19 @@ def limitar_pagamento_whatsapp(contexto, valor):
     if teto <= 0 or valor > teto:
         return jsonify({"mensagem": "Valor excede o limite por operacao do WhatsApp"}), 403
     return None
+
+
+def autorizar_pagamento_externo(contexto):
+    """Pagamentos por Client ID exigem opt-in, para nao ampliar chaves antigas.
+
+    Defina ARKHE_API_PAGAMENTOS_CLIENT_IDS como lista de Client IDs permitidos.
+    Nao confundir esse controle de integracao com o nivel do WhatsApp.
+    """
+    if contexto.get("origem") == "whatsapp":
+        return None
+    identificador = request.headers.get("X-Client-ID", "")
+    permitidos = {valor.strip() for valor in os.getenv("ARKHE_API_PAGAMENTOS_CLIENT_IDS", "").split(",")
+                  if valor.strip()}
+    if identificador not in permitidos:
+        return jsonify({"mensagem": "Esta integracao nao esta habilitada para pagamentos de saida"}), 403
+    return None
