@@ -614,3 +614,102 @@ def api_pagar_dda(id_cobranca):
                 cursor.close()
 
     return executar_operacao_idempotente(autorizacao, 'dda:' + str(id_cobranca), realizar)
+
+
+def _documento_eh_valido(documento):
+    """Valida CPF e CNPJ (inclusive CNPJ alfanumerico) pelo digito verificador."""
+    import re
+    valor = re.sub(r'[.\\/\\-\\s]', '', str(documento or '')).upper()
+    if len(valor) == 11 and valor.isdigit():
+        if len(set(valor)) == 1:
+            return None
+        for tamanho in (9, 10):
+            soma = sum(int(valor[i]) * (tamanho + 1 - i) for i in range(tamanho))
+            dv = (soma * 10) % 11
+            if (0 if dv == 10 else dv) != int(valor[tamanho]):
+                return None
+        return 'cpf', valor
+    if len(valor) == 14 and re.fullmatch(r'[A-Z0-9]{12}[0-9]{2}', valor):
+        if len(set(valor)) == 1:
+            return None
+        pesos1 = [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]
+        pesos2 = [6] + pesos1
+        def digito(parte, pesos):
+            resto = sum((ord(c) - 48) * p for c, p in zip(parte, pesos)) % 11
+            return 0 if resto < 2 else 11 - resto
+        if digito(valor[:12], pesos1) != int(valor[12]):
+            return None
+        if digito(valor[:13], pesos2) != int(valor[13]):
+            return None
+        return 'cnpj', valor
+    return None
+
+
+def _limitar_verificacoes_documento(id_conta):
+    """Limite 5/minuto e 50/dia por conta, compartilhado entre workers Redis."""
+    import os
+    import redis
+    from datetime import datetime, timezone
+    endereco = os.getenv('ARKHE_WHATSAPP_REDIS_URL') or os.getenv('REDIS_URL')
+    if not endereco:
+        return False
+    try:
+        agora = datetime.now(timezone.utc)
+        minuto = agora.strftime('%Y%m%d%H%M')
+        dia = agora.strftime('%Y%m%d')
+        cliente = redis.Redis.from_url(endereco, decode_responses=True,
+                                     socket_timeout=3, socket_connect_timeout=3)
+        # Lua atomica: limites validos globalmente em um mesmo Redis.
+        script = """
+        local m = tonumber(redis.call('GET', KEYS[1]) or '0')
+        local d = tonumber(redis.call('GET', KEYS[2]) or '0')
+        if m >= 5 or d >= 50 then return 0 end
+        m = redis.call('INCR', KEYS[1])
+        if m == 1 then redis.call('EXPIRE', KEYS[1], 120) end
+        d = redis.call('INCR', KEYS[2])
+        if d == 1 then redis.call('EXPIRE', KEYS[2], 172800) end
+        return 1
+        """
+        return bool(cliente.eval(script, 2, 'arkhe:api:cpf:min:' + str(id_conta) + ':' + minuto,
+                                 'arkhe:api:cpf:dia:' + str(id_conta) + ':' + dia))
+    except Exception:
+        app.logger.exception('Redis indisponivel para rate limit de documentos')
+        return False
+
+
+# Confere apenas se CPF/CNPJ possui conta no Arkhé, sem revelar dados da pessoa.
+# Disponivel exclusivamente para integracoes externas, com limites por conta.
+@app.route('/api/v1/contas/verificar-documento', methods=['POST'])
+def api_verificar_documento():
+    integracao, erro = autenticar_integracao()
+    if erro:
+        return erro
+    dados = request.get_json(silent=True)
+    if not isinstance(dados, dict):
+        return jsonify({'mensagem': 'Envie um objeto JSON'}), 400
+    documento = _documento_eh_valido(dados.get('documento'))
+    if not documento:
+        return jsonify({'mensagem': 'CPF ou CNPJ invalido'}), 400
+    if not _limitar_verificacoes_documento(integracao['id_conta']):
+        return jsonify({'mensagem': 'Limite de verificacoes atingido ou indisponivel'}), 429
+    tipo, valor = documento
+    cursor = None
+    try:
+        cursor = con.cursor()
+        if tipo == 'cpf':
+            cursor.execute('''SELECT FIRST 1 1 FROM CONTA C
+                              JOIN USUARIO U ON U.ID_USUARIO = C.ID_USUARIO
+                              WHERE C.TIPO_CONTA = 0
+                              AND REPLACE(REPLACE(U.CPF, '.', ''), '-', '') = ?''', (valor,))
+        else:
+            cursor.execute('''SELECT FIRST 1 1 FROM CONTA
+                              WHERE TIPO_CONTA = 1 AND
+                              REPLACE(REPLACE(REPLACE(UPPER(CNPJ), '.', ''), '-', ''), '/', '') = ?''',
+                           (valor,))
+        return jsonify({'possui_conta': bool(cursor.fetchone())}), 200
+    except Exception:
+        app.logger.exception('Falha verificacao documento Arkhé')
+        return jsonify({'mensagem': 'Verificacao indisponivel'}), 500
+    finally:
+        if cursor:
+            cursor.close()
