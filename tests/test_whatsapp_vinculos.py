@@ -129,6 +129,7 @@ class WhatsAppVinculosTests(unittest.TestCase):
 
         pkg = types.ModuleType("api_whatsapp_testes")
         pkg.__path__ = [str(ROOT / "api")]
+        cls.pkg = pkg
         with patch.dict(sys.modules, {"main": fake_main, "banco": fake_banco,
                                       "funcao": fake_funcao, "api_whatsapp_testes": pkg}):
             spec = importlib.util.spec_from_file_location("api_whatsapp_testes.whatsapp",
@@ -214,13 +215,15 @@ class WhatsAppVinculosTests(unittest.TestCase):
     def test_autenticacao_universal_nivel_e_integracao_antiga(self):
         self.vincular(10)
         headers = {"X-Arkhe-N8N-Key": "segredo-exclusivo-de-teste", "X-Arkhe-Chat-ID": CHAT}
-        with self.app.test_request_context("/api/v1/saldo", headers=headers):
-            contexto, erro = self.common.autenticar_requisicao(permitir_whatsapp=True)
-            self.assertIsNone(erro)
-            self.assertEqual(contexto["id_conta"], 10)
-            contexto, erro = self.common.autenticar_requisicao(permitir_whatsapp=True, nivel_whatsapp=3)
-            self.assertIsNone(contexto)
-            self.assertEqual(erro[1], 403)
+        with patch.dict(sys.modules, {"api_whatsapp_testes": self.pkg,
+                                      "api_whatsapp_testes.whatsapp": self.wa}):
+            with self.app.test_request_context("/api/v1/saldo", headers=headers):
+                contexto, erro = self.common.autenticar_requisicao(permitir_whatsapp=True)
+                self.assertIsNone(erro)
+                self.assertEqual(contexto["id_conta"], 10)
+                contexto, erro = self.common.autenticar_requisicao(permitir_whatsapp=True, nivel_whatsapp=3)
+                self.assertIsNone(contexto)
+                self.assertEqual(erro[1], 403)
         with self.app.test_request_context("/api/v1/saldo", headers={"X-Client-ID": "integracao"}):
             with patch.object(self.common, "autenticar_integracao",
                               return_value=({"id_conta": 123}, None)) as legado:
