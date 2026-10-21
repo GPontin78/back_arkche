@@ -322,8 +322,10 @@ def _listar_contas_autorizadas(chat_id):
                 int(conta[1] or 0) != 1):
             continue
         tipo, nivel = int(conta[3]), int(conta[2] or 0)
-        if tipo == 0:
-            nivel = min(nivel, 2)
+        # Nem mesmo dados inconsistentes no banco devem criar um nivel acima de 3.
+        if tipo not in (0, 1):
+            continue
+        nivel = min(nivel, 2 if tipo == 0 else 3)
         if nivel >= 1:
             # Um apelido ajuda o MAURO a diferenciar contas sem expor CPF ou CNPJ.
             descricao = "Conta pessoal" if tipo == 0 else str(conta[5] or conta[6] or "Conta empresarial")
