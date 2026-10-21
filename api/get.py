@@ -354,3 +354,38 @@ def api_boleto_pdf(id_cobranca):
     finally:
         if cursor:
             cursor.close()
+
+
+# Consulta os boletos pendentes do DDA destinados a conta autenticada.
+# Nao lista boletos emitidos por outras pessoas nem dados de outras contas.
+@app.route('/api/v1/dda', methods=['GET'])
+def api_listar_dda():
+    autorizacao, erro = autenticar_requisicao(permitir_whatsapp=True, nivel_whatsapp=1)
+    if erro:
+        return erro
+    cursor = None
+    try:
+        cursor = con.cursor()
+        cursor.execute('''SELECT FIRST 50 CB.ID_COBRANCA, CB.ID_RECEBEDOR, CB.VALOR,
+                                 CB.DATA_VENCIMENTO, CB.CODIGO_PAGAMENTO, CB.STATUS,
+                                 U.NOME, C.NOME_FANTASIA, C.RAZAO_SOCIAL, C.TIPO_CONTA
+                          FROM COBRANCA CB
+                          INNER JOIN CONTA C ON C.ID_CONTA = CB.ID_RECEBEDOR
+                          INNER JOIN USUARIO U ON U.ID_USUARIO = C.ID_USUARIO
+                          WHERE CB.ID_PAGADOR = ? AND CB.TIPO_COBRANCA = 0 AND CB.STATUS = 0
+                          ORDER BY CB.DATA_VENCIMENTO, CB.ID_COBRANCA''',
+                       (autorizacao['id_conta'],))
+        cobrancas = []
+        for b in cursor.fetchall():
+            nome = (b[7] or b[8] or b[6]) if int(b[9]) == 1 else b[6]
+            cobrancas.append({'id_cobranca': b[0], 'id_recebedor': b[1],
+                              'valor': float(b[2]), 'data_vencimento': str(b[3]) if b[3] else None,
+                              'codigo_pagamento': b[4], 'status': b[5], 'recebedor': nome})
+        return jsonify({'cobrancas': cobrancas}), 200
+    except Exception:
+        from main import app
+        app.logger.exception('Falha consulta DDA API')
+        return jsonify({'mensagem': 'Nao foi possivel consultar DDA'}), 500
+    finally:
+        if cursor:
+            cursor.close()
