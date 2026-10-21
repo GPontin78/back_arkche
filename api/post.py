@@ -619,7 +619,7 @@ def api_pagar_dda(id_cobranca):
 def _documento_eh_valido(documento):
     """Valida CPF e CNPJ (inclusive CNPJ alfanumerico) pelo digito verificador."""
     import re
-    valor = re.sub(r'[.\\/\\-\\s]', '', str(documento or '')).upper()
+    valor = re.sub(r'[^A-Za-z0-9]', '', str(documento or '')).upper()
     if len(valor) == 11 and valor.isdigit():
         if len(set(valor)) == 1:
             return None
