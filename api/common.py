@@ -142,6 +142,12 @@ def autenticar_requisicao(nivel_whatsapp=1, permitir_whatsapp=False):
     return {"id_conta": conta["id_conta"], "id_usuario": conta["id_usuario"],
             "id_integracao": None, "origem": "whatsapp", "nivel": conta["nivel"]}, None
 
+def conectar_redis_operacoes(endereco):
+    """Conecta o Redis usado na prevencao de pagamentos duplicados."""
+    return redis.Redis.from_url(endereco, decode_responses=True, socket_timeout=3,
+                               socket_connect_timeout=3)
+
+
 def executar_operacao_idempotente(contexto, operacao, executar):
     """Executa POST bancario uma vez por chave e devolve a resposta em repeticoes.
 
@@ -166,8 +172,7 @@ def executar_operacao_idempotente(contexto, operacao, executar):
     chave = "arkhe:api:pagamento:v1:" + hashlib.sha256(identidade.encode()).hexdigest()
     assinatura = hashlib.sha256(json.dumps(dados, sort_keys=True, separators=(",", ":"),
                                           ensure_ascii=False).encode()).hexdigest()
-    redis_cli = redis.Redis.from_url(endereco, decode_responses=True, socket_timeout=3,
-                                    socket_connect_timeout=3)
+    redis_cli = conectar_redis_operacoes(endereco)
     pendente = json.dumps({"assinatura": assinatura, "estado": "processando"})
     try:
         reservado = redis_cli.set(chave, pendente, nx=True, ex=7 * 24 * 60 * 60)
