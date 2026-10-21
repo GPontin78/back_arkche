@@ -11,8 +11,8 @@ from banco import con
 from funcao import calcular_limite_cartao, calcular_saldo, criptografar_pin, data_atual, descobre_id_conta, pode_debitar_saldo
 from main import app
 
-from .common import (autenticar_integracao, autenticar_requisicao, executar_operacao_idempotente,
-                     limitar_pagamento_whatsapp, valor_monetario_api)
+from .common import (autenticar_integracao, autenticar_requisicao, autorizar_pagamento_externo,
+                     executar_operacao_idempotente, limitar_pagamento_whatsapp, valor_monetario_api)
 from .whatsapp import _conta_vinculada, _servico_valido
 
 
@@ -450,6 +450,9 @@ def api_pagar_pix():
     autorizacao, erro = autenticar_requisicao(permitir_whatsapp=True, nivel_whatsapp=2)
     if erro:
         return erro
+    restricao_externa = autorizar_pagamento_externo(autorizacao)
+    if restricao_externa:
+        return restricao_externa
     dados = request.get_json(silent=True)
     if not isinstance(dados, dict):
         return jsonify({'mensagem': 'Envie um objeto JSON'}), 400
@@ -527,6 +530,9 @@ def api_pagar_dda(id_cobranca):
     autorizacao, erro = autenticar_requisicao(permitir_whatsapp=True, nivel_whatsapp=2)
     if erro:
         return erro
+    restricao_externa = autorizar_pagamento_externo(autorizacao)
+    if restricao_externa:
+        return restricao_externa
     dados = request.get_json(silent=True)
     if not isinstance(dados, dict) or dados:
         return jsonify({'mensagem': 'Envie um objeto JSON vazio; valor e pagador sao definidos pelo boleto'}), 400
