@@ -55,6 +55,31 @@ Gerenciamento das credenciais permanece protegido pela sessão bancária:
 
 O n8n será reconstruído para consumir a API convencional. Esta etapa não cria uma nova autenticação entre o n8n e a API nem usa uma chave global como autorização irrestrita por conta. Não divulgar as rotas internas do WhatsApp na documentação pública.
 
+## Novas operacoes de pagamento (PR #4)
+
+A branch `feat/whatsapp-multicontas-autorizacao` adiciona:
+
+| Metodo | Caminho | Permissao |
+| --- | --- | --- |
+| GET | `/api/v1/dda` | Conta autenticada; WhatsApp nivel 1 |
+| POST | `/api/v1/pagamentos/pix` | Conta autenticada; WhatsApp nivel 2 ou integracao externa habilitada |
+| POST | `/api/v1/pagamentos/dda/<id_cobranca>` | Boleto DDA pertencente a conta pagadora; WhatsApp nivel 2 ou integracao habilitada |
+
+Os dois POST exigem `X-Idempotency-Key`. A API nao aceita `id_conta` do cliente para
+selecionar pagador. Clientes externos ja existentes nao ganham permissao de pagamento
+automaticamente: habilitar seus Client IDs explicitamente em
+`ARKHE_API_PAGAMENTOS_CLIENT_IDS`. Sem Redis, pagamentos retornam indisponibilidade
+antes de realizar transferencia. Para WhatsApp, `ARKHE_WHATSAPP_LIMITE_PAGAMENTO`
+define o teto individual por transacao (padrao R$ 1.000,00). Os testes de Redis e
+multicontas sao isolados; testar com Firebird temporario antes de publicar.
+
+Para detalhes de identidade, consultas, limites e exemplo de request, consulte
+`docs/WHATSAPP_AUTORIZACAO.md`.
+
+**Cuidado ao integrar:** a main remota pode estar atrasada em relacao ao checkout local.
+Os sete endpoints implementados pelo Codex local devem ser preservados e conciliados
+antes de fazer merge desta PR.
+
 ## Adicionar uma rota
 
 1. Coloque a função no módulo do método HTTP (`get.py`, `post.py`, `put.py`, `delete.py` ou `patch.py`).
