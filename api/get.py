@@ -9,6 +9,7 @@ from pdf import gerar_boleto_pdf
 from .common import autenticar_requisicao, nome_cliente_api, obter_periodo
 
 
+# Dados da conta autenticada: nivel 1 no WhatsApp ou credencial da API externa.
 @app.route('/api/v1/conta', methods=['GET'])
 def api_conta():
     integracao, erro = autenticar_requisicao(permitir_whatsapp=True, nivel_whatsapp=1)
@@ -57,6 +58,7 @@ def api_conta():
         cursor.close()
 
 
+# Consulta o saldo somente da conta resolvida pelo mecanismo de autenticacao.
 @app.route('/api/v1/saldo', methods=['GET'])
 def api_saldo():
     integracao, erro = autenticar_requisicao(permitir_whatsapp=True, nivel_whatsapp=1)
@@ -76,6 +78,7 @@ def api_saldo():
         return jsonify({'mensagem': 'Erro ao consultar saldo'}), 500
 
 
+# Extrato por periodo da conta autenticada; leitura permitida no nivel 1.
 @app.route('/api/v1/movimentacoes', methods=['GET'])
 def api_movimentacoes():
     integracao, erro = autenticar_requisicao(permitir_whatsapp=True, nivel_whatsapp=1)
@@ -182,6 +185,7 @@ def api_movimentacoes():
         cursor.close()
 
 
+# Resumo financeiro: receitas, despesas e saldo do periodo da conta autenticada.
 @app.route('/api/v1/resumo-financeiro', methods=['GET'])
 def api_resumo_financeiro():
     integracao, erro = autenticar_requisicao(permitir_whatsapp=True, nivel_whatsapp=1)
@@ -225,6 +229,7 @@ def api_resumo_financeiro():
         cursor.close()
 
 
+# Consulta cobranca Pix da conta atual; nunca retorna cobrancas de terceiros.
 @app.route('/api/v1/cobrancas/pix/<int:id_cobranca>', methods=['GET'])
 def api_consultar_cobranca_pix(id_cobranca):
     integracao, erro = autenticar_requisicao(permitir_whatsapp=True, nivel_whatsapp=1)
@@ -297,6 +302,7 @@ def listar_integracoes_api():
         cursor.close()
 
 
+# Consulta boletos da conta atual, com acesso restrito pela autenticacao.
 @app.route('/api/v1/cobrancas/boletos/<int:id_cobranca>', methods=['GET'])
 def api_consultar_boleto(id_cobranca):
     integracao, erro = autenticar_requisicao(permitir_whatsapp=True, nivel_whatsapp=1)
@@ -327,6 +333,7 @@ def api_consultar_boleto(id_cobranca):
             cursor.close()
 
 
+# Recupera o PDF de um boleto da conta autenticada; nivel 1 no WhatsApp.
 @app.route('/api/v1/cobrancas/boletos/<int:id_cobranca>/pdf', methods=['GET'])
 def api_boleto_pdf(id_cobranca):
     integracao, erro = autenticar_requisicao(permitir_whatsapp=True, nivel_whatsapp=1)
