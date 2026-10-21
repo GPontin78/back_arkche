@@ -239,7 +239,7 @@ class WhatsAppVinculosTests(unittest.TestCase):
         with self.app.test_request_context("/api/v1/pagamentos/pix", method="POST",
                                            json={"valor": "20.00", "chave_pix": "teste"},
                                            headers={"X-Idempotency-Key": "teste-pagamento-001"}):
-            with patch("redis.Redis.from_url", return_value=self.redis), patch.dict(
+            with patch.object(self.common, "conectar_redis_operacoes", return_value=self.redis), patch.dict(
                     os.environ, {"REDIS_URL": "redis://localhost:6379/0"}):
                 contador = [0]
 
@@ -254,7 +254,7 @@ class WhatsAppVinculosTests(unittest.TestCase):
                 self.assertEqual(contador[0], 1)
 
     def test_mesma_chave_outros_dados_rejeita_repeticao(self):
-        with patch("redis.Redis.from_url", return_value=self.redis), patch.dict(
+        with patch.object(self.common, "conectar_redis_operacoes", return_value=self.redis), patch.dict(
                 os.environ, {"REDIS_URL": "redis://localhost:6379/0"}):
             contexto = {"id_conta": 10, "origem": "whatsapp"}
             headers = {"X-Idempotency-Key": "teste-pagamento-002"}
