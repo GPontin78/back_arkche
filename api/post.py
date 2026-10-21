@@ -11,7 +11,7 @@ from banco import con
 from funcao import calcular_limite_cartao, calcular_saldo, criptografar_pin, data_atual, descobre_id_conta, pode_debitar_saldo
 from main import app
 
-from .common import autenticar_integracao, valor_monetario_api
+from .common import autenticar_integracao, autenticar_requisicao, valor_monetario_api
 from .whatsapp import _conta_vinculada, _servico_valido
 
 
@@ -70,7 +70,9 @@ def criar_integracao_api():
 @app.route('/api/v1/cobrancas/pix', methods=['POST'])
 @app.route('/api/v1/cobrancas/pix/qrcode', methods=['POST'])
 def api_criar_cobranca_pix():
-    integracao, erro = autenticar_integracao()
+    # Cobranças feitas pelo MAURO exigem nível 3, disponível apenas para PJ.
+    # Integrações empresariais usam as credenciais e regras antigas.
+    integracao, erro = autenticar_requisicao(permitir_whatsapp=True, nivel_whatsapp=3)
 
     if erro:
         return erro
@@ -117,7 +119,9 @@ def regenerar_secret_integracao(id_integracao):
 
 @app.route('/api/v1/cobrancas/boletos', methods=['POST'])
 def api_criar_boleto():
-    integracao, erro = autenticar_integracao()
+    # Cobranças feitas pelo MAURO exigem nível 3, disponível apenas para PJ.
+    # Integrações empresariais usam as credenciais e regras antigas.
+    integracao, erro = autenticar_requisicao(permitir_whatsapp=True, nivel_whatsapp=3)
     if erro:
         return erro
 
