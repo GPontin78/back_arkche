@@ -11,7 +11,8 @@ from banco import con
 from funcao import calcular_limite_cartao, calcular_saldo, criptografar_pin, data_atual, descobre_id_conta, pode_debitar_saldo
 from main import app
 
-from .common import autenticar_integracao, valor_monetario_api
+from .common import (autenticar_integracao, autenticar_requisicao, autorizar_pagamento_externo,
+                     executar_operacao_idempotente, limitar_pagamento_whatsapp, valor_monetario_api)
 from .whatsapp import _conta_vinculada, _servico_valido
 
 
@@ -67,10 +68,13 @@ def criar_integracao_api():
         cursor.close()
 
 
+# Cria cobranca Pix: credencial empresarial original ou WhatsApp PJ nivel 3.
 @app.route('/api/v1/cobrancas/pix', methods=['POST'])
 @app.route('/api/v1/cobrancas/pix/qrcode', methods=['POST'])
 def api_criar_cobranca_pix():
-    integracao, erro = autenticar_integracao()
+    # Cobranças feitas pelo MAURO exigem nível 3, disponível apenas para PJ.
+    # Integrações empresariais usam as credenciais e regras antigas.
+    integracao, erro = autenticar_requisicao(permitir_whatsapp=True, nivel_whatsapp=3)
 
     if erro:
         return erro
@@ -115,9 +119,12 @@ def regenerar_secret_integracao(id_integracao):
         cursor.close()
 
 
+# Emite boleto em nome da conta PJ autenticada; WhatsApp exige nivel 3.
 @app.route('/api/v1/cobrancas/boletos', methods=['POST'])
 def api_criar_boleto():
-    integracao, erro = autenticar_integracao()
+    # Cobranças feitas pelo MAURO exigem nível 3, disponível apenas para PJ.
+    # Integrações empresariais usam as credenciais e regras antigas.
+    integracao, erro = autenticar_requisicao(permitir_whatsapp=True, nivel_whatsapp=3)
     if erro:
         return erro
 
@@ -433,3 +440,276 @@ def whatsapp_consulta():
     except Exception:
         app.logger.exception("Falha na consulta bancaria do WhatsApp")
         return jsonify({"mensagem": "Consulta indisponivel no momento"}), 503
+
+
+# Envia um Pix com a conta pagadora definida EXCLUSIVAMENTE pela autenticacao.
+# API externa: credencial da propria conta PJ. WhatsApp: vinculo e nivel 2.
+# Idempotencia obrigatoria evita executar duas vezes a mesma requisicao.
+@app.route('/api/v1/pagamentos/pix', methods=['POST'])
+def api_pagar_pix():
+    autorizacao, erro = autenticar_requisicao(permitir_whatsapp=True, nivel_whatsapp=2)
+    if erro:
+        return erro
+    restricao_externa = autorizar_pagamento_externo(autorizacao)
+    if restricao_externa:
+        return restricao_externa
+    dados = request.get_json(silent=True)
+    if not isinstance(dados, dict):
+        return jsonify({'mensagem': 'Envie um objeto JSON'}), 400
+
+    tipo = str(dados.get('tipo_chave') or '').lower()
+    chave_pix = dados.get('chave_pix')
+    valor = valor_monetario_api(dados.get('valor'))
+    colunas = {'email': 'CHAVE_PIX_EMAIL', 'telefone': 'CHAVE_PIX_TELEFONE',
+               'cpf': 'CHAVE_PIX_CPF', 'cnpj': 'CHAVE_PIX_CNPJ',
+               'aleatoria': 'CHAVE_PIX_ALEATORIA'}
+    if tipo not in colunas or not isinstance(chave_pix, str) or not 1 <= len(chave_pix.strip()) <= 160:
+        return jsonify({'mensagem': 'Informe tipo_chave e chave_pix validos'}), 400
+    if valor is None:
+        return jsonify({'mensagem': 'Informe um valor monetario positivo'}), 400
+
+    restricao = limitar_pagamento_whatsapp(autorizacao, valor)
+    if restricao:
+        return restricao
+
+    id_pagador = autorizacao['id_conta']
+
+    def realizar():
+        cursor = None
+        try:
+            cursor = con.cursor()
+            # Nome da coluna vem de lista fixa, nunca diretamente da requisicao.
+            cursor.execute('SELECT ID_CONTA FROM CHAVE_PIX WHERE ' + colunas[tipo] + ' = ?',
+                           (chave_pix.strip(),))
+            contas = cursor.fetchall()
+            if len(contas) != 1:
+                con.rollback()
+                return jsonify({'mensagem': 'Chave Pix nao encontrada ou ambigua'}), 404
+            id_recebedor = int(contas[0][0])
+            if id_pagador == id_recebedor:
+                con.rollback()
+                return jsonify({'mensagem': 'Nao e possivel transferir para a propria conta'}), 400
+
+            # Trava contas em ordem para evitar pagamento paralelo com saldo duplicado.
+            for id_conta in sorted({id_pagador, id_recebedor}):
+                cursor.execute('SELECT ID_CONTA FROM CONTA WHERE ID_CONTA = ? WITH LOCK', (id_conta,))
+                if not cursor.fetchone():
+                    con.rollback()
+                    return jsonify({'mensagem': 'Conta indisponivel'}), 404
+            if not pode_debitar_saldo(id_pagador, valor):
+                con.rollback()
+                return jsonify({'mensagem': 'Saldo insuficiente'}), 400
+
+            cursor.execute('''INSERT INTO MOVIMENTACAO
+                              (ID_PAGADOR, ID_RECEBEDOR, VALOR, DATA_MOVIMENTACAO)
+                              VALUES (?, ?, ?, ?) RETURNING ID_MOVIMENTACAO''',
+                           (id_pagador, id_recebedor, valor, data_atual()))
+            id_movimentacao = cursor.fetchone()[0]
+            con.commit()
+            return jsonify({'mensagem': 'Pix realizado com sucesso',
+                            'id_movimentacao': id_movimentacao,
+                            'valor': float(valor), 'id_recebedor': id_recebedor}), 201
+        except fdb.TransactionConflict:
+            con.rollback()
+            return jsonify({'mensagem': 'Operacao concorrente; confira o extrato'}), 409
+        except Exception:
+            con.rollback()
+            app.logger.exception('Falha Pix API')
+            return jsonify({'mensagem': 'Nao foi possivel concluir o Pix'}), 500
+        finally:
+            if cursor:
+                cursor.close()
+
+    return executar_operacao_idempotente(autorizacao, 'pix', realizar)
+
+
+# Paga um boleto ja registrado no DDA DA CONTA autenticada.
+# WhatsApp exige nivel 2; nao aceita trocar conta pagadora no corpo do JSON.
+@app.route('/api/v1/pagamentos/dda/<int:id_cobranca>', methods=['POST'])
+def api_pagar_dda(id_cobranca):
+    autorizacao, erro = autenticar_requisicao(permitir_whatsapp=True, nivel_whatsapp=2)
+    if erro:
+        return erro
+    restricao_externa = autorizar_pagamento_externo(autorizacao)
+    if restricao_externa:
+        return restricao_externa
+    dados = request.get_json(silent=True)
+    if not isinstance(dados, dict) or dados:
+        return jsonify({'mensagem': 'Envie um objeto JSON vazio; valor e pagador sao definidos pelo boleto'}), 400
+    id_pagador = autorizacao['id_conta']
+
+    def realizar():
+        cursor = None
+        try:
+            cursor = con.cursor()
+            cursor.execute('''SELECT ID_RECEBEDOR, VALOR, STATUS FROM COBRANCA
+                              WHERE ID_COBRANCA = ? AND ID_PAGADOR = ? AND TIPO_COBRANCA = 0''',
+                           (id_cobranca, id_pagador))
+            boleto = cursor.fetchone()
+            if not boleto:
+                con.rollback()
+                return jsonify({'mensagem': 'Boleto nao encontrado no DDA desta conta'}), 404
+            id_recebedor, valor, status = int(boleto[0]), boleto[1], boleto[2]
+            if id_pagador == id_recebedor:
+                con.rollback()
+                return jsonify({'mensagem': 'Nao e possivel pagar boleto da propria conta'}), 400
+            if status != 0:
+                con.rollback()
+                return jsonify({'mensagem': 'Boleto ja pago ou indisponivel'}), 409
+            valor = Decimal(str(valor or 0))
+            if valor <= 0:
+                con.rollback()
+                return jsonify({'mensagem': 'Valor do boleto invalido'}), 400
+            restricao = limitar_pagamento_whatsapp(autorizacao, valor)
+            if restricao:
+                con.rollback()
+                return restricao
+
+            for id_conta in sorted({id_pagador, id_recebedor}):
+                cursor.execute('SELECT ID_CONTA FROM CONTA WHERE ID_CONTA = ? WITH LOCK', (id_conta,))
+                if not cursor.fetchone():
+                    con.rollback()
+                    return jsonify({'mensagem': 'Conta indisponivel'}), 404
+
+            cursor.execute('''SELECT VALOR, STATUS FROM COBRANCA
+                              WHERE ID_COBRANCA = ? AND ID_PAGADOR = ? AND TIPO_COBRANCA = 0 WITH LOCK''',
+                           (id_cobranca, id_pagador))
+            confirmado = cursor.fetchone()
+            if not confirmado or confirmado[1] != 0:
+                con.rollback()
+                return jsonify({'mensagem': 'Boleto ja pago ou indisponivel'}), 409
+            valor = Decimal(str(confirmado[0] or 0))
+            # O valor pode ter mudado antes do bloqueio; conferir o teto de novo.
+            restricao = limitar_pagamento_whatsapp(autorizacao, valor)
+            if restricao:
+                con.rollback()
+                return restricao
+            if valor <= 0 or not pode_debitar_saldo(id_pagador, valor):
+                con.rollback()
+                return jsonify({'mensagem': 'Saldo insuficiente ou valor invalido'}), 400
+
+            cursor.execute('''UPDATE COBRANCA SET STATUS = 1 WHERE ID_COBRANCA = ?
+                              AND ID_PAGADOR = ? AND STATUS = 0 AND TIPO_COBRANCA = 0
+                              RETURNING ID_COBRANCA''', (id_cobranca, id_pagador))
+            if not cursor.fetchone():
+                con.rollback()
+                return jsonify({'mensagem': 'Boleto ja processado'}), 409
+            cursor.execute('''INSERT INTO MOVIMENTACAO
+                              (ID_PAGADOR, ID_RECEBEDOR, VALOR, DATA_MOVIMENTACAO, ID_COBRANCA)
+                              VALUES (?, ?, ?, ?, ?) RETURNING ID_MOVIMENTACAO''',
+                           (id_pagador, id_recebedor, valor, data_atual(), id_cobranca))
+            id_movimentacao = cursor.fetchone()[0]
+            con.commit()
+            return jsonify({'mensagem': 'Boleto pago com sucesso', 'id_cobranca': id_cobranca,
+                            'id_movimentacao': id_movimentacao, 'valor': float(valor)}), 200
+        except fdb.TransactionConflict:
+            con.rollback()
+            return jsonify({'mensagem': 'Pagamento concorrente; confira o DDA'}), 409
+        except Exception:
+            con.rollback()
+            app.logger.exception('Falha pagamento DDA API')
+            return jsonify({'mensagem': 'Nao foi possivel concluir o pagamento'}), 500
+        finally:
+            if cursor:
+                cursor.close()
+
+    return executar_operacao_idempotente(autorizacao, 'dda:' + str(id_cobranca), realizar)
+
+
+def _documento_eh_valido(documento):
+    """Valida CPF e CNPJ (inclusive CNPJ alfanumerico) pelo digito verificador."""
+    import re
+    valor = re.sub(r'[^A-Za-z0-9]', '', str(documento or '')).upper()
+    if len(valor) == 11 and valor.isdigit():
+        if len(set(valor)) == 1:
+            return None
+        for tamanho in (9, 10):
+            soma = sum(int(valor[i]) * (tamanho + 1 - i) for i in range(tamanho))
+            dv = (soma * 10) % 11
+            if (0 if dv == 10 else dv) != int(valor[tamanho]):
+                return None
+        return 'cpf', valor
+    if len(valor) == 14 and re.fullmatch(r'[A-Z0-9]{12}[0-9]{2}', valor):
+        if len(set(valor)) == 1:
+            return None
+        pesos1 = [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]
+        pesos2 = [6] + pesos1
+        def digito(parte, pesos):
+            resto = sum((ord(c) - 48) * p for c, p in zip(parte, pesos)) % 11
+            return 0 if resto < 2 else 11 - resto
+        if digito(valor[:12], pesos1) != int(valor[12]):
+            return None
+        if digito(valor[:13], pesos2) != int(valor[13]):
+            return None
+        return 'cnpj', valor
+    return None
+
+
+def _limitar_verificacoes_documento(id_conta):
+    """Limite 5/minuto e 50/dia por conta, compartilhado entre workers Redis."""
+    import os
+    import redis
+    from datetime import datetime, timezone
+    endereco = os.getenv('ARKHE_WHATSAPP_REDIS_URL') or os.getenv('REDIS_URL')
+    if not endereco:
+        return False
+    try:
+        agora = datetime.now(timezone.utc)
+        minuto = agora.strftime('%Y%m%d%H%M')
+        dia = agora.strftime('%Y%m%d')
+        cliente = redis.Redis.from_url(endereco, decode_responses=True,
+                                     socket_timeout=3, socket_connect_timeout=3)
+        # Lua atomica: limites validos globalmente em um mesmo Redis.
+        script = """
+        local m = tonumber(redis.call('GET', KEYS[1]) or '0')
+        local d = tonumber(redis.call('GET', KEYS[2]) or '0')
+        if m >= 5 or d >= 50 then return 0 end
+        m = redis.call('INCR', KEYS[1])
+        if m == 1 then redis.call('EXPIRE', KEYS[1], 120) end
+        d = redis.call('INCR', KEYS[2])
+        if d == 1 then redis.call('EXPIRE', KEYS[2], 172800) end
+        return 1
+        """
+        return bool(cliente.eval(script, 2, 'arkhe:api:cpf:min:' + str(id_conta) + ':' + minuto,
+                                 'arkhe:api:cpf:dia:' + str(id_conta) + ':' + dia))
+    except Exception:
+        app.logger.exception('Redis indisponivel para rate limit de documentos')
+        return False
+
+
+# Confere apenas se CPF/CNPJ possui conta no Arkhé, sem revelar dados da pessoa.
+# Disponivel exclusivamente para integracoes externas, com limites por conta.
+@app.route('/api/v1/contas/verificar-documento', methods=['POST'])
+def api_verificar_documento():
+    integracao, erro = autenticar_integracao()
+    if erro:
+        return erro
+    dados = request.get_json(silent=True)
+    if not isinstance(dados, dict):
+        return jsonify({'mensagem': 'Envie um objeto JSON'}), 400
+    documento = _documento_eh_valido(dados.get('documento'))
+    if not documento:
+        return jsonify({'mensagem': 'CPF ou CNPJ invalido'}), 400
+    if not _limitar_verificacoes_documento(integracao['id_conta']):
+        return jsonify({'mensagem': 'Limite de verificacoes atingido ou indisponivel'}), 429
+    tipo, valor = documento
+    cursor = None
+    try:
+        cursor = con.cursor()
+        if tipo == 'cpf':
+            cursor.execute('''SELECT FIRST 1 1 FROM CONTA C
+                              JOIN USUARIO U ON U.ID_USUARIO = C.ID_USUARIO
+                              WHERE C.TIPO_CONTA = 0
+                              AND REPLACE(REPLACE(U.CPF, '.', ''), '-', '') = ?''', (valor,))
+        else:
+            cursor.execute('''SELECT FIRST 1 1 FROM CONTA
+                              WHERE TIPO_CONTA = 1 AND
+                              REPLACE(REPLACE(REPLACE(UPPER(CNPJ), '.', ''), '-', ''), '/', '') = ?''',
+                           (valor,))
+        return jsonify({'possui_conta': bool(cursor.fetchone())}), 200
+    except Exception:
+        app.logger.exception('Falha verificacao documento Arkhé')
+        return jsonify({'mensagem': 'Verificacao indisponivel'}), 500
+    finally:
+        if cursor:
+            cursor.close()

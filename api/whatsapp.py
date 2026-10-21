@@ -81,13 +81,27 @@ def _servico_valido():
     return bool(segredo and recebido and secrets.compare_digest(segredo, recebido))
 
 
+# Lista as contas ativadas e permitidas para o remetente autenticado pelo n8n.
 @app.route("/internal/whatsapp/contexto", methods=["POST"])
 def whatsapp_contexto():
     if not _servico_valido():
         return jsonify({"mensagem": "Servico nao autorizado"}), 401
-    # Nao identificar cliente apenas por telefone ou por JID.
-    # A vinculacao autenticada sera implementada separadamente.
-    return jsonify({"vinculado": False, "contas": [], "mensagem": "Vinculacao de identidade ainda nao habilitada"})
+    # O identificador vem exclusivamente do n8n autenticado.
+    # A identidade e as contas sao validadas de novo no Firebird.
+    dados = request.get_json(silent=True) or {}
+    chat_id = str(dados.get("chatId", ""))
+    try:
+        identidade, contas = _listar_contas_autorizadas(chat_id)
+    except Exception:
+        app.logger.exception("Falha ao consultar contexto WhatsApp")
+        return jsonify({"mensagem": "Contexto indisponivel"}), 503
+    if not identidade or not contas:
+        return jsonify({"vinculado": False, "contas": [], "mensagem": "Ative seu WhatsApp pelo site Arkhé"})
+    ativa = next((c for c in contas if c["id_conta"] == identidade["id_conta"]), None)
+    return jsonify({"vinculado": True, "id_usuario": identidade["id_usuario"],
+                    "conta_selecionada": ativa["id_conta"] if ativa else None,
+                    "nivel": ativa["nivel"] if ativa else None,
+                    "selecao_necessaria": ativa is None, "contas": contas})
 
 
 @app.route("/internal/whatsapp/iniciar", methods=["POST"])
@@ -95,9 +109,48 @@ def whatsapp_legado_iniciar():
     return jsonify({"mensagem": "Rota legada desativada ate vinculacao segura"}), 403
 
 
+# Seleciona uma conta previamente ativada pelo titular; nao cria autorizacoes.
 @app.route("/internal/whatsapp/selecionar-conta", methods=["POST"])
-def whatsapp_legado_selecionar():
-    return jsonify({"mensagem": "Rota legada desativada ate vinculacao segura"}), 403
+def whatsapp_selecionar_conta():
+    if not _servico_valido():
+        return jsonify({"mensagem": "Servico nao autorizado"}), 401
+    dados = request.get_json(silent=True) or {}
+    chat_id, id_conta = str(dados.get("chatId", "")), dados.get("id_conta")
+    if type(id_conta) is not int or id_conta <= 0:
+        return jsonify({"mensagem": "Informe um id_conta valido"}), 400
+    try:
+        identidade, contas = _listar_contas_autorizadas(chat_id)
+        escolhida = next((c for c in contas if c["id_conta"] == id_conta), None)
+        if not identidade or not escolhida:
+            return jsonify({"mensagem": "Conta nao vinculada ou nao autorizada"}), 403
+        chave, redis_cli = _chave_remetente(chat_id), _redis_wa()
+        # WATCH evita sobrescrever uma ativacao simultanea de outra conta.
+        with redis_cli.pipeline() as pipe:
+            for tentativa in range(3):
+                try:
+                    pipe.watch(chave)
+                    texto = pipe.get(chave)
+                    atual = json.loads(texto) if texto else {}
+                    if (atual.get("chat_id") != chat_id or
+                            int(atual.get("id_usuario", -1)) != identidade["id_usuario"] or
+                            id_conta not in _ids_vinculados(atual)):
+                        return jsonify({"mensagem": "Vinculo alterado. Consulte as contas novamente"}), 409
+                    prazo = pipe.ttl(chave)
+                    if prazo <= 0:
+                        return jsonify({"mensagem": "Vinculo expirado. Ative novamente"}), 403
+                    atual["id_conta"] = id_conta
+                    pipe.multi()
+                    pipe.set(chave, json.dumps(atual), ex=prazo)
+                    pipe.execute()
+                    break
+                except redis.WatchError:
+                    continue
+            else:
+                return jsonify({"mensagem": "Operacao concorrente. Tente novamente"}), 409
+        return jsonify({"selecionada": True, "id_conta": id_conta, "nivel": escolhida["nivel"]})
+    except Exception:
+        app.logger.exception("Falha ao selecionar conta WhatsApp")
+        return jsonify({"mensagem": "Nao foi possivel selecionar a conta"}), 503
 
 
 def _normalizar_telefone(valor):
@@ -150,7 +203,12 @@ def whatsapp_validar_convite():
             str(dados.get("codigo", "")), max_age=600)
     except (BadSignature, SignatureExpired):
         return jsonify({"vinculado": False, "mensagem": "Convite invalido ou expirado. Gere outro pelo site"}), 403
-    if remetente.endswith("@c.us") and (not numero or numero != token.get("telefone")):
+    # LID nao representa diretamente o telefone: resolvemos via WAHA confiavel.
+    try:
+        numero = _resolver_lid_pelo_waha(remetente)
+    except Exception:
+        numero = None
+    if not numero or numero != token.get("telefone"):
         return jsonify({"vinculado": False, "mensagem": "Use o mesmo numero cadastrado no Arkhé"}), 403
     cursor = con.cursor()
     try:
@@ -163,7 +221,7 @@ def whatsapp_validar_convite():
         telefone = cursor.fetchone()
     finally:
         cursor.close()
-    if not registro or not registro[0] or not telefone or (remetente.endswith("@c.us") and _normalizar_telefone(telefone[0]) != numero):
+    if not registro or not registro[0] or not telefone or _normalizar_telefone(telefone[0]) != numero:
         return jsonify({"vinculado": False, "mensagem": "Autorizacao desativada ou telefone alterado"}), 403
     return _salvar_vinculo_whatsapp(remetente, token, registro)
 
@@ -181,50 +239,136 @@ def _chave_remetente(chat_id):
     return "arkhe:wa:binding:v1:" + hashlib.sha256(chat_id.encode("utf-8")).hexdigest()
 
 
-def _salvar_vinculo_whatsapp(remetente, token, registro):
-    """O convite do site autoriza exclusivamente a conta nele especificada."""
+def _ids_vinculados(identidade):
+    """Le vínculos antigos (uma conta) e novos (varias contas)."""
     try:
-        redis_cli = _redis_wa()
-        # Distinguir vinculos de contas PF e PJ. O ultimo pareamento seleciona a conta.
-        # Prova de posse do numero ocorre para @c.us; @lid usa o segredo temporario
-        # de uso unico emitido no site autenticado.
-        codigo_hash = hashlib.sha256(str(request.get_json(silent=True).get("codigo", "")).encode("utf-8")).hexdigest()
-        if not redis_cli.set("arkhe:wa:convite-usado:" + codigo_hash, "1", nx=True, ex=600):
-            return jsonify({"vinculado": False, "mensagem": "Convite ja utilizado. Gere outro no site"}), 409
-        redis_cli.set(_chave_remetente(remetente), json.dumps({
-            "id_usuario": int(token["usuario"]), "id_conta": int(token["conta"]),
-            "telefone": str(token["telefone"]), "chat_id": remetente
-        }), ex=60*60*24*30)
-    except Exception:
-        app.logger.exception("Falha Redis vinculo WhatsApp")
-        return jsonify({"vinculado": False, "mensagem": "Nao foi possivel vincular o WhatsApp. Verifique Redis"}), 503
-    return jsonify({"convite_validado": True, "vinculado": True, "nivel": int(registro[1]),
-                    "mensagem": "WhatsApp vinculado com a conta Arkhé. Saldo e extrato disponiveis."})
+        ids = identidade.get("contas_vinculadas") or [identidade["id_conta"]]
+        return sorted({int(valor) for valor in ids if int(valor) > 0})
+    except (KeyError, TypeError, ValueError):
+        return []
 
 
-def _conta_vinculada(chat_id):
-    if not ((chat_id.endswith("@c.us") or chat_id.endswith("@lid")) and chat_id.split("@")[0].isdigit()):
+def _ler_vinculo(chat_id):
+    """Identifica a pessoa somente por um JID previamente vinculado no Redis."""
+    if not _jid_valido(chat_id):
         return None
     valor = _redis_wa().get(_chave_remetente(chat_id))
     if not valor:
         return None
-    identidade = json.loads(valor)
-    if identidade.get("chat_id") != chat_id:
+    try:
+        identidade = json.loads(valor)
+        if (not isinstance(identidade, dict) or identidade.get("chat_id") != chat_id or
+                not _ids_vinculados(identidade)):
+            return None
+        identidade["id_usuario"] = int(identidade["id_usuario"])
+        identidade["id_conta"] = int(identidade["id_conta"])
+        return identidade
+    except (KeyError, ValueError, TypeError):
         return None
+
+
+def _guardar_vinculo(chat_id, id_usuario, id_conta, telefone, redis_cli=None):
+    """Acrescenta uma conta confirmada sem apagar as outras contas do usuario."""
+    redis_cli = redis_cli or _redis_wa()
+    chave = _chave_remetente(chat_id)
+    with redis_cli.pipeline() as pipe:
+        for tentativa in range(3):
+            try:
+                pipe.watch(chave)
+                texto = pipe.get(chave)
+                anterior = json.loads(texto) if texto else None
+                if anterior:
+                    # Um WhatsApp já associado a outra identidade nao pode ser assumido
+                    # por um novo usuario apenas ativando uma conta diferente.
+                    if (anterior.get("chat_id") != chat_id or
+                            int(anterior.get("id_usuario", -1)) != int(id_usuario) or
+                            anterior.get("telefone") != telefone):
+                        raise ValueError("WhatsApp associado a outra identidade")
+                contas = _ids_vinculados(anterior) if anterior else []
+                contas = sorted(set(contas + [int(id_conta)]))
+                vinculo = {"id_usuario": int(id_usuario), "id_conta": int(id_conta),
+                           "contas_vinculadas": contas, "telefone": telefone, "chat_id": chat_id}
+                pipe.multi()
+                pipe.set(chave, json.dumps(vinculo), ex=VINCULO_TTL)
+                pipe.execute()
+                return vinculo
+            except redis.WatchError:
+                continue
+    raise RuntimeError("Concorrencia ao salvar vinculo WhatsApp")
+
+
+def _listar_contas_autorizadas(chat_id):
+    """Confere no Firebird quais contas ativadas continuam liberadas para este usuario."""
+    identidade = _ler_vinculo(chat_id)
+    if not identidade:
+        return None, []
+    ids = _ids_vinculados(identidade)
+    placeholders = ", ".join("?" for _ in ids)
     cursor = con.cursor()
     try:
-        cursor.execute("""SELECT C.WHATSAPP_AUTORIZADO, C.WHATSAPP_NIVEL, C.TIPO_CONTA, U.TELEFONE
-                          FROM CONTA C JOIN USUARIO U ON U.ID_USUARIO = C.ID_USUARIO
-                          WHERE C.ID_CONTA = ? AND C.ID_USUARIO = ?""",
-                       (identidade["id_conta"], identidade["id_usuario"]))
-        conta = cursor.fetchone()
+        cursor.execute(
+            """SELECT C.ID_CONTA, C.WHATSAPP_AUTORIZADO, C.WHATSAPP_NIVEL,
+                      C.TIPO_CONTA, U.TELEFONE, C.NOME_FANTASIA,
+                      C.RAZAO_SOCIAL, C.NUMERO_CONTA
+               FROM CONTA C JOIN USUARIO U ON U.ID_USUARIO = C.ID_USUARIO
+               WHERE C.ID_USUARIO = ? AND C.ID_CONTA IN (""" + placeholders + ")",
+            (identidade["id_usuario"], *ids))
+        registros = cursor.fetchall()
     finally:
         cursor.close()
-    if not conta or int(conta[0]) != 1 or _normalizar_telefone(conta[3]) != identidade["telefone"]:
-        return None
-    identidade["nivel"] = min(int(conta[1]), 2) if int(conta[2]) == 0 else int(conta[1])
-    return identidade
+    contas = []
+    for conta in registros:
+        if (_normalizar_telefone(conta[4]) != identidade["telefone"] or
+                int(conta[1] or 0) != 1):
+            continue
+        tipo, nivel = int(conta[3]), int(conta[2] or 0)
+        # Nem mesmo dados inconsistentes no banco devem criar um nivel acima de 3.
+        if tipo not in (0, 1):
+            continue
+        nivel = min(nivel, 2 if tipo == 0 else 3)
+        if nivel >= 1:
+            # Um apelido ajuda o MAURO a diferenciar contas sem expor CPF ou CNPJ.
+            descricao = "Conta pessoal" if tipo == 0 else str(conta[5] or conta[6] or "Conta empresarial")
+            contas.append({"id_conta": int(conta[0]), "tipo_conta": tipo, "nivel": nivel,
+                           "descricao": descricao, "conta_final": str(conta[7] or "")[-4:]})
+    contas.sort(key=lambda item: item["id_conta"])
+    return identidade, contas
 
+
+def _conta_vinculada(chat_id):
+    """Devolve somente a conta ativa e ainda autorizada; nunca escolhe outra sozinho."""
+    identidade, contas = _listar_contas_autorizadas(chat_id)
+    if not identidade:
+        return None
+    ativa = next((c for c in contas if c["id_conta"] == identidade["id_conta"]), None)
+    return {**identidade, "nivel": ativa["nivel"]} if ativa else None
+
+
+def verificar_nivel_whatsapp(chat_id, nivel_necessario=1):
+    """Valida vínculo, conta selecionada e nível atual antes da operacao bancaria."""
+    conta = _conta_vinculada(chat_id)
+    if not conta:
+        return None, "WhatsApp sem conta selecionada ou autorizada"
+    if conta["nivel"] < nivel_necessario:
+        return None, "Nivel de WhatsApp insuficiente para esta operacao"
+    return conta, None
+
+
+def _salvar_vinculo_whatsapp(remetente, token, registro):
+    """Confirma o convite legado e acrescenta a conta sem substituir as anteriores."""
+    try:
+        redis_cli = _redis_wa()
+        codigo_hash = hashlib.sha256(str(request.get_json(silent=True).get("codigo", "")).encode("utf-8")).hexdigest()
+        if not redis_cli.set("arkhe:wa:convite-usado:" + codigo_hash, "1", nx=True, ex=600):
+            return jsonify({"vinculado": False, "mensagem": "Convite ja utilizado. Gere outro no site"}), 409
+        _guardar_vinculo(remetente, token["usuario"], token["conta"], token["telefone"], redis_cli)
+    except ValueError:
+        return jsonify({"vinculado": False, "mensagem": "Este WhatsApp ja pertence a outro usuario. Revogue o vinculo anterior"}), 403
+    except Exception:
+        app.logger.exception("Falha Redis vinculo WhatsApp")
+        return jsonify({"vinculado": False, "mensagem": "Nao foi possivel vincular o WhatsApp. Verifique Redis"}), 503
+    return jsonify({"convite_validado": True, "vinculado": True, "nivel": int(registro[1]),
+                    "mensagem": "WhatsApp vinculado com a conta Arkhé."})
 
 PENDENCIA_TTL = 600
 
@@ -290,6 +434,7 @@ def _descobrir_chat_destino(telefone):
     return "55" + telefone + "@c.us"
 
 
+# Inicia pelo site autenticado a ativacao de UMA conta, enviando mensagem WAHA.
 @app.route("/whatsapp/ativar", methods=["POST"])
 def whatsapp_ativar_sem_codigo():
     conta, erro = _conta_configuravel()
@@ -349,6 +494,7 @@ def whatsapp_ativar_sem_codigo():
                     "mensagem": "Mensagem enviada! Responda ATIVAR no seu WhatsApp em até 10 minutos."})
 
 
+# Confirma a resposta ATIVAR e inclui a conta no vinculo Redis do remetente.
 @app.route("/internal/whatsapp/confirmar", methods=["POST"])
 def whatsapp_confirmar_sem_codigo():
     if not _servico_valido():
@@ -359,10 +505,7 @@ def whatsapp_confirmar_sem_codigo():
         return jsonify({"confirmado": False, "mensagem": "Não foi possível identificar a conversa do WhatsApp."}), 403
 
     try:
-        vinculo_existente = _conta_vinculada(chat_id)
-        if vinculo_existente:
-            return jsonify({"confirmado": True, "ja_ativo": True,
-                            "mensagem": "Seu WhatsApp já está vinculado ao Arkhé! Pode pedir seu saldo ou extrato."})
+        # Mesmo com um vinculo existente, uma nova ativacao deve adicionar a conta.
         redis_cli = _redis_wa()
         pendencia_chat = redis_cli.get(_chave_pendente_chat(chat_id))
         pendencia = json.loads(pendencia_chat) if pendencia_chat else None
@@ -374,6 +517,9 @@ def whatsapp_confirmar_sem_codigo():
         chave = _chave_pendente(telefone)
         valor = redis_cli.get(chave)
         if not valor:
+            if _conta_vinculada(chat_id):
+                return jsonify({"confirmado": True, "ja_ativo": True,
+                                "mensagem": "Seu WhatsApp ja esta vinculado ao Arkhé."})
             return jsonify({"confirmado": False, "mensagem": "Sua ativação expirou ou já foi concluída. Se necessário, solicite outra pelo site do Arkhé."}), 404
         pendencia_atual = json.loads(valor)
         # Caso tenha sido iniciado outro convite, nunca aceitar um vínculo antigo.
@@ -392,15 +538,13 @@ def whatsapp_confirmar_sem_codigo():
         if not conta or not conta[0] or _normalizar_telefone(conta[2]) != telefone:
             return jsonify({"confirmado": False, "mensagem": "A autorização foi revogada ou o telefone cadastrado mudou."}), 403
 
-        vinculo = {"id_usuario": pendencia_atual["id_usuario"],
-                   "id_conta": pendencia_atual["id_conta"], "telefone": telefone,
-                   "chat_id": chat_id}
-        with redis_cli.pipeline(transaction=True) as pipe:
-            pipe.set(_chave_remetente(chat_id), json.dumps(vinculo), ex=VINCULO_TTL)
-            pipe.delete(chave, _chave_pendente_chat(chat_id))
-            pipe.execute()
+        _guardar_vinculo(chat_id, pendencia_atual["id_usuario"],
+                         pendencia_atual["id_conta"], telefone, redis_cli)
+        redis_cli.delete(chave, _chave_pendente_chat(chat_id))
         return jsonify({"confirmado": True, "nivel": int(conta[1]),
-                        "mensagem": "WhatsApp ativado com sucesso! Sua conta Arkhé foi vinculada. Você já pode consultar saldo e extrato."})
+                        "mensagem": "WhatsApp ativado com sucesso! Esta conta foi vinculada."})
+    except ValueError:
+        return jsonify({"confirmado": False, "mensagem": "WhatsApp vinculado a outra identidade. Revogue a anterior."}), 403
     except Exception:
         app.logger.exception("Falha ao confirmar ativação WhatsApp")
         return jsonify({"confirmado": False, "mensagem": "Não foi possível concluir a ativação agora. Tente novamente em instantes."}), 503
