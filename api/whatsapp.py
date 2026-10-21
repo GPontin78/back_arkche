@@ -478,9 +478,14 @@ def whatsapp_ativar_sem_codigo():
         resposta = requests.post(url + "/api/sendText",
             headers={**headers, "Content-Type": "application/json"},
             json={"session": "arkhe", "chatId": chat_id,
-                  "text": ("Olá! Aqui é o assistente do Banco Arkhé. Você solicitou a ativação do WhatsApp pelo nosso site. "
-                           "Para confirmar este número, responda ATIVAR. A solicitação expira em 10 minutos. "
-                           "Se não foi você, ignore esta mensagem.")}, timeout=12)
+                  "text": ("*ARKHÉ*\n"
+                           "_Conexão do WhatsApp_\n\n"
+                           "Recebemos sua solicitação para conectar este número à sua conta Arkhé.\n\n"
+                           "Para confirmar o acesso, responda com:\n\n"
+                           "*ATIVAR*\n\n"
+                           "Essa confirmação fica disponível por *10 minutos*.\n"
+                           "Não reconhece a solicitação? É só ignorar esta mensagem.\n\n"
+                           "— *MAURO*\n_Assistente virtual do Arkhé_")}, timeout=12)
         resposta.raise_for_status()
     except Exception:
         app.logger.exception("Falha no envio da mensagem de ativação pelo WAHA")
