@@ -234,5 +234,50 @@ class WhatsAppVinculosTests(unittest.TestCase):
                 self.assertEqual(contexto["id_conta"], 123)
 
 
+    def test_pagamento_repetido_nao_executa_duas_vezes(self):
+        self.vincular(10)
+        with self.app.test_request_context("/api/v1/pagamentos/pix", method="POST",
+                                           json={"valor": "20.00", "chave_pix": "teste"},
+                                           headers={"X-Idempotency-Key": "teste-pagamento-001"}):
+            with patch("redis.Redis.from_url", return_value=self.redis), patch.dict(
+                    os.environ, {"REDIS_URL": "redis://localhost:6379/0"}):
+                contador = [0]
+
+                def executar():
+                    contador[0] += 1
+                    return {"id_movimentacao": 99}, 201
+
+                contexto = {"id_conta": 10, "origem": "whatsapp"}
+                primeira = self.common.executar_operacao_idempotente(contexto, "pix", executar)
+                segunda = self.common.executar_operacao_idempotente(contexto, "pix", executar)
+                self.assertEqual((primeira.status_code, segunda.status_code), (201, 201))
+                self.assertEqual(contador[0], 1)
+
+    def test_mesma_chave_outros_dados_rejeita_repeticao(self):
+        with patch("redis.Redis.from_url", return_value=self.redis), patch.dict(
+                os.environ, {"REDIS_URL": "redis://localhost:6379/0"}):
+            contexto = {"id_conta": 10, "origem": "whatsapp"}
+            headers = {"X-Idempotency-Key": "teste-pagamento-002"}
+            with self.app.test_request_context("/api/v1/pagamentos/pix", method="POST",
+                                               json={"valor": 10}, headers=headers):
+                resp = self.common.executar_operacao_idempotente(
+                    contexto, "pix", lambda: ({"resultado": "feito"}, 201))
+                self.assertEqual(resp.status_code, 201)
+            with self.app.test_request_context("/api/v1/pagamentos/pix", method="POST",
+                                               json={"valor": 20}, headers=headers):
+                resp = self.common.executar_operacao_idempotente(
+                    contexto, "pix", lambda: self.fail("Nao deve executar"))
+                self.assertEqual(resp[1], 409)
+
+    def test_integracao_antiga_nao_recebe_permissao_de_saida_automaticamente(self):
+        with self.app.test_request_context("/api/v1/pagamentos/pix",
+                                           headers={"X-Client-ID": "cliente-antigo"}):
+            with patch.dict(os.environ, {"ARKHE_API_PAGAMENTOS_CLIENT_IDS": ""}):
+                resposta = self.common.autorizar_pagamento_externo({"id_conta": 10})
+                self.assertEqual(resposta[1], 403)
+            with patch.dict(os.environ, {"ARKHE_API_PAGAMENTOS_CLIENT_IDS": "cliente-antigo"}):
+                self.assertIsNone(self.common.autorizar_pagamento_externo({"id_conta": 10}))
+
+
 if __name__ == "__main__":
     unittest.main()
