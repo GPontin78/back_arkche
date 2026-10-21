@@ -167,5 +167,24 @@ class PagamentosApiTests(unittest.TestCase):
         self.assertEqual(self.banco.movimentos, [])
 
 
+    def test_documento_pf_valido_e_invalido(self):
+        self.assertEqual(self.post._documento_eh_valido("529.982.247-25"),
+                         ("cpf", "52998224725"))
+        self.assertIsNone(self.post._documento_eh_valido("111.111.111-11"))
+        self.assertIsNone(self.post._documento_eh_valido("529.982.247-26"))
+
+    def test_documento_pj_valido_e_invalido(self):
+        self.assertEqual(self.post._documento_eh_valido("11.222.333/0001-81"),
+                         ("cnpj", "11222333000181"))
+        self.assertIsNone(self.post._documento_eh_valido("11.222.333/0001-82"))
+
+    def test_verificar_documento_sem_credenciais_e_bloqueado(self):
+        with patch.object(self.post, "autenticar_integracao",
+                          return_value=(None, ({"mensagem": "Nao autenticado"}, 401))):
+            resposta = self.client.post("/api/v1/contas/verificar-documento",
+                                       json={"documento": "52998224725"})
+        self.assertEqual(resposta.status_code, 401)
+
+
 if __name__ == "__main__":
     unittest.main()
