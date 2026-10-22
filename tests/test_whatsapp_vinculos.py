@@ -128,6 +128,7 @@ class WhatsAppVinculosTests(unittest.TestCase):
         fake_funcao.descobre_id_usuario = lambda: None
         fake_funcao.usuario_pode_acessar_conta = lambda *_: False
         fake_funcao.verificar_pin = lambda *_: True
+        fake_funcao.calcular_saldo = lambda id_conta: {10: 123.45, 20: -789.01}.get(id_conta)
 
         pkg = types.ModuleType("api_whatsapp_testes")
         pkg.__path__ = [str(ROOT / "api")]
@@ -233,6 +234,40 @@ class WhatsAppVinculosTests(unittest.TestCase):
                 legado.assert_called_once()
                 self.assertEqual(contexto["id_conta"], 123)
 
+
+    def test_saldo_conta_consulta_id_autorizado_sem_usar_selecao_mutavel(self):
+        self.vincular(10)
+        self.vincular(20)  # A conta ativa e 20, mas a consulta e explicitamente da 10.
+        resposta = self.app.test_client().post(
+            "/internal/whatsapp/saldo-conta",
+            json={"chatId": CHAT, "id_conta": 10},
+            headers={"X-Arkhe-N8N-Key": "segredo-exclusivo-de-teste"})
+        self.assertEqual(resposta.status_code, 200)
+        self.assertEqual(resposta.json["id_conta"], 10)
+        self.assertEqual(resposta.json["nivel"], 2)
+        self.assertEqual(resposta.json["saldo"], 123.45)
+        self.assertEqual(self.wa._conta_vinculada(CHAT)["id_conta"], 20)
+
+    def test_saldo_conta_bloqueia_credencial_ausente_e_outra_titularidade(self):
+        self.vincular(10)
+        cliente = self.app.test_client()
+        dados = {"chatId": CHAT, "id_conta": 30}
+        self.assertEqual(cliente.post("/internal/whatsapp/saldo-conta", json=dados).status_code, 401)
+        resposta = cliente.post("/internal/whatsapp/saldo-conta", json=dados,
+                               headers={"X-Arkhe-N8N-Key": "segredo-exclusivo-de-teste"})
+        self.assertEqual(resposta.status_code, 403)
+
+    def test_saldo_conta_revogacao_e_payload_invalido(self):
+        self.vincular(10)
+        cliente = self.app.test_client()
+        header = {"X-Arkhe-N8N-Key": "segredo-exclusivo-de-teste"}
+        self.assertEqual(cliente.post("/internal/whatsapp/saldo-conta",
+                                     json={"chatId": CHAT, "id_conta": "10"},
+                                     headers=header).status_code, 400)
+        self.banco.contas[10] = (7, 0, 2, 0, FONE)
+        resposta = cliente.post("/internal/whatsapp/saldo-conta",
+                               json={"chatId": CHAT, "id_conta": 10}, headers=header)
+        self.assertEqual(resposta.status_code, 403)
 
     def test_pagamento_repetido_nao_executa_duas_vezes(self):
         self.vincular(10)
