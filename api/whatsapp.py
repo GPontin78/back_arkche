@@ -12,7 +12,7 @@ from flask import jsonify, request
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 from banco import con
-from funcao import descobre_id_conta, descobre_id_usuario, usuario_pode_acessar_conta
+from funcao import calcular_saldo, descobre_id_conta, descobre_id_usuario, usuario_pode_acessar_conta
 from main import app
 
 
@@ -151,6 +151,39 @@ def whatsapp_selecionar_conta():
     except Exception:
         app.logger.exception("Falha ao selecionar conta WhatsApp")
         return jsonify({"mensagem": "Nao foi possivel selecionar a conta"}), 503
+
+
+
+
+# Consulta o saldo de uma conta identificada explicitamente e ja autorizada.
+# Evita que uma selecao PF/PJ concorrente atribua saldo a conta errada.
+@app.route("/internal/whatsapp/saldo-conta", methods=["POST"])
+def whatsapp_saldo_conta():
+    """Devolve apenas o saldo da conta autorizada ao chat autenticado."""
+    if not _servico_valido():
+        return jsonify({"mensagem": "Servico nao autorizado"}), 401
+    dados = request.get_json(silent=True)
+    if not isinstance(dados, dict):
+        return jsonify({"mensagem": "Envie um objeto JSON valido"}), 400
+    chat_id, id_conta = str(dados.get("chatId", "")), dados.get("id_conta")
+    if not _jid_valido(chat_id):
+        return jsonify({"mensagem": "Identificador WhatsApp invalido"}), 400
+    if type(id_conta) is not int or id_conta <= 0:
+        return jsonify({"mensagem": "Informe um id_conta valido"}), 400
+    try:
+        identidade, contas = _listar_contas_autorizadas(chat_id)
+        autorizada = next((c for c in contas if c["id_conta"] == id_conta), None)
+        if not identidade or not autorizada:
+            return jsonify({"mensagem": "Conta nao vinculada ou nao autorizada"}), 403
+        saldo = calcular_saldo(id_conta)
+        if saldo is None:
+            return jsonify({"mensagem": "Saldo indisponivel no momento"}), 503
+        return jsonify({"vinculado": True, "id_usuario": identidade["id_usuario"],
+                        "id_conta": id_conta, "nivel": autorizada["nivel"],
+                        "saldo": float(saldo)}), 200
+    except Exception:
+        app.logger.exception("Falha ao consultar saldo de conta WhatsApp")
+        return jsonify({"mensagem": "Saldo indisponivel no momento"}), 503
 
 
 def _normalizar_telefone(valor):
