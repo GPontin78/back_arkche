@@ -2,7 +2,7 @@ name: Validacao de autenticacao WhatsApp
 
 on:
   push:
-    branches: [feat/whatsapp-multicontas-autorizacao]
+    branches: [main, feat/whatsapp-multicontas-autorizacao]
   pull_request:
     paths:
       - 'api/**'
