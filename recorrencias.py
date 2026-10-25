@@ -25,6 +25,11 @@ from operacoes_financeiras import _valor_monetario_api
 FREQUENCIAS = {'SEMANAL', 'QUINZENAL', 'MENSAL'}
 STATUS = {'ATIVA', 'PAUSADA', 'CANCELADA', 'FINALIZADA'}
 STATUS_EXECUCAO_FINAL = {'CONCLUIDO', 'FALHOU', 'CANCELADO'}
+MENSAGEM_BOLETO_REC = (
+    'Pagamento recorrente de boleto indisponível: cada parcela precisa de uma nova '
+    'cobrança válida. O boleto informado é de uso único; use o fluxo normal para '
+    'pagar cada novo boleto.'
+)
 
 
 def proxima_data(data_atual, frequencia, dia_mes=None):
@@ -165,6 +170,9 @@ def _registrar_aviso(cursor, id_recorrencia, numero, id_usuario, id_conta,
     elif estado == 'CANCELADA':
         titulo = 'Recorrencia cancelada'
         mensagem = f'A recorrencia de {rotulo} de {valor_formatado} foi cancelada. Nao havera novas execucoes.'
+    elif estado == 'PAUSADA_INDISPONIVEL':
+        titulo = 'Recorrencia de boleto pausada'
+        mensagem = motivo or MENSAGEM_BOLETO_REC
     elif estado == 'CONCLUIDO':
         titulo = 'Parcela recorrente executada'
         mensagem = f'A parcela {numero} de {rotulo} de {valor_formatado} foi executada.'
@@ -203,7 +211,9 @@ def criar_recorrencia():
     if dados.get('autorizacao_futura') is not True:
         return jsonify({'mensagem': 'Confirme a autorizacao das execucoes futuras'}), 400
     tipo_operacao = str(dados.get('tipo_operacao') or '').strip().upper()
-    if tipo_operacao not in ('TRANSFERENCIA', 'PIX_COBRANCA', 'BOLETO'):
+    if tipo_operacao == 'BOLETO':
+        return jsonify({'mensagem': MENSAGEM_BOLETO_REC}), 409
+    if tipo_operacao not in ('TRANSFERENCIA', 'PIX_COBRANCA'):
         return jsonify({'mensagem': 'Tipo de operacao invalido'}), 400
     cursor = None
     try:
@@ -356,6 +366,9 @@ def atualizar_recorrencia(id_recorrencia):
         if not atual:
             con.rollback()
             return jsonify({'mensagem': 'Recorrencia nao encontrada'}), 404
+        if atual[0] == 'BOLETO':
+            con.rollback()
+            return jsonify({'mensagem': MENSAGEM_BOLETO_REC}), 409
         if atual[13] not in ('ATIVA', 'PAUSADA'):
             con.rollback()
             return jsonify({'mensagem': 'Somente recorrencias ativas ou pausadas podem ser alteradas'}), 409
@@ -428,6 +441,9 @@ def _alterar_status(id_recorrencia, novo_status):
             con.rollback()
             return jsonify({'mensagem': 'Recorrencia nao encontrada'}), 404
         status_atual = regra[6]
+        if novo_status == 'ATIVA' and regra[0] == 'BOLETO':
+            con.rollback()
+            return jsonify({'mensagem': MENSAGEM_BOLETO_REC}), 409
         if novo_status == 'PAUSADA':
             if status_atual != 'ATIVA':
                 con.rollback()
@@ -510,6 +526,21 @@ def cancelar_recorrencia(id_recorrencia):
     return _alterar_status(id_recorrencia, 'CANCELADA')
 
 
+def _pausar_boleto_indisponivel(cursor, id_recorrencia, id_usuario, id_conta,
+                                  valor, motivo=None):
+    motivo = motivo or MENSAGEM_BOLETO_REC
+    cursor.execute(
+        '''UPDATE RECORRENCIA_FINANCEIRA SET STATUS = 'PAUSADA',
+           ATUALIZADO_EM = CURRENT_TIMESTAMP
+           WHERE ID_RECORRENCIA = ? AND STATUS = 'ATIVA' ''',
+        (id_recorrencia,),
+    )
+    return _registrar_aviso(
+        cursor, id_recorrencia, 0, id_usuario, id_conta,
+        'BOLETO', valor, 'PAUSADA_INDISPONIVEL', motivo=motivo,
+    )
+
+
 def processar_recorrencias_pendentes(limite=20):
     """Cria no maximo uma parcela vencida por regra e avanca de forma atomica."""
     agora = _agora_local()
@@ -519,8 +550,9 @@ def processar_recorrencias_pendentes(limite=20):
         cursor = con.cursor()
         cursor.execute(
             '''SELECT FIRST ? ID_RECORRENCIA FROM RECORRENCIA_FINANCEIRA
-               WHERE STATUS = 'ATIVA' AND PROXIMA_EXECUCAO IS NOT NULL
-                 AND PROXIMA_EXECUCAO <= ?
+               WHERE STATUS = 'ATIVA'
+                 AND (TIPO_OPERACAO = 'BOLETO' OR
+                      (PROXIMA_EXECUCAO IS NOT NULL AND PROXIMA_EXECUCAO <= ?))
                ORDER BY PROXIMA_EXECUCAO, ID_RECORRENCIA''',
             (limite, agora),
         )
@@ -548,12 +580,26 @@ def processar_recorrencias_pendentes(limite=20):
                 (id_recorrencia,),
             )
             regra = cursor.fetchone()
-            if not regra or regra[14] != 'ATIVA' or not regra[13] or regra[13] > agora:
+            if not regra or regra[14] != 'ATIVA':
                 con.rollback()
                 continue
             (id_usuario, id_conta, tipo_operacao, id_destino, id_cobranca,
              tipo_chave, hash_chave, valor, frequencia, data_final,
              limite_execucoes, criadas, dia_mes, prevista, _status) = regra
+            if tipo_operacao == 'BOLETO':
+                evento = _pausar_boleto_indisponivel(
+                    cursor, id_recorrencia, id_usuario, id_conta, valor,
+                )
+                con.commit()
+                tentar_publicar_eventos([evento])
+                current_app.logger.warning(
+                    'Recorrencia de boleto %s pausada; cada parcela exige nova cobranca',
+                    id_recorrencia,
+                )
+                continue
+            if not prevista or prevista > agora:
+                con.rollback()
+                continue
             numero = int(criadas or 0) + 1
             cursor.execute(
                 '''INSERT INTO AGENDAMENTO_FINANCEIRO
@@ -657,10 +703,42 @@ def autorizar_execucao_recorrente(cursor, id_agendamento, token):
         return True
     id_recorrencia = int(link[0])
     cursor.execute(
-        'SELECT STATUS FROM RECORRENCIA_FINANCEIRA WHERE ID_RECORRENCIA = ? WITH LOCK',
+        '''SELECT STATUS, TIPO_OPERACAO, ID_USUARIO, ID_CONTA, VALOR
+           FROM RECORRENCIA_FINANCEIRA WHERE ID_RECORRENCIA = ? WITH LOCK''',
         (id_recorrencia,),
     )
     regra = cursor.fetchone()
+    if regra and regra[1] == 'BOLETO':
+        cursor.execute(
+            '''SELECT STATUS, TOKEN_EXECUCAO FROM AGENDAMENTO_FINANCEIRO
+               WHERE ID_AGENDAMENTO = ? WITH LOCK''',
+            (id_agendamento,),
+        )
+        agendamento = cursor.fetchone()
+        if not agendamento or agendamento[0] != 'EXECUTANDO' or agendamento[1] != token:
+            con.rollback()
+            return False
+        motivo = MENSAGEM_BOLETO_REC
+        cursor.execute(
+            '''UPDATE AGENDAMENTO_FINANCEIRO SET STATUS = 'CANCELADO',
+               CANCELADO_EM = CURRENT_TIMESTAMP, MOTIVO_FALHA = ?,
+               TOKEN_EXECUCAO = NULL, LEASE_ATE = NULL, TENTAR_APOS = NULL,
+               ATUALIZADO_EM = CURRENT_TIMESTAMP WHERE ID_AGENDAMENTO = ?''',
+            (motivo, id_agendamento),
+        )
+        sincronizar_resultado_recorrencia(
+            cursor, id_agendamento, 'CANCELADO', motivo, notificar=False,
+        )
+        evento = _pausar_boleto_indisponivel(
+            cursor, id_recorrencia, int(regra[2]), int(regra[3]), regra[4], motivo,
+        )
+        con.commit()
+        tentar_publicar_eventos([evento])
+        current_app.logger.warning(
+            'Agendamento recorrente de boleto %s cancelado por exigir nova cobranca',
+            id_agendamento,
+        )
+        return False
     if regra and regra[0] == 'ATIVA':
         cursor.execute(
             '''UPDATE RECORRENCIA_EXECUCAO SET STATUS = 'EXECUTANDO',

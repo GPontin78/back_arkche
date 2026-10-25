@@ -31,6 +31,7 @@ def main():
     espera = max(1, int(os.getenv('ARKHE_NOTIFICACOES_INTERVALO_SEGUNDOS', '3')))
     lote = max(1, min(500, int(os.getenv('ARKHE_NOTIFICACOES_LOTE', '100'))))
     logging.info('Worker de notificacoes iniciado; intervalo=%ss lote=%s', espera, lote)
+    ultima_verificacao_recorrencias_logada = 0.0
 
     while True:
         try:
@@ -38,6 +39,13 @@ def main():
                 enviados = processar_outbox_pendente(limite=lote)
                 recorrencias = processar_recorrencias_pendentes(limite=20)
                 executados = processar_agendamentos_pendentes(limite=20)
+                monotonic = time.monotonic()
+                if monotonic - ultima_verificacao_recorrencias_logada >= 60:
+                    logging.info(
+                        'processar_recorrencias_pendentes executado; parcelas materializadas=%s',
+                        recorrencias,
+                    )
+                    ultima_verificacao_recorrencias_logada = monotonic
             if enviados:
                 logging.info('Eventos publicados no Redis: %s', enviados)
             if recorrencias:
