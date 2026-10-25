@@ -28,6 +28,7 @@ import recorrencias
 import estornos
 import admin_banco
 import auditoria
+import assistente_mauro
 
 limites.registrar_rotas(app)
 agendamentos.registrar_rotas(app)
@@ -35,6 +36,7 @@ recorrencias.registrar_rotas(app)
 estornos.registrar_rotas(app)
 admin_banco.registrar_rotas(app)
 auditoria.registrar_rotas(app)
+assistente_mauro.registrar_rotas(app)
 
 
 if __name__ == '__main__':
