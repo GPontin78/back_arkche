@@ -26,11 +26,15 @@ import favoritos
 import agendamentos
 import recorrencias
 import estornos
+import admin_banco
+import auditoria
 
 limites.registrar_rotas(app)
 agendamentos.registrar_rotas(app)
 recorrencias.registrar_rotas(app)
 estornos.registrar_rotas(app)
+admin_banco.registrar_rotas(app)
+auditoria.registrar_rotas(app)
 
 
 if __name__ == '__main__':

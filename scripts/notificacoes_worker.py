@@ -16,6 +16,7 @@ from banco import init_db
 from agendamentos import processar_agendamentos_pendentes
 from recorrencias import processar_recorrencias_pendentes
 from notificacoes import processar_outbox_pendente
+from auditoria import processar_auditoria_pendente
 
 
 def criar_app_worker():
@@ -37,6 +38,7 @@ def main():
         try:
             with app.app_context():
                 enviados = processar_outbox_pendente(limite=lote)
+                auditados = processar_auditoria_pendente(limite=lote)
                 recorrencias = processar_recorrencias_pendentes(limite=20)
                 executados = processar_agendamentos_pendentes(limite=20)
                 monotonic = time.monotonic()
@@ -48,6 +50,8 @@ def main():
                     ultima_verificacao_recorrencias_logada = monotonic
             if enviados:
                 logging.info('Eventos publicados no Redis: %s', enviados)
+            if auditados:
+                logging.info('Eventos persistidos no banco separado e sinalizados no Redis: %s', auditados)
             if recorrencias:
                 logging.info('Parcelas recorrentes materializadas: %s', recorrencias)
             if executados:

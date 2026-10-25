@@ -930,6 +930,11 @@ def sessao():
             'mensagem': 'Sessão inválida ou expirada.'
         }), 401
 
+    # A interface usa este sinal apenas para exibir a navegacao administrativa;
+    # cada endpoint administrativo valida novamente a allowlist no backend.
+    from limites import usuario_eh_admin_bancario
+    usuario['administrador_bancario'] = usuario_eh_admin_bancario(usuario['id_usuario'])
+
     return jsonify({
         'usuario': usuario,
         'conta': conta

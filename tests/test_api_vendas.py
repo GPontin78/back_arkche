@@ -46,7 +46,11 @@ with patch('apscheduler.schedulers.background.BackgroundScheduler.start'):
     # tabelas novas de políticas. As regras ativas são verificadas em test_limites.
     _limites_teste = types.ModuleType('limites')
     _limites_teste.aplicar_limite = lambda *_args, **_kwargs: None
+    _limites_teste.usuario_eh_admin_bancario = lambda *_args, **_kwargs: False
+    _limites_teste.registrar_rotas = lambda _app: None
     sys.modules['limites'] = _limites_teste
+    import auditoria as _auditoria_teste
+    _auditoria_teste.registrar_rotas = lambda _app: None
     import main
 import notificacoes
 
