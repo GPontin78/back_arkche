@@ -2,6 +2,7 @@ from flask import jsonify, request
 from main import app
 from banco import con
 from funcao import descobre_id_conta, data_atual, pode_debitar_saldo
+from notificacoes import registrar_evento_bancario, tentar_publicar_eventos
 import uuid
 import fdb
 from reportlab.graphics import renderSVG
@@ -36,7 +37,13 @@ def criar_pix_para_conta(id_recebedor, dados):
             (id_recebedor, valor, codigo)
         )
         id_cobranca = cursor.fetchone()[0]
+        eventos = registrar_evento_bancario(
+            cursor, chave_operacao=f'cobranca:{id_cobranca}:pix-criada', categoria='PIX',
+            id_contas=[id_recebedor], referencia_tipo='COBRANCA', referencia_id=id_cobranca,
+            valor=valor, titulo='Cobranca Pix criada', mensagem='Uma cobranca Pix foi criada pela sua conta.'
+        )
         con.commit()
+        tentar_publicar_eventos(eventos)
         return jsonify({
             'mensagem': 'QR Code Pix criado com sucesso',
             'id_cobranca': id_cobranca, 'codigo_pagamento': codigo,
@@ -93,7 +100,19 @@ def adicionar_cobranca():
     cursor.execute("""UPDATE COBRANCA SET CODIGO_PAGAMENTO = ? WHERE ID_COBRANCA = ?""",
                    (codigo_pagamento, id_cobranca))
 
+    try:
+        eventos = registrar_evento_bancario(
+            cursor, chave_operacao=f'cobranca:{id_cobranca}:emitida', categoria='BOLETO',
+            id_contas=[id_recebedor], referencia_tipo='COBRANCA', referencia_id=id_cobranca,
+            valor=valor, titulo='Boleto emitido', mensagem='Um boleto foi emitido pela sua conta.'
+        )
+    except Exception:
+        con.rollback()
+        cursor.close()
+        raise
+
     con.commit()
+    tentar_publicar_eventos(eventos)
     cursor.close()
 
     return jsonify({
@@ -179,7 +198,16 @@ def baixar_cobranca():
 
         id_movimentacao = cursor.fetchone()[0]
 
+        categoria = 'PIX' if tipo == 1 else 'BOLETO'
+        eventos = registrar_evento_bancario(
+            cursor, chave_operacao=f'movimentacao:{id_movimentacao}', categoria=categoria,
+            id_contas=[id_conta, id_recebedor], referencia_tipo='MOVIMENTACAO',
+            referencia_id=id_movimentacao, valor=valor, id_pagador=id_conta,
+            dados_adicionais={'id_cobranca': id_cobranca}
+        )
+
         con.commit()
+        tentar_publicar_eventos(eventos)
 
         return jsonify({
             'mensagem': 'Cobranca paga com sucesso',
@@ -256,7 +284,14 @@ def adicionar_pix():
 
         id_movimentacao = cursor.fetchone()[0]
 
+        eventos = registrar_evento_bancario(
+            cursor, chave_operacao=f'movimentacao:{id_movimentacao}', categoria='PIX',
+            id_contas=[id_pagador, id_recebedor], referencia_tipo='MOVIMENTACAO',
+            referencia_id=id_movimentacao, valor=valor, id_pagador=id_pagador
+        )
+
         con.commit()
+        tentar_publicar_eventos(eventos)
 
         return jsonify({
             'mensagem': 'Pix realizado com sucesso',

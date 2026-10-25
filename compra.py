@@ -3,6 +3,7 @@ from flask import jsonify, request
 from main import app
 from banco import con
 from funcao import *
+from notificacoes import registrar_evento_bancario, tentar_publicar_eventos
 
 
 @app.route('/adicionar_compra', methods=['POST'])
@@ -117,6 +118,7 @@ def adicionar_compra():
                     DATA_MOVIMENTACAO
                 )
                 VALUES (?, ?, ?, ?)
+                RETURNING ID_MOVIMENTACAO
             """, (
                 id_conta_pagador,
                 id_conta,
@@ -124,7 +126,15 @@ def adicionar_compra():
                 data_compra
             ))
 
+            id_movimentacao = cursor.fetchone()[0]
+            eventos = registrar_evento_bancario(
+                cursor, chave_operacao=f'movimentacao:{id_movimentacao}', categoria='CARTAO',
+                id_contas=[id_conta_pagador, id_conta], referencia_tipo='MOVIMENTACAO',
+                referencia_id=id_movimentacao, valor=valor_compra, id_pagador=id_conta_pagador
+            )
+
             con.commit()
+            tentar_publicar_eventos(eventos)
 
             return jsonify({
                 'mensagem': 'Compra realizada com sucesso'
@@ -172,6 +182,7 @@ def adicionar_compra():
                     DATA_MOVIMENTACAO
                 )
                 VALUES (?, ?, ?, ?)
+                RETURNING ID_MOVIMENTACAO
             """, (
                 id_conta_pagador,
                 id_conta,
@@ -179,7 +190,15 @@ def adicionar_compra():
                 data_compra
             ))
 
+            id_movimentacao = cursor.fetchone()[0]
+            eventos = registrar_evento_bancario(
+                cursor, chave_operacao=f'movimentacao:{id_movimentacao}', categoria='CARTAO',
+                id_contas=[id_conta_pagador, id_conta], referencia_tipo='MOVIMENTACAO',
+                referencia_id=id_movimentacao, valor=valor_recebido_vendedor, id_pagador=id_conta_pagador
+            )
+
             con.commit()
+            tentar_publicar_eventos(eventos)
 
             return jsonify({
                 'mensagem': 'Compra realizada com sucesso'
@@ -190,6 +209,7 @@ def adicionar_compra():
         }), 400
 
     except Exception as e:
+        con.rollback()
         return jsonify({
             'mensagem': 'Erro ao realizar compra',
             'erro': str(e)

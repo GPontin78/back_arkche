@@ -5,9 +5,112 @@ import jwt
 import hashlib
 import secrets
 import datetime
+import re
+import redis
 from main import app
 from banco import con
 from funcao import gerar_token, gerar_token_usuario, descobre_id_usuario, descobre_id_conta, criptografar_pin, verificar_pin, verificar_pin_usuario, usuario_pode_acessar_conta, listar_contas_usuario, dados_usuario, dados_conta, enviando_email, montar_email_arkhe, data_atual
+
+
+def _redis_login():
+    endereco = os.getenv('ARKHE_WHATSAPP_REDIS_URL') or os.getenv('REDIS_URL')
+    if not endereco:
+        app.logger.warning('Bloqueio de login desativado: Redis nao configurado')
+        return None
+    return redis.Redis.from_url(
+        endereco,
+        decode_responses=True,
+        socket_timeout=3,
+        socket_connect_timeout=3,
+    )
+
+
+def _chaves_bloqueio_login(cpf):
+    documento = re.sub(r'\D', '', str(cpf or ''))
+    if len(documento) != 11:
+        return None, None
+    identificador = hashlib.sha256(documento.encode('utf-8')).hexdigest()
+    prefixo = 'arkhe:auth:login:v1:' + identificador
+    return prefixo + ':tentativas', prefixo + ':bloqueio'
+
+
+def _limites_bloqueio_login():
+    try:
+        tentativas = int(os.getenv('ARKHE_LOGIN_MAX_TENTATIVAS', '5'))
+        janela = int(os.getenv('ARKHE_LOGIN_JANELA_SEGUNDOS', '900'))
+        bloqueio = int(os.getenv('ARKHE_LOGIN_BLOQUEIO_SEGUNDOS', '900'))
+        if min(tentativas, janela, bloqueio) < 1:
+            raise ValueError('valores devem ser positivos')
+        return tentativas, janela, bloqueio
+    except (TypeError, ValueError):
+        app.logger.error('Configuracao invalida de bloqueio temporario de login')
+        return None
+
+
+def login_temporariamente_bloqueado(cpf):
+    tentativas_chave, bloqueio_chave = _chaves_bloqueio_login(cpf)
+    if not bloqueio_chave or not _limites_bloqueio_login():
+        return False
+    try:
+        cliente = _redis_login()
+        return bool(cliente and cliente.exists(bloqueio_chave))
+    except Exception:
+        app.logger.exception('Redis indisponivel ao consultar bloqueio de login')
+        return False
+
+
+def registrar_falha_login(cpf):
+    tentativas_chave, bloqueio_chave = _chaves_bloqueio_login(cpf)
+    limites = _limites_bloqueio_login()
+    if not tentativas_chave or not limites:
+        return False
+    maximo, janela, duracao_bloqueio = limites
+    try:
+        cliente = _redis_login()
+        if not cliente:
+            return False
+        script = '''
+        local tentativas = tonumber(redis.call('INCR', KEYS[1]))
+        if tentativas == 1 then
+            redis.call('EXPIRE', KEYS[1], tonumber(ARGV[1]))
+        end
+        if tentativas >= tonumber(ARGV[2]) then
+            redis.call('SET', KEYS[2], '1', 'EX', tonumber(ARGV[3]))
+            redis.call('DEL', KEYS[1])
+            return 1
+        end
+        return 0
+        '''
+        return bool(cliente.eval(
+            script,
+            2,
+            tentativas_chave,
+            bloqueio_chave,
+            janela,
+            maximo,
+            duracao_bloqueio,
+        ))
+    except Exception:
+        app.logger.exception('Redis indisponivel ao registrar falha de login')
+    return False
+
+
+def limpar_falhas_login(cpf):
+    tentativas_chave, bloqueio_chave = _chaves_bloqueio_login(cpf)
+    if not tentativas_chave:
+        return
+    try:
+        cliente = _redis_login()
+        if cliente:
+            cliente.delete(tentativas_chave, bloqueio_chave)
+    except Exception:
+        app.logger.exception('Redis indisponivel ao limpar falhas de login')
+
+
+def resposta_login_invalido(cpf, mensagem):
+    if registrar_falha_login(cpf):
+        return jsonify({'mensagem': 'Acesso bloqueado temporariamente após várias tentativas incorretas.'}), 429
+    return jsonify({'mensagem': mensagem}), 401
 
 
 def cabecalho_face():
@@ -169,6 +272,9 @@ def login_usuario():
     if not cpf or pin is None:
         return jsonify({'mensagem': 'CPF e PIN são obrigatórios'}), 400
 
+    if login_temporariamente_bloqueado(cpf):
+        return jsonify({'mensagem': 'Acesso bloqueado temporariamente após várias tentativas incorretas.'}), 429
+
     cursor = None
 
     try:
@@ -184,7 +290,7 @@ def login_usuario():
         usuario = cursor.fetchone()
 
         if not usuario:
-            return jsonify({'mensagem': 'CPF ou PIN inválido'}), 401
+            return resposta_login_invalido(cpf, 'CPF ou PIN inválido')
 
         id_usuario = usuario[0]
         nome = usuario[1]
@@ -203,7 +309,9 @@ def login_usuario():
             }), 401
 
         if not resultado_pin['valido']:
-            return jsonify({'mensagem': 'CPF ou PIN inválido'}), 401
+            return resposta_login_invalido(cpf, 'CPF ou PIN inválido')
+
+        limpar_falhas_login(cpf_usuario)
 
         troca_pin_obrigatoria = bool(
             resultado_pin.get('legado')
@@ -542,6 +650,9 @@ def login():
     cadastro_facial = dados.get('cadastro_facial', False)
     mobile = dados.get('mobile', False)
 
+    if login_temporariamente_bloqueado(cpf):
+        return jsonify({'mensagem': 'Acesso bloqueado temporariamente após várias tentativas incorretas.'}), 429
+
     cursor = None
 
     try:
@@ -560,9 +671,7 @@ def login():
         dados_do_banco = cursor.fetchone()
 
         if not dados_do_banco:
-            return jsonify({
-                'mensagem': 'CPF, PIN ou tipo de conta inválido'
-            }), 401
+            return resposta_login_invalido(cpf, 'CPF, PIN ou tipo de conta inválido')
 
         id_usuario = dados_do_banco[0]
         nome = dados_do_banco[1]
@@ -578,9 +687,9 @@ def login():
         tipo_conta_banco = dados_do_banco[10]
 
         if not verificar_pin(pin, pin_hash):
-            return jsonify({
-                'mensagem': 'CPF, PIN ou tipo de conta inválido'
-            }), 401
+            return resposta_login_invalido(cpf, 'CPF, PIN ou tipo de conta inválido')
+
+        limpar_falhas_login(cpf_usuario)
 
         if not cadastro_facial:
             if mobile:

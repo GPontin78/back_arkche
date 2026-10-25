@@ -10,6 +10,7 @@ from flask import jsonify, request
 from banco import con
 from funcao import calcular_limite_cartao, calcular_saldo, criptografar_pin, data_atual, descobre_id_conta, pode_debitar_saldo
 from main import app
+from notificacoes import registrar_evento_bancario, tentar_publicar_eventos
 
 from .common import (autenticar_integracao, autenticar_requisicao, autorizar_pagamento_externo,
                      executar_operacao_idempotente, limitar_pagamento_whatsapp, valor_monetario_api)
@@ -206,6 +207,11 @@ def api_criar_boleto():
         id_cobranca = cursor.fetchone()[0]
         codigo = '248' + str(id_cobranca).zfill(10)
         cursor.execute('UPDATE COBRANCA SET CODIGO_PAGAMENTO = ? WHERE ID_COBRANCA = ?', (codigo, id_cobranca))
+        eventos = registrar_evento_bancario(
+            cursor, chave_operacao=f'cobranca:{id_cobranca}:emitida', categoria='BOLETO',
+            id_contas=[id_recebedor], referencia_tipo='COBRANCA', referencia_id=id_cobranca,
+            valor=valor, titulo='Boleto emitido', mensagem='Um boleto foi emitido pela sua conta.'
+        )
 
         resposta = {
             'mensagem': 'Boleto criado com sucesso',
@@ -215,6 +221,7 @@ def api_criar_boleto():
             'url_pdf': f'/api/v1/cobrancas/boletos/{id_cobranca}/pdf'
         }
         con.commit()
+        tentar_publicar_eventos(eventos)
         return jsonify(resposta), 201
     except (fdb.IntegrityError, fdb.TransactionConflict):
         con.rollback()
@@ -382,6 +389,12 @@ def api_vender_cartao():
             (id_liquidacao, id_recebedor, valor_recebido, agora)
         )
         id_movimentacao = cursor.fetchone()[0]
+        eventos = registrar_evento_bancario(
+            cursor, chave_operacao=f'movimentacao:{id_movimentacao}', categoria='CARTAO',
+            id_contas=[id_pagador, id_recebedor], referencia_tipo='MOVIMENTACAO',
+            referencia_id=id_movimentacao, valor=valor_recebido, id_pagador=id_pagador,
+            dados_adicionais={'tipo_compra': tipo, 'parcelas': parcelas, 'final_cartao': numero[-4:]}
+        )
         resposta = {
             'aprovado': True, 'mensagem': 'Venda aprovada',
             'id_compra': id_compra, 'id_movimentacao': id_movimentacao,
@@ -390,6 +403,7 @@ def api_vender_cartao():
             'final_cartao': numero[-4:], 'data_compra': agora.isoformat()
         }
         con.commit()
+        tentar_publicar_eventos(eventos)
         return jsonify(resposta), 201
     except (fdb.IntegrityError, fdb.TransactionConflict):
         con.rollback()
@@ -505,7 +519,13 @@ def api_pagar_pix():
                               VALUES (?, ?, ?, ?) RETURNING ID_MOVIMENTACAO''',
                            (id_pagador, id_recebedor, valor, data_atual()))
             id_movimentacao = cursor.fetchone()[0]
+            eventos = registrar_evento_bancario(
+                cursor, chave_operacao=f'movimentacao:{id_movimentacao}', categoria='PIX',
+                id_contas=[id_pagador, id_recebedor], referencia_tipo='MOVIMENTACAO',
+                referencia_id=id_movimentacao, valor=valor, id_pagador=id_pagador
+            )
             con.commit()
+            tentar_publicar_eventos(eventos)
             return jsonify({'mensagem': 'Pix realizado com sucesso',
                             'id_movimentacao': id_movimentacao,
                             'valor': float(valor), 'id_recebedor': id_recebedor}), 201
@@ -599,7 +619,14 @@ def api_pagar_dda(id_cobranca):
                               VALUES (?, ?, ?, ?, ?) RETURNING ID_MOVIMENTACAO''',
                            (id_pagador, id_recebedor, valor, data_atual(), id_cobranca))
             id_movimentacao = cursor.fetchone()[0]
+            eventos = registrar_evento_bancario(
+                cursor, chave_operacao=f'movimentacao:{id_movimentacao}', categoria='BOLETO',
+                id_contas=[id_pagador, id_recebedor], referencia_tipo='MOVIMENTACAO',
+                referencia_id=id_movimentacao, valor=valor, id_pagador=id_pagador,
+                dados_adicionais={'id_cobranca': id_cobranca}
+            )
             con.commit()
+            tentar_publicar_eventos(eventos)
             return jsonify({'mensagem': 'Boleto pago com sucesso', 'id_cobranca': id_cobranca,
                             'id_movimentacao': id_movimentacao, 'valor': float(valor)}), 200
         except fdb.TransactionConflict:

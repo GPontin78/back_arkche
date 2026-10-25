@@ -5,6 +5,7 @@ from flask import jsonify, request
 from main import app
 from banco import con
 from funcao import *
+from notificacoes import registrar_evento_bancario, tentar_publicar_eventos
 
 
 def data_fechamento_parcela(data_parcela, dia_fechamento):
@@ -401,10 +402,17 @@ def adicionar_cartao():
         vencimento = gerar_vencimento()
 
         cursor.execute("""INSERT INTO CARTAO(ID_CONTA, NUMERO_CARTAO, VENCIMENTO, CVV, LIMITE, DIA_VENCIMENTO, FECHAMENTO)
-                          VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                          VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING ID_CARTAO""",
                        (id_conta, numero_cartao, vencimento, cvv, limite, dia_vencimento, dia_fechamento))
+        id_cartao = cursor.fetchone()[0]
+        eventos = registrar_evento_bancario(
+            cursor, chave_operacao=f'cartao:{id_cartao}:criado', categoria='CARTAO',
+            id_contas=[id_conta], referencia_tipo='CARTAO', referencia_id=id_cartao,
+            titulo='Cartao criado', mensagem='Um novo cartao foi criado para sua conta.'
+        )
 
         con.commit()
+        tentar_publicar_eventos(eventos)
 
         cursor.execute("""SELECT ID_CARTAO, ID_CONTA, NUMERO_CARTAO, VENCIMENTO, CVV, LIMITE, DIA_VENCIMENTO, FECHAMENTO, STATUS, TENTATIVAS_PIN, MOTIVO_BLOQUEIO, DATA_BLOQUEIO
                           FROM CARTAO
@@ -470,7 +478,16 @@ def bloquear_cartao():
             mensagem = 'Cartão desbloqueado com sucesso'
             status = 0
 
+        eventos = registrar_evento_bancario(
+            cursor, chave_operacao=f'cartao:{cartao[0]}:status:{status}:{data_atual().strftime("%Y%m%d%H%M%S%f")}',
+            categoria='CARTAO', id_contas=[id_conta], referencia_tipo='CARTAO',
+            referencia_id=cartao[0], titulo='Status do cartao alterado',
+            mensagem='O cartao foi ' + ('bloqueado.' if bloqueado else 'desbloqueado.'),
+            dados_adicionais={'status': status}
+        )
+
         con.commit()
+        tentar_publicar_eventos(eventos)
 
         return jsonify({'mensagem': mensagem, 'status': status}), 200
 

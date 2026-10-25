@@ -21,7 +21,21 @@ class CursorPagamentoFalso:
     def execute(self, sql, parametros=()):
         comando = " ".join(sql.upper().split())
         self.linha, self.linhas = None, []
-        if "FROM CHAVE_PIX" in comando:
+        if "SELECT ID_USUARIO FROM CONTA WHERE ID_CONTA" in comando:
+            self.linha = (self.banco.titulares.get(parametros[0]),)
+        elif "SELECT ID_EVENTO FROM EVENTO_NOTIFICACAO_OUTBOX" in comando:
+            self.linha = None
+        elif "SELECT ATIVO FROM PREFERENCIA_NOTIFICACAO" in comando:
+            self.linha = None
+        elif "INSERT INTO EVENTO_NOTIFICACAO_OUTBOX" in comando:
+            self.banco.eventos.append(parametros)
+            self.linha = (len(self.banco.eventos),)
+        elif "INSERT INTO NOTIFICACAO_DESTINATARIO" in comando:
+            self.banco.destinatarios.append(parametros)
+        elif "INSERT INTO NOTIFICACAO" in comando:
+            self.banco.notificacoes.append(parametros)
+            self.linha = (len(self.banco.notificacoes),)
+        elif "FROM CHAVE_PIX" in comando:
             self.linhas = [(20,)]
         elif "FROM CONTA" in comando and "WITH LOCK" in comando:
             self.linha = (parametros[0],)
@@ -57,6 +71,10 @@ class BancoPagamentoFalso:
         self.saldo = Decimal("1000")
         self.status_boleto = 0
         self.valor_boleto = Decimal("35")
+        self.titulares = {10: 100, 20: 200}
+        self.eventos = []
+        self.notificacoes = []
+        self.destinatarios = []
 
     def cursor(self):
         return CursorPagamentoFalso(self)
@@ -91,10 +109,24 @@ class PagamentosApiTests(unittest.TestCase):
         fake_whatsapp = types.ModuleType("api_pagamentos_teste.whatsapp")
         fake_whatsapp._conta_vinculada = lambda *_: None
         fake_whatsapp._servico_valido = lambda: False
+        fake_notificacoes = types.ModuleType("notificacoes")
+
+        def registrar_evento_bancario(_cursor, *, id_contas, **kwargs):
+            ids = []
+            for id_conta in id_contas:
+                cls.banco.eventos.append({'id_conta': id_conta, **kwargs})
+                cls.banco.notificacoes.append({'id_conta': id_conta, **kwargs})
+                cls.banco.destinatarios.append({'id_conta': id_conta})
+                ids.append(len(cls.banco.eventos))
+            return ids
+
+        fake_notificacoes.registrar_evento_bancario = registrar_evento_bancario
+        fake_notificacoes.tentar_publicar_eventos = lambda _ids: None
         cls.package = pkg
         mods = {"main": fake_main, "banco": fake_banco, "funcao": fake_funcao,
                 "fdb": fake_fdb, "api_pagamentos_teste": pkg,
-                "api_pagamentos_teste.whatsapp": fake_whatsapp}
+                "api_pagamentos_teste.whatsapp": fake_whatsapp,
+                "notificacoes": fake_notificacoes}
         with patch.dict(sys.modules, mods):
             for suffix in ("common", "post"):
                 spec = importlib.util.spec_from_file_location("api_pagamentos_teste." + suffix,
@@ -109,6 +141,9 @@ class PagamentosApiTests(unittest.TestCase):
         self.banco.status_boleto = 0
         self.banco.valor_boleto = Decimal("35")
         self.banco.saldo = Decimal("1000")
+        self.banco.eventos = []
+        self.banco.notificacoes = []
+        self.banco.destinatarios = []
         self.auth = patch.object(self.post, "autenticar_requisicao",
                                  return_value=({"id_conta": 10, "origem": "whatsapp", "nivel": 2}, None))
         self.auth.start()
@@ -117,6 +152,9 @@ class PagamentosApiTests(unittest.TestCase):
                                          side_effect=lambda contexto, op, executar: executar())
         self.idempotencia.start()
         self.addCleanup(self.idempotencia.stop)
+        self.publicacao = patch.object(self.post, "tentar_publicar_eventos", side_effect=lambda _ids: None)
+        self.publicacao.start()
+        self.addCleanup(self.publicacao.stop)
         self.client = self.app.test_client()
 
     def test_pix_nao_aceita_conta_pagadora_do_json(self):
@@ -127,6 +165,8 @@ class PagamentosApiTests(unittest.TestCase):
         self.assertEqual(self.banco.movimentos[0][0], 10)
         self.assertEqual(self.banco.movimentos[0][1], 20)
         self.assertEqual(self.banco.movimentos[0][2], Decimal("25.00"))
+        self.assertEqual(len(self.banco.eventos), 2)
+        self.assertEqual(len(self.banco.notificacoes), 2)
 
     def test_pix_valor_invalido_nao_movimenta(self):
         for valor in ("-20", "0", "NaN", "infinito"):
@@ -158,6 +198,7 @@ class PagamentosApiTests(unittest.TestCase):
         outro = self.client.post("/api/v1/pagamentos/dda/123", json={})
         self.assertEqual(outro.status_code, 409)
         self.assertEqual(len(self.banco.movimentos), 1)
+        self.assertEqual(len(self.banco.eventos), 2)
 
     def test_dda_nao_aceita_mudar_pagador_ou_valor(self):
         resp = self.client.post("/api/v1/pagamentos/dda/123", json={"id_conta": 999})

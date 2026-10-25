@@ -3,6 +3,7 @@ from flask import jsonify, request
 from main import app
 from banco import con
 from funcao import dados_conta, verificar_pin_usuario, pode_debitar_saldo, calcular_limite_cartao, data_atual
+from notificacoes import registrar_evento_bancario, registrar_evento_seguranca, tentar_publicar_eventos
 
 CARTOES_FISICOS = {
     '0D94A4A5': 4,  # Cartao da Lais
@@ -261,7 +262,18 @@ def comprar_maquininha():
                        WHERE ID_CARTAO = ?""",
                     (tentativas, data_atual(), id_cartao)
                 )
+                id_evento = registrar_evento_seguranca(
+                    cursor,
+                    chave=f'cartao:{id_cartao}:bloqueio-pin:{data_atual().strftime("%Y%m%d%H%M%S%f")}',
+                    id_usuario=id_usuario,
+                    titulo='Cartao bloqueado por seguranca',
+                    mensagem='O cartao foi bloqueado apos varias tentativas incorretas de PIN.',
+                    dados={'tipo': 'bloqueio_pin', 'id_cartao': int(id_cartao)},
+                    referencia_tipo='CARTAO',
+                    referencia_id=id_cartao,
+                )
                 con.commit()
+                tentar_publicar_eventos([id_evento])
 
                 return jsonify({
                     'aprovado': False,
@@ -346,12 +358,15 @@ def comprar_maquininha():
                     TIPO
                 )
                 VALUES (?, ?, ?, ?)
+                RETURNING ID_COMPRA
             """, (
                 id_cartao,
                 valor,
                 data_compra,
                 0
             ))
+
+            id_compra = cursor.fetchone()[0]
 
             cursor.execute("""
                 INSERT INTO MOVIMENTACAO (
@@ -367,6 +382,13 @@ def comprar_maquininha():
                 valor,
                 data_compra
             ))
+
+            eventos = registrar_evento_bancario(
+                cursor, chave_operacao=f'compra:{id_compra}', categoria='CARTAO',
+                id_contas=[id_conta_pagador, id_recebedor], referencia_tipo='COMPRA',
+                referencia_id=id_compra, valor=valor, id_pagador=id_conta_pagador,
+                dados_adicionais={'tipo': tipo, 'parcelas': qtd_parcela, 'final_cartao': numero_cartao[-4:]}
+            )
 
         else:
             valor_parcela = (valor / Decimal(qtd_parcela)).quantize(
@@ -409,7 +431,15 @@ def comprar_maquininha():
                 qtd_parcela
             ))
 
+            eventos = registrar_evento_bancario(
+                cursor, chave_operacao=f'compra:{id_compra}', categoria='CARTAO',
+                id_contas=[id_conta_pagador, id_recebedor], referencia_tipo='COMPRA',
+                referencia_id=id_compra, valor=valor, id_pagador=id_conta_pagador,
+                dados_adicionais={'tipo': tipo, 'parcelas': qtd_parcela, 'final_cartao': numero_cartao[-4:]}
+            )
+
         con.commit()
+        tentar_publicar_eventos(eventos)
 
         return jsonify({
             'aprovado': True,

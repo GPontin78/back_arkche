@@ -27,6 +27,7 @@ from main import app
 from banco import con
 # Importa funcoes prontas de sessao, permissao, saldo, data e CPF.
 from funcao import descobre_id_conta, descobre_id_usuario, usuario_pode_acessar_conta, calcular_saldo, pode_debitar_saldo, data_atual, normalizar_cpf, validar_cpf
+from notificacoes import registrar_evento_bancario, tentar_publicar_eventos
 
 
 # ================================================================
@@ -1356,6 +1357,7 @@ def pagar_folha():
 
         # Lista das movimentacoes criadas nesta execucao.
         pagamentos = []
+        eventos_notificacao = []
 
         # Processa cada item selecionado.
         for item in itens:
@@ -1372,6 +1374,12 @@ def pagar_folha():
             cursor.execute("INSERT INTO MOVIMENTACAO (ID_PAGADOR, ID_RECEBEDOR, VALOR, DATA_MOVIMENTACAO) VALUES (?, ?, ?, ?) RETURNING ID_MOVIMENTACAO", (id_conta, id_destino, valor, data_movimentacao))
             # ID da transferencia criada.
             id_movimentacao = cursor.fetchone()[0]
+            eventos_notificacao.extend(registrar_evento_bancario(
+                cursor, chave_operacao=f'movimentacao:{id_movimentacao}', categoria='TRANSFERENCIA',
+                id_contas=[id_conta, id_destino], referencia_tipo='MOVIMENTACAO',
+                referencia_id=id_movimentacao, valor=valor, id_pagador=id_conta,
+                dados_adicionais={'origem': 'folha_pagamento', 'id_folha_item': id_item}
+            ))
 
             # Busca itens prontos para pagamento e ainda sem movimentacao.
             cursor.execute("UPDATE FOLHA_ITEM SET STATUS = 2, ID_MOVIMENTACAO = ?, DATA_PAGAMENTO = ? WHERE ID_FOLHA_ITEM = ? AND STATUS = 1 AND ID_MOVIMENTACAO IS NULL", (id_movimentacao, data_movimentacao, id_item))
@@ -1396,6 +1404,7 @@ def pagar_folha():
 
         # COMMIT confirma definitivamente as alteracoes no Firebird.
         con.commit()
+        tentar_publicar_eventos(eventos_notificacao)
 
         # Monta a resposta JSON que sera enviada ao front.
         return jsonify({

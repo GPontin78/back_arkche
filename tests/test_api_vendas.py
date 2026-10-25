@@ -3,6 +3,7 @@
 Nunca conecta ao ARKHE.FDB local ou ao servidor de producao.
 """
 import datetime
+import re
 import os
 from pathlib import Path
 import sys
@@ -16,11 +17,20 @@ from unittest.mock import patch
 import bcrypt
 import fdb
 import jwt
+from flask import jsonify
 from xml.etree import ElementTree
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-fdb.load_api(r'C:\Program Files\Firebird\Firebird_5_0\fbclient.dll')
+_fbclient_candidates = [
+    os.getenv('ARKHE_FBCLIENT'),
+    r'C:\Program Files\Firebird\Firebird_5_0\fbclient.dll',
+    r'C:\Program Files\Firebird\Firebird_4_0\fbclient.dll',
+]
+for _fbclient in _fbclient_candidates:
+    if _fbclient and Path(_fbclient).is_file():
+        fdb.load_api(_fbclient)
+        break
 TEST_DB = Path(tempfile.gettempdir()) / ('ARKHE_API_TESTE_' + uuid.uuid4().hex + '.FDB')
 os.environ['DB_HOST'] = '127.0.0.1'
 os.environ['DB_NAME'] = str(TEST_DB)
@@ -32,6 +42,16 @@ os.environ['CONTA_LIQUIDACAO_CARTAO'] = '9'
 
 with patch('apscheduler.schedulers.background.BackgroundScheduler.start'):
     import main
+import notificacoes
+
+
+class RedisTeste:
+    def __init__(self):
+        self.eventos = []
+
+    def publish(self, canal, mensagem):
+        self.eventos.append((canal, mensagem))
+        return 1
 
 
 def conectar():
@@ -80,18 +100,31 @@ class ApiVendasTests(unittest.TestCase):
         for statement in statements:
             cursor.execute(statement)
             cls.db.commit()
+        migration = (ROOT / 'migrations' / '001_notificacoes_outbox.sql').read_text(encoding='utf-8')
+        migration = re.sub(r'/\*.*?\*/', '', migration, flags=re.DOTALL)
+        migration = re.sub(r'(?m)^\s*--.*$', '', migration)
+        for statement in migration.split(';'):
+            if statement.strip():
+                cursor.execute(statement)
+                cls.db.commit()
         cursor.close()
+        cls.redis_fake = RedisTeste()
+        cls.redis_patch = patch.object(notificacoes, 'criar_cliente_redis', return_value=cls.redis_fake)
+        cls.redis_patch.start()
         cls.secret_hash = bcrypt.hashpw(b'segredo-ficticio', bcrypt.gensalt(rounds=4)).decode()
         main.app.config.update(TESTING=True, DB_HOST='127.0.0.1', DB_NAME=str(TEST_DB), DB_USER='SYSDBA', DB_PASSWORD='sysdba')
         print('Firebird de teste:', TEST_DB)
 
     @classmethod
     def tearDownClass(cls):
+        cls.redis_patch.stop()
         cls.db.close()
 
     def setUp(self):
         cursor = self.db.cursor()
-        for table in ['MOVIMENTACAO', 'FATURA_COMPRA', 'COMPRA', 'CARTAO', 'COBRANCA', 'INTEGRACAO_API', 'CONTA', 'USUARIO']:
+        for table in ['NOTIFICACAO_DESTINATARIO', 'NOTIFICACAO', 'PREFERENCIA_NOTIFICACAO',
+                      'EVENTO_NOTIFICACAO_OUTBOX', 'MOVIMENTACAO', 'FATURA_COMPRA', 'COMPRA',
+                      'CARTAO', 'COBRANCA', 'INTEGRACAO_API', 'CONTA', 'USUARIO']:
             cursor.execute('DELETE FROM ' + table)
         for account, tipo, cpf, cnpj in [(1, 0, '52998224725', None), (2, 1, '22222222222', '11222333000181'),
                                         (3, 1, '33333333333', '22333444000100'), (4, 0, '44444444444', None), (9, 1, '99999999999', '99999999000199')]:
@@ -107,6 +140,7 @@ class ApiVendasTests(unittest.TestCase):
         cursor.execute('INSERT INTO MOVIMENTACAO (ID_PAGADOR, ID_RECEBEDOR, VALOR, DATA_MOVIMENTACAO) VALUES (9, 1, 1000, CURRENT_TIMESTAMP)')
         self.db.commit()
         cursor.close()
+        self.redis_fake.eventos.clear()
         self.client = main.app.test_client()
         self.headers = {'X-Client-ID': 'cliente-2', 'X-Client-Secret': 'segredo-ficticio'}
         self.boleto = {'documento_pagador': '529.982.247-25', 'valor': 125.50,
@@ -127,8 +161,102 @@ class ApiVendasTests(unittest.TestCase):
         return self.client.post(path, json=data, headers=self.headers)
 
     def sessao(self, client, id_conta):
-        token = jwt.encode({'id_conta': id_conta}, main.app.config['SECRET_KEY'], algorithm='HS256')
+        token = jwt.encode({'id_usuario': id_conta, 'id_conta': id_conta}, main.app.config['SECRET_KEY'], algorithm='HS256')
         client.set_cookie('access_token', token)
+
+    def test_venda_grava_notificacoes_e_outbox_na_mesma_transacao(self):
+        resposta = self.post('/api/v1/vendas/cartao', self.venda)
+        self.assertEqual(resposta.status_code, 201, resposta.json)
+        eventos = self.sql('SELECT CATEGORIA, ID_CONTA, PUBLICADO_EM FROM EVENTO_NOTIFICACAO_OUTBOX ORDER BY ID_CONTA')
+        self.assertEqual([evento[0:2] for evento in eventos], [('CARTAO', 1), ('CARTAO', 2)])
+        self.assertTrue(all(evento[2] is not None for evento in eventos))
+        self.assertEqual(self.sql('SELECT COUNT(*) FROM NOTIFICACAO')[0][0], 2)
+        self.assertEqual(self.sql('SELECT COUNT(*) FROM NOTIFICACAO_DESTINATARIO')[0][0], 2)
+        self.assertEqual(len(self.redis_fake.eventos), 2)
+
+    def test_redis_indisponivel_preserva_operacao_e_deixa_eventos_pendentes(self):
+        with patch.object(notificacoes, 'criar_cliente_redis', side_effect=ConnectionError('redis offline')):
+            resposta = self.post('/api/v1/vendas/cartao', self.venda)
+        self.assertEqual(resposta.status_code, 201, resposta.json)
+        self.assertEqual(self.sql('SELECT COUNT(*) FROM COMPRA')[0][0], 1)
+        pendentes = self.sql('SELECT COUNT(*) FROM EVENTO_NOTIFICACAO_OUTBOX WHERE PUBLICADO_EM IS NULL AND PUBLICAR = 1')[0][0]
+        self.assertEqual(pendentes, 2)
+        self.assertEqual(self.sql('SELECT COUNT(*) FROM EVENTO_NOTIFICACAO_OUTBOX WHERE ERRO_ULTIMO IS NOT NULL')[0][0], 2)
+        self.sql('UPDATE EVENTO_NOTIFICACAO_OUTBOX SET PROXIMA_TENTATIVA = CURRENT_TIMESTAMP')
+        self.redis_fake.eventos.clear()
+        with patch.object(notificacoes, 'criar_cliente_redis', return_value=self.redis_fake):
+            with main.app.app_context():
+                publicados = notificacoes.processar_outbox_pendente()
+        self.assertEqual(publicados, 2)
+        self.assertEqual(len(self.redis_fake.eventos), 2)
+        self.assertEqual(self.sql('SELECT COUNT(*) FROM EVENTO_NOTIFICACAO_OUTBOX WHERE PUBLICADO_EM IS NOT NULL')[0][0], 2)
+
+    def test_preferencia_suprime_sem_falsificar_leitura_e_reativacao_nao_reconta(self):
+        self.sessao(self.client, 1)
+        venda = self.post('/api/v1/vendas/cartao', self.venda)
+        self.assertEqual(venda.status_code, 201, venda.json)
+        contador = self.client.get('/api/v1/notificacoes/contador')
+        self.assertEqual(contador.status_code, 200, contador.json)
+        self.assertEqual(contador.json['nao_lidas'], 1)
+
+        desligada = self.client.put('/api/v1/notificacoes/preferencias', json={'CARTAO': False})
+        self.assertEqual(desligada.status_code, 200, desligada.json)
+        row = self.sql('SELECT LIDA_EM, SUPRIMIDA_EM FROM NOTIFICACAO_DESTINATARIO WHERE ID_USUARIO = 1')[0]
+        self.assertIsNone(row[0], 'desativar categoria nao registra leitura falsa')
+        self.assertIsNotNone(row[1])
+        self.assertEqual(self.client.get('/api/v1/notificacoes/contador').json['nao_lidas'], 0)
+        self.assertEqual(self.client.get('/api/v1/notificacoes').json['notificacoes'], [])
+
+        reativada = self.client.put('/api/v1/notificacoes/preferencias', json={'CARTAO': True})
+        self.assertEqual(reativada.status_code, 200, reativada.json)
+        historico = self.client.get('/api/v1/notificacoes')
+        self.assertEqual(historico.status_code, 200, historico.json)
+        aviso = historico.json['notificacoes'][0]
+        self.assertEqual(aviso['estado_leitura'], 'suprimida')
+        self.assertFalse(aviso['lida'])
+        self.assertTrue(aviso['suprimida_por_preferencia'])
+        self.assertFalse(aviso['elegivel_para_nao_lidas'])
+        self.assertEqual(self.client.get('/api/v1/notificacoes/contador').json['nao_lidas'], 0)
+
+        marcado = self.client.patch(f"/api/v1/notificacoes/{aviso['id']}/lida")
+        self.assertEqual(marcado.status_code, 200)
+        row = self.sql('SELECT LIDA_EM, SUPRIMIDA_EM FROM NOTIFICACAO_DESTINATARIO WHERE ID_USUARIO = 1')[0]
+        self.assertIsNotNone(row[0])
+        self.assertIsNotNone(row[1])
+
+    def test_token_de_outro_titular_nao_lista_notificacoes_da_conta(self):
+        self.post('/api/v1/vendas/cartao', self.venda)
+        self.sessao(self.client, 4)
+        resposta = self.client.get('/api/v1/notificacoes')
+        self.assertEqual(resposta.status_code, 200)
+        self.assertEqual(resposta.json['notificacoes'], [])
+
+    def test_preferencia_nao_pode_desativar_alertas_criticos(self):
+        self.sessao(self.client, 1)
+        resposta = self.client.put('/api/v1/notificacoes/preferencias',
+                                   json={'SEGURANCA_CRITICA': False})
+        self.assertEqual(resposta.status_code, 400)
+
+    def test_bloqueio_login_gera_alerta_pessoal_obrigatorio(self):
+        self.sessao(self.client, 1)
+        self.assertEqual(
+            self.client.put('/api/v1/notificacoes/preferencias', json={'PIX': False}).status_code,
+            200,
+        )
+        rotas_notificacao = sys.modules['api.notificacoes']
+        with main.app.test_request_context('/login', method='POST', json={'cpf': '52998224725'}):
+            resposta = jsonify({'mensagem': 'Acesso bloqueado temporariamente após várias tentativas incorretas.'})
+            resposta.status_code = 429
+            rotas_notificacao.notificar_bloqueio_login(resposta)
+        evento = self.sql(
+            "SELECT CATEGORIA, ID_CONTA, ID_USUARIO_DESTINO, PUBLICADO_EM FROM EVENTO_NOTIFICACAO_OUTBOX WHERE CATEGORIA = 'SEGURANCA_CRITICA'"
+        )[0]
+        self.assertEqual(evento[:3], ('SEGURANCA_CRITICA', None, 1))
+        self.assertIsNotNone(evento[3])
+        historico = self.client.get('/api/v1/notificacoes')
+        self.assertEqual(historico.status_code, 200)
+        self.assertEqual(historico.json['notificacoes'][0]['categoria'], 'SEGURANCA_CRITICA')
+        self.assertEqual(self.client.get('/api/v1/notificacoes/contador').json['nao_lidas'], 1)
 
     def test_gerar_qr_livre_pela_api_sem_mover_saldo(self):
         result = self.post('/api/v1/cobrancas/pix/qrcode', {'valor_livre': True, 'id_recebedor': 3})
@@ -341,6 +469,17 @@ class ApiVendasTests(unittest.TestCase):
         self.assertEqual(response.status_code, 500)
         for table in ['COMPRA', 'FATURA_COMPRA']:
             self.assertEqual(self.sql('SELECT COUNT(*) FROM ' + table)[0][0], 0)
+        self.assertEqual(self.sql('SELECT COUNT(*) FROM MOVIMENTACAO')[0][0], 1)
+
+    def test_falha_ao_persistir_outbox_reverte_operacao_financeira(self):
+        self.sql("ALTER TABLE EVENTO_NOTIFICACAO_OUTBOX ADD CONSTRAINT CK_TESTE_OUTBOX CHECK (CATEGORIA <> 'CARTAO')")
+        try:
+            resposta = self.post('/api/v1/vendas/cartao', self.venda)
+        finally:
+            self.sql('ALTER TABLE EVENTO_NOTIFICACAO_OUTBOX DROP CONSTRAINT CK_TESTE_OUTBOX')
+        self.assertEqual(resposta.status_code, 500)
+        for tabela in ('COMPRA', 'FATURA_COMPRA', 'EVENTO_NOTIFICACAO_OUTBOX', 'NOTIFICACAO', 'NOTIFICACAO_DESTINATARIO'):
+            self.assertEqual(self.sql('SELECT COUNT(*) FROM ' + tabela)[0][0], 0, tabela)
         self.assertEqual(self.sql('SELECT COUNT(*) FROM MOVIMENTACAO')[0][0], 1)
 
     def test_concorrencia_nao_gasta_saldo_duas_vezes(self):

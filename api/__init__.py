@@ -2,6 +2,7 @@
 
 from .common import valor_monetario_api
 from . import whatsapp
+from . import notificacoes
 from . import get, post, put, delete, patch
 
-__all__ = ['valor_monetario_api', 'get', 'post', 'put', 'delete', 'patch', 'whatsapp']
+__all__ = ['valor_monetario_api', 'get', 'post', 'put', 'delete', 'patch', 'whatsapp', 'notificacoes']
