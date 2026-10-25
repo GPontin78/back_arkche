@@ -24,9 +24,11 @@ import fatura
 import limites
 import favoritos
 import agendamentos
+import recorrencias
 
 limites.registrar_rotas(app)
 agendamentos.registrar_rotas(app)
+recorrencias.registrar_rotas(app)
 
 
 if __name__ == '__main__':

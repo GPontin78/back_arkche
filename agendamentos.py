@@ -152,13 +152,14 @@ def listar_agendamentos():
                         S.CANCELADO_EM, S.MOTIVO_FALHA,
                         COALESCE(D.NOME_FANTASIA, D.RAZAO_SOCIAL, UD.NOME,
                                  CR.NOME_FANTASIA, CR.RAZAO_SOCIAL, UR.NOME),
-                        CB.CODIGO_PAGAMENTO
+                        CB.CODIGO_PAGAMENTO, RE.ID_RECORRENCIA
                  FROM AGENDAMENTO_FINANCEIRO S
                  LEFT JOIN CONTA D ON D.ID_CONTA = S.ID_CONTA_DESTINO
                  LEFT JOIN USUARIO UD ON UD.ID_USUARIO = D.ID_USUARIO
                  LEFT JOIN COBRANCA CB ON CB.ID_COBRANCA = S.ID_COBRANCA
                  LEFT JOIN CONTA CR ON CR.ID_CONTA = CB.ID_RECEBEDOR
                  LEFT JOIN USUARIO UR ON UR.ID_USUARIO = CR.ID_USUARIO
+                 LEFT JOIN RECORRENCIA_EXECUCAO RE ON RE.ID_AGENDAMENTO = S.ID_AGENDAMENTO
                  WHERE S.ID_USUARIO = ? AND S.ID_CONTA = ?'''
         parametros = [id_usuario, id_conta]
         if filtro:
@@ -180,6 +181,7 @@ def listar_agendamentos():
                 'motivo_falha': linha[8],
                 'destinatario': linha[9] or (f'Cobrança {linha[10]}' if linha[10] else 'Pagamento'),
                 'codigo_pagamento': linha[10],
+                'id_recorrencia': int(linha[11]) if linha[11] is not None else None,
             })
         return jsonify({'fuso': 'America/Sao_Paulo', 'agendamentos': agendamentos}), 200
     except Exception:
@@ -325,6 +327,10 @@ def cancelar_agendamento(id_agendamento):
             cursor, id_agendamento, id_usuario, id_conta,
             agendamento[0], agendamento[1], 'CANCELADO',
         )
+        from recorrencias import sincronizar_resultado_recorrencia
+        sincronizar_resultado_recorrencia(
+            cursor, id_agendamento, 'CANCELADO', 'Cancelado pelo cliente', notificar=False,
+        )
         con.commit()
         tentar_publicar_eventos([evento])
         return jsonify({'mensagem': 'Agendamento cancelado', 'status': 'CANCELADO'}), 200
@@ -397,6 +403,12 @@ def _marcar_concluido(cursor, id_agendamento, id_movimentacao, id_usuario,
            WHERE ID_AGENDAMENTO = ? AND STATUS = 'EXECUTANDO' ''',
         (id_agendamento,),
     )
+    from recorrencias import sincronizar_resultado_recorrencia
+    eventos_recorrencia = sincronizar_resultado_recorrencia(
+        cursor, id_agendamento, 'CONCLUIDO',
+    )
+    if eventos_recorrencia:
+        return eventos_recorrencia
     evento = _registrar_aviso(
         cursor, id_agendamento, id_usuario, id_conta,
         tipo_operacao, valor, 'CONCLUIDO',
@@ -410,6 +422,8 @@ def _persistir_falha(id_agendamento, token, tipo_operacao, valor,
     eventos = []
     try:
         cursor = con.cursor()
+        from recorrencias import status_recorrencia_para_agendamento
+        status_recorrencia = status_recorrencia_para_agendamento(cursor, id_agendamento)
         cursor.execute(
             '''SELECT STATUS, TOKEN_EXECUCAO, TENTATIVAS
                FROM AGENDAMENTO_FINANCEIRO WHERE ID_AGENDAMENTO = ? WITH LOCK''',
@@ -418,6 +432,22 @@ def _persistir_falha(id_agendamento, token, tipo_operacao, valor,
         atual = cursor.fetchone()
         if not atual or atual[0] != 'EXECUTANDO' or atual[1] != token:
             con.rollback()
+            return
+        if status_recorrencia and status_recorrencia != 'ATIVA':
+            motivo_cancelamento = 'Recorrencia pausada ou cancelada antes da execucao'
+            cursor.execute(
+                '''UPDATE AGENDAMENTO_FINANCEIRO SET STATUS = 'CANCELADO',
+                   CANCELADO_EM = CURRENT_TIMESTAMP, MOTIVO_FALHA = ?,
+                   TOKEN_EXECUCAO = NULL, LEASE_ATE = NULL, TENTAR_APOS = NULL,
+                   ATUALIZADO_EM = CURRENT_TIMESTAMP WHERE ID_AGENDAMENTO = ?''',
+                (motivo_cancelamento, id_agendamento),
+            )
+            from recorrencias import sincronizar_resultado_recorrencia
+            sincronizar_resultado_recorrencia(
+                cursor, id_agendamento, 'CANCELADO', motivo_cancelamento,
+                notificar=False,
+            )
+            con.commit()
             return
         cursor.execute(
             'SELECT ID_MOVIMENTACAO FROM AGENDAMENTO_EXECUCAO WHERE ID_AGENDAMENTO = ?',
@@ -432,7 +462,13 @@ def _persistir_falha(id_agendamento, token, tipo_operacao, valor,
                    ATUALIZADO_EM = CURRENT_TIMESTAMP WHERE ID_AGENDAMENTO = ?''',
                 (id_agendamento,),
             )
+            from recorrencias import sincronizar_resultado_recorrencia
+            eventos = sincronizar_resultado_recorrencia(
+                cursor, id_agendamento, 'CONCLUIDO',
+            )
             con.commit()
+            if eventos:
+                tentar_publicar_eventos(eventos)
             return
 
         encerrado = permanente or int(atual[2] or 0) >= MAX_TENTATIVAS
@@ -448,11 +484,16 @@ def _persistir_falha(id_agendamento, token, tipo_operacao, valor,
             (status, str(motivo)[:500], status, id_agendamento),
         )
         if encerrado:
-            evento = _registrar_aviso(
-                cursor, id_agendamento, id_usuario, id_conta,
-                tipo_operacao, valor, 'FALHOU', str(motivo)[:350],
+            from recorrencias import sincronizar_resultado_recorrencia
+            eventos = sincronizar_resultado_recorrencia(
+                cursor, id_agendamento, 'FALHOU', str(motivo)[:350],
             )
-            eventos.append(evento)
+            if not eventos:
+                evento = _registrar_aviso(
+                    cursor, id_agendamento, id_usuario, id_conta,
+                    tipo_operacao, valor, 'FALHOU', str(motivo)[:350],
+                )
+                eventos.append(evento)
         con.commit()
         if eventos:
             tentar_publicar_eventos(eventos)
@@ -473,6 +514,9 @@ def _executar_agendamento(id_agendamento, token):
     valor = Decimal('0.00')
     try:
         cursor = con.cursor()
+        from recorrencias import autorizar_execucao_recorrente
+        if not autorizar_execucao_recorrente(cursor, id_agendamento, token):
+            return False
         cursor.execute(
             '''SELECT ID_USUARIO, ID_CONTA, TIPO_OPERACAO, ID_CONTA_DESTINO,
                       ID_COBRANCA, TIPO_CHAVE, HASH_CHAVE, VALOR, STATUS, TOKEN_EXECUCAO

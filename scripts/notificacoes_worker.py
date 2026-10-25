@@ -14,6 +14,7 @@ if str(ROOT) not in sys.path:
 import config
 from banco import init_db
 from agendamentos import processar_agendamentos_pendentes
+from recorrencias import processar_recorrencias_pendentes
 from notificacoes import processar_outbox_pendente
 
 
@@ -35,9 +36,12 @@ def main():
         try:
             with app.app_context():
                 enviados = processar_outbox_pendente(limite=lote)
+                recorrencias = processar_recorrencias_pendentes(limite=20)
                 executados = processar_agendamentos_pendentes(limite=20)
             if enviados:
                 logging.info('Eventos publicados no Redis: %s', enviados)
+            if recorrencias:
+                logging.info('Parcelas recorrentes materializadas: %s', recorrencias)
             if executados:
                 logging.info('Agendamentos executados: %s', executados)
         except Exception:
