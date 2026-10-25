@@ -276,13 +276,42 @@ def adicionar_pix():
             return jsonify({'mensagem': 'Chave Pix nao encontrada'}), 404
 
         id_recebedor = conta_recebedor[0]
+        id_favorito_solicitado = dados.get('id_favorito')
 
         if id_pagador == id_recebedor:
             return jsonify({'mensagem': 'Nao e possivel fazer Pix para a mesma conta'}), 400
 
+        id_usuario_pix = descobre_id_usuario()
+        favorito = False
+        if id_favorito_solicitado is not None:
+            from favoritos import validar_favorito_selecionado
+            try:
+                favorito = validar_favorito_selecionado(
+                    id_favorito_solicitado, id_pagador, id_usuario_pix,
+                    id_recebedor, tipo_chave, chave_pix,
+                )
+                if not favorito:
+                    con.rollback()
+                    return jsonify({'mensagem': 'Este favorito mudou ou foi removido. Localize o destinatário novamente.', 'codigo': 'FAVORITO_ATUALIZADO'}), 409
+            except Exception:
+                con.rollback()
+                app.logger.exception('Falha ao conferir favorito antes do Pix')
+                return jsonify({'mensagem': 'Não foi possível validar o destinatário favorito'}), 503
+        elif id_usuario_pix:
+            from favoritos import destinatario_esta_favoritado
+            try:
+                favorito = destinatario_esta_favoritado(
+                    id_pagador, id_usuario_pix, id_recebedor
+                )
+            except Exception:
+                con.rollback()
+                app.logger.exception('Falha ao conferir favorito antes do Pix')
+                return jsonify({'mensagem': 'Não foi possível validar o destinatário favorito'}), 503
+
         restricao_limite = aplicar_limite(
             cursor, id_pagador, 'TRANSFERENCIA', valor,
-            id_usuario=descobre_id_usuario(),
+            id_usuario=id_usuario_pix,
+            destinatario_favorito=favorito,
         )
         if restricao_limite:
             return restricao_limite

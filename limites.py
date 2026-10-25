@@ -70,7 +70,7 @@ def _uso_no_periodo(cursor, id_conta, inicio, fim):
 
 def _politica_atual(cursor, tipo_conta, operacao, periodo):
     cursor.execute(
-        '''SELECT ATIVO, LIMITE_POR_OPERACAO
+        '''SELECT ATIVO, LIMITE_POR_OPERACAO, LIMITE_POR_OPERACAO_FAVORITO
            FROM POLITICA_LIMITE_OPERACAO
            WHERE TIPO_CONTA = ? AND OPERACAO = ? AND PERIODO = ?''',
         (tipo_conta, operacao, periodo),
@@ -85,6 +85,7 @@ def _politica_atual(cursor, tipo_conta, operacao, periodo):
     periodo_row = cursor.fetchone()
     return {
         'limite_por_operacao': Decimal(str(operacao_row[1])) if operacao_row and int(operacao_row[0]) == 1 and operacao_row[1] is not None else None,
+        'limite_por_operacao_favorito': Decimal(str(operacao_row[2])) if operacao_row and len(operacao_row) > 2 and operacao_row[2] is not None else None,
         'limite_acumulado': Decimal(str(periodo_row[1])) if periodo_row and int(periodo_row[0]) == 1 and periodo_row[1] is not None else None,
     }
 
@@ -114,8 +115,9 @@ def _registrar_recusa(id_conta, id_usuario, tipo_conta, operacao, periodo,
                VALUES ('OPERACAO_RECUSADA', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
             (id_usuario, id_conta, tipo_conta, operacao, periodo, solicitado,
              usado, politica['limite_por_operacao'], politica['limite_acumulado'],
-             motivo[:250], json.dumps({'canal': request.path, 'limite_por_operacao': str(politica['limite_por_operacao']) if politica['limite_por_operacao'] is not None else None,
-                                      'limite_acumulado': str(politica['limite_acumulado']) if politica['limite_acumulado'] is not None else None}, ensure_ascii=False)),
+              motivo[:250], json.dumps({'canal': request.path, 'limite_por_operacao': str(politica['limite_por_operacao']) if politica['limite_por_operacao'] is not None else None,
+                                       'limite_acumulado': str(politica['limite_acumulado']) if politica['limite_acumulado'] is not None else None,
+                                       'destinatario_favorito': bool(politica.get('destinatario_favorito'))}, ensure_ascii=False)),
         )
         eventos = registrar_evento_bancario(
             cursor, chave_operacao=f'limite-recusa:{uuid.uuid4().hex}',
@@ -145,7 +147,8 @@ def _registrar_recusa(id_conta, id_usuario, tipo_conta, operacao, periodo,
     return persistido
 
 
-def aplicar_limite(cursor, id_conta, operacao, valor_total, *, valor_por_operacao=None, id_usuario=None):
+def aplicar_limite(cursor, id_conta, operacao, valor_total, *, valor_por_operacao=None,
+                   id_usuario=None, destinatario_favorito=False):
     """Valida e bloqueia a conta durante a transacao financeira atual.
 
     A soma vem das movimentacoes ja confirmadas no Firebird. O registro de
@@ -167,6 +170,10 @@ def aplicar_limite(cursor, id_conta, operacao, valor_total, *, valor_por_operaca
     if not tipo_conta:
         return jsonify({'mensagem': 'Conta nao encontrada para aplicar os limites', 'codigo': 'CONTA_NAO_ENCONTRADA'}), 404
     politica = _politica_atual(cursor, tipo_conta, operacao, periodo)
+    if (destinatario_favorito and operacao == 'TRANSFERENCIA'
+            and politica['limite_por_operacao_favorito'] is not None):
+        politica['limite_por_operacao'] = politica['limite_por_operacao_favorito']
+    politica['destinatario_favorito'] = bool(destinatario_favorito)
     if politica['limite_por_operacao'] is None and politica['limite_acumulado'] is None:
         return None
 
@@ -217,18 +224,22 @@ def _resumo_conta(cursor, id_conta, tipo_conta):
     limite_acumulado = Decimal(str(acumulado[1])) if acumulado and int(acumulado[0]) == 1 and acumulado[1] is not None else None
     restante = max(Decimal('0.00'), limite_acumulado - usado) if limite_acumulado is not None else None
     cursor.execute(
-        '''SELECT OPERACAO, ATIVO, LIMITE_POR_OPERACAO FROM POLITICA_LIMITE_OPERACAO
+        '''SELECT OPERACAO, ATIVO, LIMITE_POR_OPERACAO, LIMITE_POR_OPERACAO_FAVORITO FROM POLITICA_LIMITE_OPERACAO
            WHERE TIPO_CONTA = ? AND PERIODO = ? ORDER BY OPERACAO''', (tipo_conta, periodo)
     )
     operacoes = []
-    for operacao, ativo, maximo in cursor.fetchall():
+    for operacao, ativo, maximo, maximo_favorito in cursor.fetchall():
         maximo = Decimal(str(maximo)) if int(ativo) == 1 and maximo is not None else None
+        maximo_favorito = Decimal(str(maximo_favorito)) if maximo_favorito is not None else None
         capacidade = min(maximo, restante) if maximo is not None and restante is not None else (maximo if maximo is not None else restante)
+        capacidade_favorito = min(maximo_favorito, restante) if maximo_favorito is not None and restante is not None else (maximo_favorito if maximo_favorito is not None else restante)
         operacoes.append({
             'operacao': operacao,
             'limite_por_operacao': float(maximo) if maximo is not None else None,
+            'limite_por_operacao_favorito': float(maximo_favorito) if maximo_favorito is not None else None,
+            'disponivel_favorito_agora': float(capacidade_favorito) if capacidade_favorito is not None else None,
             'disponivel_agora': float(capacidade) if capacidade is not None else None,
-            'configurado': maximo is not None or limite_acumulado is not None,
+            'configurado': maximo is not None or maximo_favorito is not None or limite_acumulado is not None,
         })
     return {
         'periodo': periodo,
@@ -309,13 +320,16 @@ def listar_politicas_limites():
     try:
         cursor = con.cursor()
         cursor.execute(
-            '''SELECT TIPO_CONTA, OPERACAO, PERIODO, ATIVO, LIMITE_POR_OPERACAO, ATUALIZADO_EM
+            '''SELECT TIPO_CONTA, OPERACAO, PERIODO, ATIVO, LIMITE_POR_OPERACAO,
+                      LIMITE_POR_OPERACAO_FAVORITO, ATUALIZADO_EM
                FROM POLITICA_LIMITE_OPERACAO ORDER BY TIPO_CONTA, PERIODO, OPERACAO'''
         )
         operacoes = [
             {'tipo_conta': r[0], 'operacao': r[1], 'periodo': r[2], 'ativo': bool(r[3]),
              'limite_por_operacao': float(r[4]) if r[4] is not None else None,
-             'atualizado_em': r[5].isoformat() if r[5] else None}
+             'favorito_ativo': r[5] is not None,
+             'limite_por_operacao_favorito': float(r[5]) if r[5] is not None else None,
+             'atualizado_em': r[6].isoformat() if r[6] else None}
             for r in cursor.fetchall()
         ]
         cursor.execute(
@@ -359,13 +373,34 @@ def atualizar_politicas_limites():
             regra = politicas.get(operacao)
             if not isinstance(regra, dict) or type(regra.get('ativo')) is not bool:
                 raise ValueError(f'Configure {operacao} com ativo verdadeiro ou falso')
+            favorito_ativo = regra.get('favorito_ativo')
+            if favorito_ativo is not None and type(favorito_ativo) is not bool:
+                raise ValueError('Configure o limite para favoritos com verdadeiro ou falso')
+            if operacao == 'PAGAMENTO' and favorito_ativo:
+                raise ValueError('O limite maior para favoritos só se aplica a transferências Pix')
+            limite_favorito = None
+            if favorito_ativo is True:
+                limite_favorito = _decimal_config(
+                    regra.get('limite_por_operacao_favorito'),
+                    'limite de transferência para favoritos', True,
+                )
+            limite_normal = _decimal_config(
+                regra.get('limite_por_operacao'), f'limite de {operacao}', regra['ativo']
+            )
+            if favorito_ativo is True and not regra['ativo']:
+                raise ValueError('Ative o limite normal antes de configurar um limite maior para favoritos')
+            if (favorito_ativo is True and limite_favorito <= limite_normal):
+                raise ValueError('O limite para destinatários favoritos deve ser maior que o limite normal')
             operacoes_normalizadas[operacao] = {
                 'ativo': regra['ativo'],
-                'limite_por_operacao': _decimal_config(regra.get('limite_por_operacao'), f'limite de {operacao}', regra['ativo']),
+                'limite_por_operacao': limite_normal,
+                # None means an older client omitted the new field; preserve it.
+                'favorito_ativo': favorito_ativo,
+                'limite_por_operacao_favorito': limite_favorito,
             }
-        acumulado_ativo = type(dados.get('acumulado_ativo')) is bool and dados['acumulado_ativo']
-        if 'acumulado_ativo' not in dados or type(dados.get('acumulado_ativo')) is not bool:
+        if type(dados.get('acumulado_ativo')) is not bool:
             raise ValueError('Configure acumulado_ativo como verdadeiro ou falso')
+        acumulado_ativo = dados['acumulado_ativo']
         limite_acumulado = _decimal_config(dados.get('limite_acumulado'), 'limite acumulado', acumulado_ativo)
     except ValueError as e:
         return jsonify({'mensagem': str(e)}), 400
@@ -373,20 +408,20 @@ def atualizar_politicas_limites():
     cursor = None
     try:
         cursor = con.cursor()
-        cursor.execute(
-            '''SELECT ATIVO, LIMITE_POR_OPERACAO FROM POLITICA_LIMITE_OPERACAO
-               WHERE TIPO_CONTA = ? AND OPERACAO = ? AND PERIODO = ?''',
-            (tipo_conta, OPERACOES[0], periodo),
-        )
         anteriores = {'operacoes': {}, 'acumulado': None}
         for operacao in OPERACOES:
             cursor.execute(
-                '''SELECT ATIVO, LIMITE_POR_OPERACAO FROM POLITICA_LIMITE_OPERACAO
+                '''SELECT ATIVO, LIMITE_POR_OPERACAO, LIMITE_POR_OPERACAO_FAVORITO
+                   FROM POLITICA_LIMITE_OPERACAO
                    WHERE TIPO_CONTA = ? AND OPERACAO = ? AND PERIODO = ?''',
                 (tipo_conta, operacao, periodo),
             )
             row = cursor.fetchone()
-            anteriores['operacoes'][operacao] = {'ativo': bool(row[0]), 'limite_por_operacao': str(row[1]) if row[1] is not None else None}
+            anteriores['operacoes'][operacao] = {
+                'ativo': bool(row[0]),
+                'limite_por_operacao': str(row[1]) if row[1] is not None else None,
+                'limite_por_operacao_favorito': str(row[2]) if row[2] is not None else None,
+            }
         cursor.execute(
             '''SELECT ATIVO, LIMITE_ACUMULADO FROM POLITICA_LIMITE_PERIODO
                WHERE TIPO_CONTA = ? AND PERIODO = ?''', (tipo_conta, periodo)
@@ -394,13 +429,28 @@ def atualizar_politicas_limites():
         row = cursor.fetchone()
         anteriores['acumulado'] = {'ativo': bool(row[0]), 'limite_acumulado': str(row[1]) if row[1] is not None else None}
 
+        operacoes_depois = {}
         for operacao, regra in operacoes_normalizadas.items():
+            anterior_favorito = anteriores['operacoes'][operacao]['limite_por_operacao_favorito']
+            limite_favorito = (Decimal(anterior_favorito) if regra['favorito_ativo'] is None and anterior_favorito is not None
+                               else (None if regra['favorito_ativo'] is None else regra['limite_por_operacao_favorito']))
+            if (limite_favorito is not None and (not regra['ativo'] or regra['limite_por_operacao'] is None
+                    or limite_favorito <= regra['limite_por_operacao'])):
+                raise ValueError('O limite para destinatários favoritos deve ser maior que o limite normal')
             cursor.execute(
                 '''UPDATE POLITICA_LIMITE_OPERACAO
-                   SET ATIVO = ?, LIMITE_POR_OPERACAO = ?, ATUALIZADO_POR = ?, ATUALIZADO_EM = CURRENT_TIMESTAMP
+                   SET ATIVO = ?, LIMITE_POR_OPERACAO = ?, LIMITE_POR_OPERACAO_FAVORITO = ?,
+                       ATUALIZADO_POR = ?, ATUALIZADO_EM = CURRENT_TIMESTAMP
                    WHERE TIPO_CONTA = ? AND OPERACAO = ? AND PERIODO = ?''',
-                (int(regra['ativo']), regra['limite_por_operacao'], id_admin, tipo_conta, operacao, periodo),
+                (int(regra['ativo']), regra['limite_por_operacao'], limite_favorito,
+                 id_admin, tipo_conta, operacao, periodo),
             )
+            operacoes_depois[operacao] = {
+                'ativo': regra['ativo'],
+                'limite_por_operacao': str(regra['limite_por_operacao']) if regra['limite_por_operacao'] is not None else None,
+                'favorito_ativo': limite_favorito is not None,
+                'limite_por_operacao_favorito': str(limite_favorito) if limite_favorito is not None else None,
+            }
         cursor.execute(
             '''UPDATE POLITICA_LIMITE_PERIODO
                SET ATIVO = ?, LIMITE_ACUMULADO = ?, ATUALIZADO_POR = ?, ATUALIZADO_EM = CURRENT_TIMESTAMP
@@ -408,7 +458,7 @@ def atualizar_politicas_limites():
             (int(acumulado_ativo), limite_acumulado, id_admin, tipo_conta, periodo),
         )
         novas = {
-            'operacoes': {k: {'ativo': v['ativo'], 'limite_por_operacao': str(v['limite_por_operacao']) if v['limite_por_operacao'] is not None else None} for k, v in operacoes_normalizadas.items()},
+            'operacoes': operacoes_depois,
             'acumulado': {'ativo': acumulado_ativo, 'limite_acumulado': str(limite_acumulado) if limite_acumulado is not None else None},
         }
         cursor.execute(
@@ -422,6 +472,9 @@ def atualizar_politicas_limites():
         return jsonify({'mensagem': 'Politicas atualizadas', 'tipo_conta': tipo_conta,
                         'periodo': periodo, 'operacoes': novas['operacoes'],
                         'acumulado': novas['acumulado']}), 200
+    except ValueError as e:
+        con.rollback()
+        return jsonify({'mensagem': str(e)}), 400
     except Exception:
         con.rollback()
         app.logger.exception('Falha ao atualizar politicas de limites')
