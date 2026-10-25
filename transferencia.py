@@ -1,7 +1,8 @@
 from flask import jsonify, request
 from main import app
 from banco import con
-from funcao import descobre_id_conta, data_atual, pode_debitar_saldo
+from funcao import descobre_id_conta, descobre_id_usuario, data_atual, pode_debitar_saldo
+from limites import aplicar_limite
 from notificacoes import registrar_evento_bancario, tentar_publicar_eventos
 import uuid
 import fdb
@@ -178,6 +179,12 @@ def baixar_cobranca():
         if valor is None or valor <= 0:
             con.rollback()
             return jsonify({'mensagem': 'Informe um valor positivo para pagar este QR Code'}), 400
+        restricao_limite = aplicar_limite(
+            cursor, id_conta, 'PAGAMENTO', valor,
+            id_usuario=descobre_id_usuario(),
+        )
+        if restricao_limite:
+            return restricao_limite
         if not pode_debitar_saldo(id_conta, valor):
             con.rollback()
             return jsonify({'mensagem': 'Saldo insuficiente para pagar a cobranca'}), 400
@@ -272,6 +279,13 @@ def adicionar_pix():
 
         if id_pagador == id_recebedor:
             return jsonify({'mensagem': 'Nao e possivel fazer Pix para a mesma conta'}), 400
+
+        restricao_limite = aplicar_limite(
+            cursor, id_pagador, 'TRANSFERENCIA', valor,
+            id_usuario=descobre_id_usuario(),
+        )
+        if restricao_limite:
+            return restricao_limite
 
         if not pode_debitar_saldo(id_pagador, valor):
             return jsonify({'mensagem': 'Saldo insuficiente para realizar o Pix'}), 400

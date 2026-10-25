@@ -3,11 +3,13 @@ from flask import jsonify, request
 from main import app
 from banco import con
 from funcao import *
+from limites import aplicar_limite
 from notificacoes import registrar_evento_bancario, tentar_publicar_eventos
 
 
 @app.route('/adicionar_compra', methods=['POST'])
 def adicionar_compra():
+    cursor = None
     try:
         dados = request.get_json()
 
@@ -46,6 +48,8 @@ def adicionar_compra():
 
         id_cartao_pagador = cartao[0]
         id_conta_pagador = cartao[1]
+        if int(id_conta) != int(id_conta_pagador):
+            return jsonify({'mensagem': 'Cartao nao pertence a conta ativa'}), 403
         limite_cartao = float(cartao[2] or 0)
         status_cartao = cartao[3]
 
@@ -87,6 +91,13 @@ def adicionar_compra():
             return jsonify({
                 'mensagem': 'Compra duplicada. A mesma transacao ja foi realizada.'
             }), 409
+
+        restricao_limite = aplicar_limite(
+            cursor, id_conta_pagador, 'PAGAMENTO', valor_compra,
+            id_usuario=descobre_id_usuario(),
+        )
+        if restricao_limite:
+            return restricao_limite
 
         if tipo == 0:
 
@@ -214,4 +225,7 @@ def adicionar_compra():
             'mensagem': 'Erro ao realizar compra',
             'erro': str(e)
         }), 500
+    finally:
+        if cursor:
+            cursor.close()
 

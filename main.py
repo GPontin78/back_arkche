@@ -21,6 +21,7 @@ import folha
 import folha_csv
 import maquininha
 import fatura
+import limites
 
 
 if __name__ == '__main__':

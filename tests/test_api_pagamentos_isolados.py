@@ -122,11 +122,14 @@ class PagamentosApiTests(unittest.TestCase):
 
         fake_notificacoes.registrar_evento_bancario = registrar_evento_bancario
         fake_notificacoes.tentar_publicar_eventos = lambda _ids: None
+        fake_limites = types.ModuleType("limites")
+        fake_limites.aplicar_limite = lambda *_args, **_kwargs: None
         cls.package = pkg
         mods = {"main": fake_main, "banco": fake_banco, "funcao": fake_funcao,
                 "fdb": fake_fdb, "api_pagamentos_teste": pkg,
                 "api_pagamentos_teste.whatsapp": fake_whatsapp,
-                "notificacoes": fake_notificacoes}
+                "notificacoes": fake_notificacoes,
+                "limites": fake_limites}
         with patch.dict(sys.modules, mods):
             for suffix in ("common", "post"):
                 spec = importlib.util.spec_from_file_location("api_pagamentos_teste." + suffix,

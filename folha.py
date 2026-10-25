@@ -27,6 +27,7 @@ from main import app
 from banco import con
 # Importa funcoes prontas de sessao, permissao, saldo, data e CPF.
 from funcao import descobre_id_conta, descobre_id_usuario, usuario_pode_acessar_conta, calcular_saldo, pode_debitar_saldo, data_atual, normalizar_cpf, validar_cpf
+from limites import aplicar_limite
 from notificacoes import registrar_evento_bancario, tentar_publicar_eventos
 
 
@@ -1339,7 +1340,16 @@ def pagar_folha():
             return jsonify({'mensagem': 'Nenhum pagamento disponivel nesta folha'}), 400
 
         # Soma somente os itens que serao pagos agora.
-        total = sum(float(item[2]) for item in itens)
+        total_decimal = sum((Decimal(str(item[2])) for item in itens), Decimal('0.00'))
+        maior_operacao = max(Decimal(str(item[2])) for item in itens)
+        restricao_limite = aplicar_limite(
+            cursor, id_conta, 'TRANSFERENCIA', total_decimal,
+            valor_por_operacao=maior_operacao,
+            id_usuario=descobre_id_usuario(),
+        )
+        if restricao_limite:
+            return restricao_limite
+        total = float(total_decimal)
         # Calcula o saldo atual da empresa.
         saldo = calcular_saldo(id_conta)
 

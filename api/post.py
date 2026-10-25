@@ -10,6 +10,7 @@ from flask import jsonify, request
 from banco import con
 from funcao import calcular_limite_cartao, calcular_saldo, criptografar_pin, data_atual, descobre_id_conta, pode_debitar_saldo
 from main import app
+from limites import aplicar_limite
 from notificacoes import registrar_evento_bancario, tentar_publicar_eventos
 
 from .common import (autenticar_integracao, autenticar_requisicao, autorizar_pagamento_externo,
@@ -330,6 +331,13 @@ def api_vender_cartao():
             valor_parcela = (valor / parcelas).quantize(Decimal('0.01'), rounding=ROUND_DOWN)
             tipo_compra = 1
 
+        restricao_limite = aplicar_limite(
+            cursor, id_pagador, 'PAGAMENTO', valor,
+            id_usuario=integracao.get('id_usuario'),
+        )
+        if restricao_limite:
+            return restricao_limite
+
         agora = data_atual()
         # Mesma protecao de cinco minutos usada pela maquininha, com tipo e parcelas.
         cursor.execute(
@@ -504,6 +512,13 @@ def api_pagar_pix():
                 con.rollback()
                 return jsonify({'mensagem': 'Nao e possivel transferir para a propria conta'}), 400
 
+            restricao_limite = aplicar_limite(
+                cursor, id_pagador, 'TRANSFERENCIA', valor,
+                id_usuario=autorizacao.get('id_usuario'),
+            )
+            if restricao_limite:
+                return restricao_limite
+
             # Trava contas em ordem para evitar pagamento paralelo com saldo duplicado.
             for id_conta in sorted({id_pagador, id_recebedor}):
                 cursor.execute('SELECT ID_CONTA FROM CONTA WHERE ID_CONTA = ? WITH LOCK', (id_conta,))
@@ -604,6 +619,12 @@ def api_pagar_dda(id_cobranca):
             if restricao:
                 con.rollback()
                 return restricao
+            restricao_limite = aplicar_limite(
+                cursor, id_pagador, 'PAGAMENTO', valor,
+                id_usuario=autorizacao.get('id_usuario'),
+            )
+            if restricao_limite:
+                return restricao_limite
             if valor <= 0 or not pode_debitar_saldo(id_pagador, valor):
                 con.rollback()
                 return jsonify({'mensagem': 'Saldo insuficiente ou valor invalido'}), 400

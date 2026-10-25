@@ -3,6 +3,7 @@ from flask import jsonify, request
 from main import app
 from banco import con
 from funcao import dados_conta, verificar_pin_usuario, pode_debitar_saldo, calcular_limite_cartao, data_atual
+from limites import aplicar_limite
 from notificacoes import registrar_evento_bancario, registrar_evento_seguranca, tentar_publicar_eventos
 
 CARTOES_FISICOS = {
@@ -348,6 +349,13 @@ def comprar_maquininha():
 
     try:
         cursor = con.cursor()
+
+        restricao_limite = aplicar_limite(
+            cursor, id_conta_pagador, 'PAGAMENTO', valor,
+            id_usuario=id_usuario,
+        )
+        if restricao_limite:
+            return restricao_limite
 
         if tipo == 'DEBITO':
             cursor.execute("""
