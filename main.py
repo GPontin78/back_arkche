@@ -23,6 +23,10 @@ import maquininha
 import fatura
 import limites
 import favoritos
+import agendamentos
+
+limites.registrar_rotas(app)
+agendamentos.registrar_rotas(app)
 
 
 if __name__ == '__main__':

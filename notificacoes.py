@@ -187,6 +187,29 @@ def registrar_evento_seguranca(cursor, *, chave, id_usuario, titulo, mensagem,
     )
 
 
+def registrar_notificacao_usuario(cursor, *, chave, categoria, id_usuario, id_conta,
+                                  titulo, mensagem, dados=None,
+                                  referencia_tipo=None, referencia_id=None):
+    """Registra uma notificacao de fluxo para o usuario que iniciou a acao.
+
+    Diferente do evento financeiro por titularidade, este helper permite que
+    o membro autorizado que criou um agendamento acompanhe seu proprio status.
+    As preferencias da categoria continuam sendo respeitadas.
+    """
+    return _registrar_evento(
+        cursor,
+        chave=chave,
+        categoria=categoria,
+        id_conta=id_conta,
+        id_usuario=int(id_usuario),
+        referencia_tipo=referencia_tipo,
+        referencia_id=referencia_id,
+        titulo=titulo,
+        mensagem=mensagem,
+        dados=dados,
+    )
+
+
 def criar_cliente_redis():
     endereco = os.getenv('ARKHE_WHATSAPP_REDIS_URL') or os.getenv('REDIS_URL')
     if not endereco:

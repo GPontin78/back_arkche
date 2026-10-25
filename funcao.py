@@ -4,7 +4,6 @@ import random
 import smtplib
 import os
 import bcrypt
-from main import app
 from banco import con
 from flask import request, current_app
 from email.mime.multipart import MIMEMultipart
@@ -79,7 +78,7 @@ def descobre_id_usuario():
     try:
         payload = jwt.decode(
             token,
-            app.config['SECRET_KEY'],
+            current_app.config['SECRET_KEY'],
             algorithms=['HS256']
         )
 
@@ -98,7 +97,7 @@ def descobre_id_conta():
     try:
         payload = jwt.decode(
             token,
-            app.config['SECRET_KEY'],
+            current_app.config['SECRET_KEY'],
             algorithms=['HS256']
         )
 

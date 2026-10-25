@@ -6,11 +6,10 @@ import uuid
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 import fdb
-from flask import jsonify, request
+from flask import current_app, has_request_context, jsonify, request
 
 from banco import con
 from funcao import data_atual, dados_conta, dados_usuario
-from main import app
 from notificacoes import registrar_evento_bancario, tentar_publicar_eventos
 
 
@@ -98,15 +97,16 @@ def _registrar_recusa(id_conta, id_usuario, tipo_conta, operacao, periodo,
     persistido = False
     try:
         conexao = fdb.connect(
-            host=app.config['DB_HOST'], port=app.config['DB_PORT'],
-            database=app.config['DB_NAME'], user=app.config['DB_USER'],
-            password=app.config['DB_PASSWORD'],
+            host=current_app.config['DB_HOST'], port=current_app.config['DB_PORT'],
+            database=current_app.config['DB_NAME'], user=current_app.config['DB_USER'],
+            password=current_app.config['DB_PASSWORD'],
         )
         cursor = conexao.cursor()
         if id_usuario is None:
             cursor.execute('SELECT ID_USUARIO FROM CONTA WHERE ID_CONTA = ?', (id_conta,))
             titular = cursor.fetchone()
             id_usuario = int(titular[0]) if titular else None
+        canal = request.path if has_request_context() else '/worker/agendamentos'
         cursor.execute(
             '''INSERT INTO AUDITORIA_LIMITE
                (EVENTO, ID_USUARIO, ID_CONTA, TIPO_CONTA, OPERACAO, PERIODO,
@@ -115,7 +115,7 @@ def _registrar_recusa(id_conta, id_usuario, tipo_conta, operacao, periodo,
                VALUES ('OPERACAO_RECUSADA', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
             (id_usuario, id_conta, tipo_conta, operacao, periodo, solicitado,
              usado, politica['limite_por_operacao'], politica['limite_acumulado'],
-              motivo[:250], json.dumps({'canal': request.path, 'limite_por_operacao': str(politica['limite_por_operacao']) if politica['limite_por_operacao'] is not None else None,
+              motivo[:250], json.dumps({'canal': canal, 'limite_por_operacao': str(politica['limite_por_operacao']) if politica['limite_por_operacao'] is not None else None,
                                        'limite_acumulado': str(politica['limite_acumulado']) if politica['limite_acumulado'] is not None else None,
                                        'destinatario_favorito': bool(politica.get('destinatario_favorito'))}, ensure_ascii=False)),
         )
@@ -136,7 +136,7 @@ def _registrar_recusa(id_conta, id_usuario, tipo_conta, operacao, periodo,
                 conexao.rollback()
             except Exception:
                 pass
-        app.logger.exception('Falha ao registrar recusa por limite da conta %s', id_conta)
+        current_app.logger.exception('Falha ao registrar recusa por limite da conta %s', id_conta)
     finally:
         if cursor:
             cursor.close()
@@ -288,7 +288,6 @@ def _decimal_config(valor, campo, obrigatorio):
     return resultado
 
 
-@app.route('/api/v1/limites', methods=['GET'])
 def consultar_limites_conta():
     usuario = _usuario_atual()
     conta = dados_conta()
@@ -304,14 +303,13 @@ def consultar_limites_conta():
             'limites': [_resumo_conta(cursor, int(conta['id_conta']), tipo_conta)],
         }), 200
     except Exception:
-        app.logger.exception('Falha ao consultar limites da conta')
+        current_app.logger.exception('Falha ao consultar limites da conta')
         return jsonify({'mensagem': 'Nao foi possivel consultar os limites'}), 500
     finally:
         if cursor:
             cursor.close()
 
 
-@app.route('/api/v1/limites/admin/politicas', methods=['GET'])
 def listar_politicas_limites():
     id_admin, erro = _exigir_admin()
     if erro:
@@ -344,14 +342,13 @@ def listar_politicas_limites():
         ]
         return jsonify({'operacoes': operacoes, 'periodos': periodos}), 200
     except Exception:
-        app.logger.exception('Falha ao consultar politicas de limites')
+        current_app.logger.exception('Falha ao consultar politicas de limites')
         return jsonify({'mensagem': 'Nao foi possivel consultar as politicas'}), 500
     finally:
         if cursor:
             cursor.close()
 
 
-@app.route('/api/v1/limites/admin/politicas', methods=['PUT'])
 def atualizar_politicas_limites():
     id_admin, erro = _exigir_admin()
     if erro:
@@ -477,14 +474,13 @@ def atualizar_politicas_limites():
         return jsonify({'mensagem': str(e)}), 400
     except Exception:
         con.rollback()
-        app.logger.exception('Falha ao atualizar politicas de limites')
+        current_app.logger.exception('Falha ao atualizar politicas de limites')
         return jsonify({'mensagem': 'Nao foi possivel salvar as politicas'}), 500
     finally:
         if cursor:
             cursor.close()
 
 
-@app.route('/api/v1/limites/admin/historico', methods=['GET'])
 def historico_politicas_limites():
     _id_admin, erro = _exigir_admin()
     if erro:
@@ -514,8 +510,15 @@ def historico_politicas_limites():
         } for r in cursor.fetchall()]
         return jsonify({'historico': historico}), 200
     except Exception:
-        app.logger.exception('Falha ao consultar auditoria de limites')
+        current_app.logger.exception('Falha ao consultar auditoria de limites')
         return jsonify({'mensagem': 'Nao foi possivel consultar o historico'}), 500
     finally:
         if cursor:
             cursor.close()
+
+
+def registrar_rotas(app):
+    app.add_url_rule('/api/v1/limites', 'consultar_limites_conta', consultar_limites_conta, methods=['GET'])
+    app.add_url_rule('/api/v1/limites/admin/politicas', 'listar_politicas_limites', listar_politicas_limites, methods=['GET'])
+    app.add_url_rule('/api/v1/limites/admin/politicas', 'atualizar_politicas_limites', atualizar_politicas_limites, methods=['PUT'])
+    app.add_url_rule('/api/v1/limites/admin/historico', 'historico_politicas_limites', historico_politicas_limites, methods=['GET'])

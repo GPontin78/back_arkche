@@ -13,6 +13,7 @@ if str(ROOT) not in sys.path:
 
 import config
 from banco import init_db
+from agendamentos import processar_agendamentos_pendentes
 from notificacoes import processar_outbox_pendente
 
 
@@ -34,8 +35,11 @@ def main():
         try:
             with app.app_context():
                 enviados = processar_outbox_pendente(limite=lote)
+                executados = processar_agendamentos_pendentes(limite=20)
             if enviados:
                 logging.info('Eventos publicados no Redis: %s', enviados)
+            if executados:
+                logging.info('Agendamentos executados: %s', executados)
         except Exception:
             logging.exception('Falha ao processar outbox de notificacoes')
         time.sleep(espera)
