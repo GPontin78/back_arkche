@@ -48,7 +48,7 @@ def _valor_decimal(valor):
 
 def _uso_no_periodo(cursor, id_conta, inicio, fim):
     cursor.execute(
-        '''SELECT COALESCE(SUM(M.VALOR), 0)
+        '''SELECT CAST(COALESCE(SUM(M.VALOR), 0) AS DECIMAL(18,2))
            FROM MOVIMENTACAO M
            WHERE M.ID_PAGADOR = ? AND M.DATA_MOVIMENTACAO >= ? AND M.DATA_MOVIMENTACAO < ?''',
         (int(id_conta), inicio, fim),
@@ -57,7 +57,7 @@ def _uso_no_periodo(cursor, id_conta, inicio, fim):
     # Compras no credito nao debitam a conta na hora da venda, mas consomem
     # o limite operacional de pagamentos. Compras no debito ja estao em MOVIMENTACAO.
     cursor.execute(
-        '''SELECT COALESCE(SUM(C.VALOR_COMPRA), 0)
+        '''SELECT CAST(COALESCE(SUM(C.VALOR_COMPRA), 0) AS DECIMAL(18,2))
            FROM COMPRA C
            INNER JOIN CARTAO CA ON CA.ID_CARTAO = C.ID_CARTAO
            WHERE CA.ID_CONTA = ? AND C.TIPO = 1
