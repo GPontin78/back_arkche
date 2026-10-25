@@ -262,6 +262,17 @@ def _ids_administradores():
     return ids
 
 
+def usuario_eh_admin_bancario(id_usuario=None):
+    """Valida administrador do banco pela lista central de IDs autorizados."""
+    if id_usuario is None:
+        usuario = _usuario_atual()
+        id_usuario = usuario.get('id_usuario') if usuario else None
+    try:
+        return int(id_usuario) in _ids_administradores()
+    except (TypeError, ValueError):
+        return False
+
+
 def _usuario_atual():
     usuario = dados_usuario()
     return usuario if usuario and usuario.get('id_usuario') else None
@@ -272,7 +283,7 @@ def _exigir_admin():
     if not usuario:
         return None, (jsonify({'mensagem': 'Autenticacao necessaria'}), 401)
     id_usuario = int(usuario['id_usuario'])
-    if id_usuario not in _ids_administradores():
+    if not usuario_eh_admin_bancario(id_usuario):
         return None, (jsonify({'mensagem': 'Acesso exclusivo ao administrador bancario'}), 403)
     return id_usuario, None
 

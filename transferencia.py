@@ -2,6 +2,7 @@ from flask import jsonify, request
 from main import app
 from banco import con
 from funcao import descobre_id_conta, descobre_id_usuario
+from limites import usuario_eh_admin_bancario
 from notificacoes import registrar_evento_bancario, tentar_publicar_eventos
 import uuid
 import fdb
@@ -236,6 +237,31 @@ def buscar_movimentacoes():
         cobrancas_banco = cursor.fetchall()
         cobrancas = []
 
+        cursor.execute("SELECT COUNT(*) FROM RDB$RELATION_FIELDS WHERE RDB$RELATION_NAME = 'ESTORNO_FINANCEIRO'")
+        estrutura_estornos = bool((cursor.fetchone() or (0,))[0] >= 14)
+        cancelamentos_cobranca = {}
+        estornos_boleto = {}
+        estornos_concluidos = []
+        administrador_bancario = usuario_eh_admin_bancario(descobre_id_usuario())
+        if estrutura_estornos:
+            cursor.execute(
+                '''SELECT ID_COBRANCA, ID_ESTORNO, MOTIVO, CRIADO_EM
+                   FROM ESTORNO_FINANCEIRO
+                   WHERE TIPO_OPERACAO = 'CANCELAMENTO_COBRANCA'
+                     AND STATUS = 'CANCELADO' AND ID_CONTA_RECEBEDOR = ?''',
+                (id_conta,),
+            )
+            cancelamentos_cobranca = {int(r[0]): r for r in cursor.fetchall()}
+            cursor.execute(
+                '''SELECT ID_COBRANCA, ID_ESTORNO, ID_MOVIMENTACAO_ORIGINAL,
+                          ID_MOVIMENTACAO_REVERSA, MOTIVO, CRIADO_EM
+                   FROM ESTORNO_FINANCEIRO
+                   WHERE TIPO_OPERACAO = 'ESTORNO_BOLETO'
+                     AND STATUS = 'CONCLUIDO' AND ID_CONTA_RECEBEDOR = ?''',
+                (id_conta,),
+            )
+            estornos_boleto = {int(r[0]): r for r in cursor.fetchall()}
+
         for cobranca in cobrancas_banco:
             tipo = 'pagar' if cobranca[1] == id_conta else 'receber'
 
@@ -259,7 +285,30 @@ def buscar_movimentacoes():
                 'tipo_cobranca': cobranca[6],
                 'tipo': tipo,
                 'nome_pagador': nome_pagador,
-                'nome_recebedor': nome_recebedor
+                'nome_recebedor': nome_recebedor,
+                'pode_cancelar': bool(
+                    estrutura_estornos
+                    and
+                    int(cobranca[2]) == int(id_conta)
+                    and int(cobranca[5]) == 0
+                ),
+                'status_operacao': (
+                    'ESTORNADO' if int(cobranca[0]) in estornos_boleto else
+                    'CANCELADO' if int(cobranca[5]) == 2 else
+                    'CONCLUIDO' if int(cobranca[5]) == 1 else 'PENDENTE'
+                ),
+                'cancelamento': ({
+                    'id_estorno': cancelamentos_cobranca[int(cobranca[0])][1],
+                    'motivo': cancelamentos_cobranca[int(cobranca[0])][2],
+                    'criado_em': str(cancelamentos_cobranca[int(cobranca[0])][3]) if cancelamentos_cobranca[int(cobranca[0])][3] else None,
+                } if int(cobranca[0]) in cancelamentos_cobranca else None),
+                'estorno': ({
+                    'id_estorno': estornos_boleto[int(cobranca[0])][1],
+                    'id_movimentacao_original': estornos_boleto[int(cobranca[0])][2],
+                    'id_movimentacao_reversa': estornos_boleto[int(cobranca[0])][3],
+                    'motivo': estornos_boleto[int(cobranca[0])][4],
+                    'criado_em': str(estornos_boleto[int(cobranca[0])][5]) if estornos_boleto[int(cobranca[0])][5] else None,
+                } if int(cobranca[0]) in estornos_boleto else None),
             })
 
         cursor.execute("""SELECT M.ID_MOVIMENTACAO, M.ID_PAGADOR, M.ID_RECEBEDOR, M.VALOR, M.DATA_MOVIMENTACAO, M.ID_COBRANCA, COB.TIPO_COBRANCA,
@@ -270,11 +319,13 @@ def buscar_movimentacoes():
                                      SELECT 1
                                      FROM COMPRA CMP
                                      INNER JOIN CARTAO CAT ON CAT.ID_CARTAO = CMP.ID_CARTAO
-                                     WHERE CAT.ID_CONTA = M.ID_PAGADOR
-                                       AND CMP.VALOR_COMPRA = M.VALOR
-                                       AND CMP.DATA_COMPRA = M.DATA_MOVIMENTACAO
-                                       AND CMP.TIPO = 0
-                                 ) THEN 1 ELSE 0 END AS COMPRA_CARTAO
+                                     WHERE CMP.DATA_COMPRA = M.DATA_MOVIMENTACAO
+                                       AND ((CMP.TIPO = 0 AND CAT.ID_CONTA = M.ID_PAGADOR
+                                             AND CMP.VALOR_COMPRA = M.VALOR)
+                                            OR (CMP.TIPO = 1
+                                                AND ROUND(CMP.VALOR_COMPRA * 0.95, 2) = M.VALOR))
+                                 ) THEN 1 ELSE 0 END AS COMPRA_CARTAO,
+                                 COB.STATUS, COB.ID_PAGADOR, COB.ID_RECEBEDOR, COB.VALOR
                           FROM MOVIMENTACAO M
                           INNER JOIN CONTA CP ON CP.ID_CONTA = M.ID_PAGADOR
                           INNER JOIN USUARIO UP ON UP.ID_USUARIO = CP.ID_USUARIO
@@ -288,6 +339,18 @@ def buscar_movimentacoes():
 
         movimentacoes_banco = cursor.fetchall()
         movimentacoes = []
+        if estrutura_estornos:
+            cursor.execute(
+                '''SELECT ID_MOVIMENTACAO_ORIGINAL, ID_MOVIMENTACAO_REVERSA,
+                          ID_ESTORNO, TIPO_OPERACAO, MOTIVO, CRIADO_EM
+                   FROM ESTORNO_FINANCEIRO
+                   WHERE STATUS = 'CONCLUIDO'
+                     AND (ID_CONTA_PAGADOR = ? OR ID_CONTA_RECEBEDOR = ?)''',
+                (id_conta, id_conta),
+            )
+            estornos_concluidos = cursor.fetchall()
+        por_original = {int(r[0]): r for r in estornos_concluidos if r[0] is not None}
+        por_reversa = {int(r[1]): r for r in estornos_concluidos if r[1] is not None}
 
         for movimentacao in movimentacoes_banco:
             tipo = 'saida' if movimentacao[1] == id_conta else 'entrada'
@@ -315,6 +378,25 @@ def buscar_movimentacoes():
 
             nome_contraparte = nome_recebedor if tipo == 'saida' else nome_pagador
 
+            estorno_original = por_original.get(int(movimentacao[0]))
+            estorno_reversa = por_reversa.get(int(movimentacao[0]))
+            cartao_ou_folha = movimentacao[15] is not None or movimentacao[16] == 1
+            boleto_pago = (
+                movimentacao[5] is not None and movimentacao[6] == 0
+                and int(movimentacao[17] or 0) == 1
+                and movimentacao[18] == movimentacao[1]
+                and movimentacao[19] == movimentacao[2]
+                and movimentacao[20] == movimentacao[3]
+            )
+            tipo_pix_qr = movimentacao[5] is not None and movimentacao[6] == 1
+            pode_devolver = (
+                estrutura_estornos
+                and not cartao_ou_folha
+                and not boleto_pago
+                and (tipo_pix_qr or movimentacao[5] is None)
+                and estorno_original is None
+                and estorno_reversa is None
+            )
             movimentacoes.append({
                 'id_movimentacao': movimentacao[0],
                 'id_pagador': movimentacao[1],
@@ -328,7 +410,24 @@ def buscar_movimentacoes():
                 'origem': origem,
                 'nome_pagador': nome_pagador,
                 'nome_recebedor': nome_recebedor,
-                'nome_contraparte': nome_contraparte
+                'nome_contraparte': nome_contraparte,
+                'status_operacao': (
+                    'DEVOLVIDA' if estorno_original else
+                    'DEVOLUCAO' if estorno_reversa else 'CONCLUIDO'
+                ),
+                'id_movimentacao_original': int(estorno_reversa[0]) if estorno_reversa and estorno_reversa[0] is not None else None,
+                'id_movimentacao_devolucao': int(estorno_original[1]) if estorno_original and estorno_original[1] is not None else None,
+                'id_estorno': int(estorno_original[2]) if estorno_original else (int(estorno_reversa[2]) if estorno_reversa else None),
+                'motivo_estorno': estorno_original[4] if estorno_original else (estorno_reversa[4] if estorno_reversa else None),
+                'data_estorno': str(estorno_original[5] or '') if estorno_original else (str(estorno_reversa[5] or '') if estorno_reversa else None),
+                'pode_devolver': bool(pode_devolver and (
+                    administrador_bancario
+                    or (tipo == 'entrada' and int(id_conta) == int(movimentacao[2]))
+                )),
+                'pode_estornar_boleto': bool(
+                    estrutura_estornos and administrador_bancario and boleto_pago
+                    and not cartao_ou_folha and estorno_original is None and estorno_reversa is None
+                ),
             })
 
         return jsonify({
