@@ -119,7 +119,7 @@ class LimitesIsoladosTests(unittest.TestCase):
 
     def test_migracao_e_aditiva_e_prepara_o_controle_concorrente(self):
         sql = (ROOT / 'migrations' / '002_limites_diurnos_noturnos.sql').read_text(encoding='utf-8').upper()
-        for esperado in ('SET AUTODDL OFF', 'POLITICA_LIMITE_OPERACAO', 'POLITICA_LIMITE_PERIODO',
+        for esperado in ('SET BAIL ON', 'POLITICA_LIMITE_OPERACAO', 'POLITICA_LIMITE_PERIODO',
                          'CONTROLE_LIMITE_CONTA', 'AUDITORIA_LIMITE', 'TG_AI_CONTA_LIMITE_CTRL'):
             self.assertIn(esperado, sql)
         self.assertNotIn('DROP TABLE', sql)
