@@ -37,7 +37,11 @@ _VALOR_MONETARIO = re.compile(r"\b(?:R\$\s*)?\d[\d.,]{0,20}\b")
 
 def _texto_normalizado(texto):
     decomposicao = unicodedata.normalize('NFKD', texto.casefold())
-    return ''.join(c for c in decomposicao if not unicodedata.combining(c))
+    return re.sub(r'\s+', ' ', ''.join(c for c in decomposicao if not unicodedata.combining(c))).strip()
+
+
+def _tem(normal, *padroes):
+    return any(re.search(padrao, normal) for padrao in padroes)
 
 
 def _contexto_atual():
@@ -94,33 +98,61 @@ def _conversa_autorizada(cursor, id_conversa, contexto, bloquear=False):
 
 def _detectar_intencao(texto, historico=()):
     normal = _texto_normalizado(texto)
-    if any(p in normal for p in ('saldo', 'quanto tenho')):
+    palavras = set(re.findall(r'[a-z0-9]+', normal))
+    if _tem(normal, r'\bsald\w*\b', r'\bquanto\s+(?:eu\s+)?(?:tenho|temos)\b'):
         return 'SALDO'
-    if any(p in normal for p in ('maiores gasto', 'maior gasto', 'onde mais gastei', 'maiores despesa')):
+    if _tem(normal, r'\b(?:maior|maiores|maiorzinha)\w*\b.*\b(?:gasto|despesa)\w*\b',
+            r'\b(?:gasto|despesa)\w*\b.*\bmaior\w*\b', r'\bonde\s+mais\s+gastei\b'):
         return 'MAIORES_GASTOS'
-    if ('semana passada' in normal or 'ultimos sete dias' in normal) and any(p in normal for p in ('gastei', 'gasto', 'despesa', 'paguei')):
-        return 'DESPESAS_SEMANA'
-    if any(p in normal for p in ('agendament', 'pagamento agendado', 'transferencia agendada')):
+    tem_periodo_semana = _tem(normal, r'\bseman\w*\b', r'\bultimos?\s+sete\s+dias\b', r'\bultimos?\s+7\s+dias\b')
+    tem_despesa = _tem(normal, r'\bgast\w*\b', r'\bdespes\w*\b', r'\bpaguei\b', r'\bpagamentos?\b')
+    tem_receita = _tem(normal, r'\breceb\w*\b', r'\bentrad\w*\b', r'\breceit\w*\b')
+    if tem_periodo_semana and tem_despesa:
+        return 'DESPESAS_SEMANA_PASSADA' if _tem(normal, r'\bpassad\w*\b') else 'DESPESAS_SEMANA'
+    if tem_periodo_semana and tem_receita:
+        return 'RECEITAS_SEMANA_PASSADA' if _tem(normal, r'\bpassad\w*\b') else 'RECEITAS_SEMANA'
+    if _tem(normal, r'\brecorr\w*\b'):
+        return 'RECORRENCIAS'
+    if _tem(normal, r'\bagend\w*\b') or (_tem(normal, r'\bmarcad\w*\b', r'\bfutur\w*\b', r'\bpara\s+depois\b')
+                                               and _tem(normal, r'\bpagament\w*\b', r'\btransfer\w*\b', r'\bpix\b', r'\bbolet\w*\b', r'\boperac\w*\b')):
         return 'AGENDAMENTOS'
-    if 'limite' in normal:
-        return 'LIMITES'
-    if any(p in normal for p in ('notificacao', 'cobranca pendente', 'boleto pendente', 'pendencia', 'dda')):
+    if _tem(normal, r'\bnotific\w*\b'):
+        return 'NOTIFICACOES'
+    if _tem(normal, r'\bpendent\w*\b', r'\bpendenc\w*\b') and _tem(
+        normal, r'\bpagament\w*\b', r'\bbolet\w*\b', r'\bcobranc\w*\b', r'\bdda\b'
+    ):
         return 'PENDENCIAS'
-    if any(p in normal for p in ('moviment', 'extrato', 'transacoes recentes', 'ultimas operacoes')):
+    if _tem(normal, r'\bbolet\w*\b', r'\bdda\b') and _tem(
+        normal, r'\bprecis\w*\s+pagar\b', r'\bpagar\b', r'\babert\w*\b', r'\bpendent\w*\b'
+    ):
+        return 'PENDENCIAS'
+    # Só classifica como pedido de execução quando há verbo de ação; perguntas
+    # sobre como usar o Pix continuam no fluxo de explicação do Arkhé.
+    if not _tem(normal, r'\bcomo\b', r'\bfunciona\b', r'\bfuncionamento\b') and _tem(
+        normal, r'\b(?:faz|faca|fazer|envia|enviar|manda|mandar|transfira|transferir|pague|pagar|efetue|executa|execute)\w*\b'
+    ) and _tem(normal, r'\bpix\b', r'\btransfer\w*\b', r'\bpagament\w*\b', r'\bbolet\w*\b'):
+        return 'PEDIDO_PAGAMENTO'
+    if _tem(normal, r'\blimit\w*\b', r'\bquanto\s+(?:ainda\s+)?posso\s+(?:transferir|movimentar)\b'):
+        return 'LIMITES'
+    if _tem(normal, r'\bmoviment\w*\b', r'\bextrat\w*\b', r'\btransac\w*\b', r'\bultim\w*\s+operac\w*\b'):
         return 'MOVIMENTACOES'
-    if any(p in normal for p in ('recebi', 'recebido', 'entrada', 'receitas')):
+    if tem_receita:
         return 'RECEITAS_SEMANA'
-    if any(p in normal for p in ('gastei', 'gastos', 'despesas', 'saida', 'quanto paguei')):
+    if _tem(normal, r'\bgast\w*\b', r'\bdespes\w*\b', r'\bsaidas?\b', r'\bquanto\s+paguei\b'):
         return 'DESPESAS_MES'
 
-    # Continuação curta mantém o assunto da última pergunta do mesmo histórico.
-    if len(normal.split()) <= 8 and any(p in normal for p in ('e antes', 'e semana', 'e mes', 'e no', 'e quanto', 'e ai')):
+    # Continuação curta herda o assunto anterior, mudando o período quando
+    # a pessoa diz apenas "e na semana passada?" ou "e neste mês?".
+    continuacao = len(palavras) <= 10 and _tem(normal, r'^(?:e\s+)?(?:na|no|neste|nesse|dessa|da|do|antes|depois|quanto|qual|isso|essa|esse|mais|tambem)\b')
+    if continuacao:
         for mensagem in reversed(historico):
             if mensagem.get('papel') == 'USUARIO':
                 anterior = _detectar_intencao(mensagem.get('conteudo', ''), ())
-                if anterior != 'GERAL':
-                    if 'semana' in normal and anterior == 'DESPESAS_MES':
-                        return 'DESPESAS_SEMANA'
+                if anterior not in ('GERAL', 'PEDIDO_PAGAMENTO'):
+                    if tem_periodo_semana and anterior in ('DESPESAS_MES', 'DESPESAS_SEMANA', 'DESPESAS_SEMANA_PASSADA'):
+                        return 'DESPESAS_SEMANA_PASSADA' if _tem(normal, r'\bpassad\w*\b') else 'DESPESAS_SEMANA'
+                    if tem_periodo_semana and anterior in ('RECEITAS_SEMANA', 'RECEITAS_SEMANA_PASSADA'):
+                        return 'RECEITAS_SEMANA_PASSADA' if _tem(normal, r'\bpassad\w*\b') else 'RECEITAS_SEMANA'
                     return anterior
     return 'GERAL'
 
@@ -136,19 +168,29 @@ def _dados_financeiros(cursor, contexto, intencao):
             raise RuntimeError('saldo indisponivel')
         return {'saldo': f'{Decimal(str(saldo)):.2f}', 'moeda': 'BRL'}
 
-    if intencao in ('DESPESAS_MES', 'DESPESAS_SEMANA', 'RECEITAS_SEMANA'):
+    if intencao in ('DESPESAS_MES', 'DESPESAS_SEMANA', 'DESPESAS_SEMANA_PASSADA',
+                    'RECEITAS_SEMANA', 'RECEITAS_SEMANA_PASSADA'):
         if intencao == 'DESPESAS_MES':
             inicio = hoje.replace(day=1)
             fim = hoje + timedelta(days=1)
             direcao, rotulo = 'ID_PAGADOR', 'despesas do mês'
+        elif intencao in ('DESPESAS_SEMANA_PASSADA', 'RECEITAS_SEMANA_PASSADA'):
+            inicio = hoje - timedelta(days=hoje.weekday() + 7)
+            fim = inicio + timedelta(days=7)
+            direcao = 'ID_PAGADOR' if intencao == 'DESPESAS_SEMANA_PASSADA' else 'ID_RECEBEDOR'
+            rotulo = 'despesas da semana passada' if intencao == 'DESPESAS_SEMANA_PASSADA' else 'recebimentos da semana passada'
         elif intencao == 'DESPESAS_SEMANA':
             inicio = hoje - timedelta(days=6)
             fim = hoje + timedelta(days=1)
             direcao, rotulo = 'ID_PAGADOR', 'despesas dos últimos sete dias'
-        else:
+        elif intencao == 'RECEITAS_SEMANA':
             inicio = hoje - timedelta(days=6)
             fim = hoje + timedelta(days=1)
             direcao, rotulo = 'ID_RECEBEDOR', 'recebimentos dos últimos sete dias'
+        else:
+            inicio = hoje.replace(day=1)
+            fim = hoje + timedelta(days=1)
+            direcao, rotulo = 'ID_PAGADOR', 'despesas do mês'
         cursor.execute(
             f'''SELECT CAST(COALESCE(SUM(VALOR), 0) AS DECIMAL(18,2)), COUNT(*)
                 FROM MOVIMENTACAO WHERE {direcao} = ? AND DATA_MOVIMENTACAO >= ?
@@ -194,7 +236,9 @@ def _dados_financeiros(cursor, contexto, intencao):
             '''SELECT FIRST 10 TIPO_OPERACAO, VALOR, DATA_AGENDADA, STATUS, MOTIVO_FALHA
                FROM AGENDAMENTO_FINANCEIRO
                WHERE ID_USUARIO = ? AND ID_CONTA = ?
-               ORDER BY DATA_AGENDADA DESC, ID_AGENDAMENTO DESC''',
+                 AND STATUS IN ('AGENDADO', 'EXECUTANDO')
+                 AND DATA_AGENDADA >= CURRENT_TIMESTAMP
+               ORDER BY DATA_AGENDADA, ID_AGENDAMENTO''',
             (contexto['id_usuario'], conta),
         )
         return {'agendamentos': [
@@ -202,15 +246,62 @@ def _dados_financeiros(cursor, contexto, intencao):
              'status': r[3], 'motivo': r[4]} for r in cursor.fetchall()
         ], 'fuso': 'America/Sao_Paulo', 'moeda': 'BRL'}
 
+    if intencao == 'RECORRENCIAS':
+        cursor.execute(
+            '''SELECT R.TIPO_OPERACAO, R.VALOR, R.FREQUENCIA, R.PROXIMA_EXECUCAO,
+                      R.STATUS, R.EXECUCOES_CRIADAS, R.LIMITE_EXECUCOES,
+                      COALESCE(D.NOME_FANTASIA, D.RAZAO_SOCIAL, UD.NOME,
+                               CR.NOME_FANTASIA, CR.RAZAO_SOCIAL, UR.NOME, 'Destinatário')
+               FROM RECORRENCIA_FINANCEIRA R
+               LEFT JOIN CONTA D ON D.ID_CONTA = R.ID_CONTA_DESTINO
+               LEFT JOIN USUARIO UD ON UD.ID_USUARIO = D.ID_USUARIO
+               LEFT JOIN COBRANCA CB ON CB.ID_COBRANCA = R.ID_COBRANCA
+               LEFT JOIN CONTA CR ON CR.ID_CONTA = CB.ID_RECEBEDOR
+               LEFT JOIN USUARIO UR ON UR.ID_USUARIO = CR.ID_USUARIO
+               WHERE R.ID_USUARIO = ? AND R.ID_CONTA = ? AND R.STATUS = 'ATIVA'
+               ORDER BY R.CRIADO_EM DESC, R.ID_RECORRENCIA DESC''',
+            (contexto['id_usuario'], conta),
+        )
+        return {'recorrencias': [
+            {'tipo': r[0], 'valor': f'{Decimal(str(r[1])):.2f}', 'frequencia': r[2],
+             'proxima_execucao': _data_json(r[3]), 'status': r[4],
+             'execucoes_criadas': int(r[5] or 0),
+             'limite_execucoes': int(r[6]) if r[6] is not None else None, 'destinatario': r[7]}
+            for r in cursor.fetchall()
+        ], 'fuso': 'America/Sao_Paulo', 'moeda': 'BRL'}
+
     if intencao == 'LIMITES':
         return _resumo_conta(cursor, conta, contexto['tipo_conta'])
 
-    if intencao == 'PENDENCIAS':
-        cursor.execute(
-            '''SELECT COUNT(*) FROM COBRANCA
-               WHERE ID_PAGADOR = ? AND TIPO_COBRANCA = 0 AND STATUS NOT IN (1, 2)''', (conta,),
-        )
-        boletos = int(cursor.fetchone()[0] or 0)
+    if intencao in ('PENDENCIAS', 'NOTIFICACOES'):
+        boletos = []
+        agendamentos = []
+        if intencao == 'PENDENCIAS':
+            cursor.execute(
+                '''SELECT FIRST 10 CB.VALOR, CB.DATA_VENCIMENTO,
+                          COALESCE(D.NOME_FANTASIA, D.RAZAO_SOCIAL, U.NOME, 'Beneficiário')
+                   FROM COBRANCA CB
+                   INNER JOIN CONTA D ON D.ID_CONTA = CB.ID_RECEBEDOR
+                   INNER JOIN USUARIO U ON U.ID_USUARIO = D.ID_USUARIO
+                   WHERE CB.ID_PAGADOR = ? AND CB.TIPO_COBRANCA = 0 AND CB.STATUS = 0
+                   ORDER BY CB.DATA_VENCIMENTO, CB.ID_COBRANCA''', (conta,),
+            )
+            boletos = [
+                {'valor': f'{Decimal(str(r[0])):.2f}', 'vencimento': _data_json(r[1]), 'beneficiario': r[2]}
+                for r in cursor.fetchall()
+            ]
+            cursor.execute(
+                '''SELECT FIRST 10 TIPO_OPERACAO, VALOR, DATA_AGENDADA, STATUS
+                   FROM AGENDAMENTO_FINANCEIRO
+                   WHERE ID_USUARIO = ? AND ID_CONTA = ? AND STATUS IN ('AGENDADO', 'EXECUTANDO')
+                     AND DATA_AGENDADA >= CURRENT_TIMESTAMP
+                   ORDER BY DATA_AGENDADA, ID_AGENDAMENTO''',
+                (contexto['id_usuario'], conta),
+            )
+            agendamentos = [
+                {'tipo': r[0], 'valor': f'{Decimal(str(r[1])):.2f}', 'data': _data_json(r[2]), 'status': r[3]}
+                for r in cursor.fetchall()
+            ]
         cursor.execute(
             '''SELECT COUNT(*) FROM NOTIFICACAO_DESTINATARIO D
                INNER JOIN NOTIFICACAO N ON N.ID_NOTIFICACAO = D.ID_NOTIFICACAO
@@ -221,7 +312,8 @@ def _dados_financeiros(cursor, contexto, intencao):
                  AND (N.CATEGORIA = 'SEGURANCA_CRITICA' OR COALESCE(P.ATIVO, 1) = 1)''',
             (contexto['id_usuario'], conta),
         )
-        return {'boletos_pendentes': boletos, 'notificacoes_nao_lidas': int(cursor.fetchone()[0] or 0)}
+        return {'boletos_pendentes': boletos, 'agendamentos_pendentes': agendamentos,
+                'notificacoes_nao_lidas': int(cursor.fetchone()[0] or 0)}
 
     return None
 
@@ -309,7 +401,7 @@ def _valores_monetarios(dados):
         for chave, valor in dados.items():
             if isinstance(valor, (dict, list)):
                 valores.update(_valores_monetarios(valor))
-            elif any(p in str(chave).casefold() for p in ('valor', 'saldo', 'total', 'limite', 'usado', 'utilizado', 'disponivel')) and valor is not None:
+            elif re.search(r'(?:^|_)(?:valor|saldo|total|limite_por_operacao|limite_acumulado|disponivel|usado|utilizado)(?:_|$)', str(chave).casefold()) and valor is not None:
                 try:
                     valores.add(Decimal(str(valor)).quantize(Decimal('0.01')))
                 except Exception:
@@ -330,11 +422,13 @@ def _resposta_financeira_verificada(intencao, dados):
 
     if intencao == 'SALDO':
         return f'Seu saldo na conta ativa é {brl(dados["saldo"])}.'
-    if intencao in ('DESPESAS_MES', 'DESPESAS_SEMANA'):
-        periodo = 'No mês atual' if intencao == 'DESPESAS_MES' else 'Nos últimos sete dias'
+    if intencao in ('DESPESAS_MES', 'DESPESAS_SEMANA', 'DESPESAS_SEMANA_PASSADA'):
+        periodo = ('No mês atual' if intencao == 'DESPESAS_MES' else
+                   'Na semana passada' if intencao == 'DESPESAS_SEMANA_PASSADA' else 'Nos últimos sete dias')
         return f'{periodo}, suas despesas somam {brl(dados["total"])} em {dados["quantidade"]} movimentação(ões).'
-    if intencao == 'RECEITAS_SEMANA':
-        return f'Nos últimos sete dias, você recebeu {brl(dados["total"])} em {dados["quantidade"]} movimentação(ões).'
+    if intencao in ('RECEITAS_SEMANA', 'RECEITAS_SEMANA_PASSADA'):
+        periodo = 'Na semana passada' if intencao == 'RECEITAS_SEMANA_PASSADA' else 'Nos últimos sete dias'
+        return f'{periodo}, você recebeu {brl(dados["total"])} em {dados["quantidade"]} movimentação(ões).'
     if intencao == 'MAIORES_GASTOS':
         itens = dados.get('maiores_gastos') or []
         if not itens:
@@ -356,9 +450,44 @@ def _resposta_financeira_verificada(intencao, dados):
             return 'Não encontrei agendamentos para esta conta.'
         lista = '; '.join(f'{item["tipo"]}: {brl(item["valor"])} em {item["data"]} — {item["status"]}' for item in itens[:8])
         return f'Encontrei estes agendamentos: {lista}.'
+    if intencao == 'RECORRENCIAS':
+        itens = dados.get('recorrencias') or []
+        if not itens:
+            return 'Não encontrei recorrências cadastradas para esta conta.'
+        lista = '; '.join(
+            f'{item["tipo"]} de {brl(item["valor"])} para {item["destinatario"]}, '
+            f'{item["frequencia"].lower()}, status {item["status"]}' +
+            (f', próxima execução em {item["proxima_execucao"]}' if item.get('proxima_execucao') else '')
+            for item in itens[:8]
+        )
+        return f'Encontrei {len(itens)} recorrência(s): {lista}.'
     if intencao == 'PENDENCIAS':
-        return (f'Na conta ativa há {dados["boletos_pendentes"]} boleto(s) pendente(s) '
-                f'e {dados["notificacoes_nao_lidas"]} notificação(ões) não lida(s).')
+        boletos = dados.get('boletos_pendentes') or []
+        agendamentos = dados.get('agendamentos_pendentes') or []
+        partes = []
+        if boletos:
+            lista = '; '.join(
+                f'{brl(item["valor"])} para {item["beneficiario"]}' +
+                (f', vencimento {item["vencimento"]}' if item.get('vencimento') else '')
+                for item in boletos[:5]
+            )
+            partes.append(f'{len(boletos)} boleto(s) pendente(s): {lista}')
+        else:
+            partes.append('não há boletos pendentes no DDA')
+        if agendamentos:
+            lista = '; '.join(
+                f'{item["tipo"]} de {brl(item["valor"])} em {item["data"]}'
+                for item in agendamentos[:5]
+            )
+            partes.append(f'{len(agendamentos)} pagamento(s) agendado(s): {lista}')
+        if dados.get('notificacoes_nao_lidas'):
+            partes.append(f'{dados["notificacoes_nao_lidas"]} notificação(ões) não lida(s)')
+        return 'Na conta ativa, ' + '; '.join(partes) + '.'
+    if intencao == 'NOTIFICACOES':
+        quantidade = int(dados.get('notificacoes_nao_lidas') or 0)
+        if quantidade == 0:
+            return 'Você não tem notificações não lidas elegíveis nesta conta.'
+        return f'Você tem {quantidade} notificação(ões) não lida(s) para esta conta. Você pode abrir o sino de notificações para ver o histórico.'
     if intencao == 'LIMITES':
         operacoes = dados.get('operacoes') or []
         partes = []
@@ -372,9 +501,21 @@ def _resposta_financeira_verificada(intencao, dados):
                     detalhe += f', disponível agora {brl(restante)}'
                 partes.append(detalhe)
         if not partes:
-            return 'Não há limite diurno/noturno configurado para exibir nesta conta.'
+            return f'Não há limite diurno/noturno adicional configurado para a conta ativa no período {str(dados.get("periodo", "atual")).lower()}.'
         return f'No período {str(dados.get("periodo", "atual")).lower()}, {"; ".join(partes)}.'
     return None
+
+
+def _resposta_indica_dado_ausente(texto):
+    normal = _texto_normalizado(texto)
+    return _tem(normal, r'\bnao\s+(?:encontrei|ha|tem|tenho|consigo|posso|esta|estao|foi)\b',
+                r'\b(?:indisponivel|indisponiveis|nao disponivel|nao disponiveis)\b',
+                r'\bnao tenho acesso\b', r'\bnao foi possivel consultar\b')
+
+
+def _resposta_pedido_financeiro():
+    return ('Ainda não consigo fazer Pix, pagamentos ou transferências pelo chat. Nenhuma operação foi iniciada. '
+            'Posso consultar sua conta ou explicar como usar o fluxo de Pix disponível no Arkhé.')
 
 
 def listar_conversas():
@@ -478,6 +619,7 @@ def enviar_mensagem(id_conversa):
         return jsonify({'mensagem': 'Por segurança, não envie PIN, senha, CVV, token ou credenciais. O MAURO não precisa desses dados.'}), 400
 
     cursor = None
+    intencao = 'GERAL'
     try:
         cursor = con.cursor()
         conversa = _conversa_autorizada(cursor, id_conversa, contexto)
@@ -494,7 +636,7 @@ def enviar_mensagem(id_conversa):
         )
         historico = [{'papel': r[0], 'conteudo': r[1]} for r in reversed(cursor.fetchall())]
         intencao = _detectar_intencao(texto, historico)
-        dados = _dados_financeiros(cursor, contexto, intencao) if intencao != 'GERAL' else {
+        dados = _dados_financeiros(cursor, contexto, intencao) if intencao not in ('GERAL', 'PEDIDO_PAGAMENTO') else {
             'tipo_conta': contexto['tipo_conta'],
             'funcionalidades_conhecidas': [
                 'saldo, extrato e resumo financeiro', 'Pix e cobranças', 'boletos e DDA',
@@ -504,7 +646,15 @@ def enviar_mensagem(id_conversa):
         }
         # Fecha a leitura do Firebird antes da chamada de rede ao modelo.
         con.commit()
-        resposta, falha = _responder_gemini(texto, historico, intencao, dados)
+        if intencao == 'PEDIDO_PAGAMENTO':
+            resposta, falha = _resposta_pedido_financeiro(), None
+        elif intencao in ('AGENDAMENTOS', 'RECORRENCIAS', 'PENDENCIAS', 'NOTIFICACOES'):
+            # Consultas de listas/estados são respondidas a partir do resultado
+            # real para separar lista vazia de indisponibilidade e evitar que o
+            # modelo preencha estados que não vieram do Firebird.
+            resposta, falha = _resposta_financeira_verificada(intencao, dados), None
+        else:
+            resposta, falha = _responder_gemini(texto, historico, intencao, dados)
         if falha:
             con.rollback()
             status = 503
@@ -526,7 +676,9 @@ def enviar_mensagem(id_conversa):
                     valores_informados.add(Decimal(formato).quantize(Decimal('0.01')))
                 except Exception:
                     continue
-            if valores_informados - valores_autorizados or (valores_autorizados and not valores_informados):
+            if (valores_informados - valores_autorizados
+                    or (valores_autorizados and not valores_informados)
+                    or _resposta_indica_dado_ausente(resposta)):
                 resposta = _resposta_financeira_verificada(intencao, dados) or resposta
 
         cursor.execute('SELECT COUNT(*) FROM MAURO_MENSAGEM WHERE ID_CONVERSA = ? AND PAPEL = \'USUARIO\'', (id_conversa,))
@@ -563,8 +715,25 @@ def enviar_mensagem(id_conversa):
         }), 200
     except Exception:
         con.rollback()
-        current_app.logger.exception('Falha ao processar mensagem do MAURO')
-        return jsonify({'mensagem': 'Não consegui consultar seus dados agora. Tente novamente em instantes.'}), 503
+        current_app.logger.exception('Falha no MAURO para a intenção %s', intencao)
+        try:
+            registrar_evento_flask(
+                evento='MAURO_CONSULTA', resultado='FALHA', motivo='Consulta de dados indisponível',
+                id_usuario=contexto['id_usuario'], id_conta=contexto['id_conta'], operacao='READ',
+                origem=request.path, dados={'conversa_id': int(id_conversa), 'intencao': intencao},
+            )
+        except Exception:
+            current_app.logger.warning('Falha ao registrar auditoria da consulta indisponível do MAURO')
+        respostas_indisponibilidade = {
+            'AGENDAMENTOS': 'Não consegui consultar seus agendamentos agora. Tente novamente em instantes; nenhum dado foi alterado.',
+            'RECORRENCIAS': 'Não consegui consultar suas recorrências agora. Tente novamente em instantes; nenhum dado foi alterado.',
+            'PENDENCIAS': 'Não consegui consultar boletos e pagamentos pendentes agora. Tente novamente em instantes; nenhum dado foi alterado.',
+            'NOTIFICACOES': 'Não consegui consultar suas notificações agora. Tente novamente em instantes.',
+            'LIMITES': 'Não consegui consultar os limites desta conta agora. Tente novamente em instantes.',
+        }
+        return jsonify({'mensagem': respostas_indisponibilidade.get(
+            intencao, 'Não consegui consultar seus dados agora. Tente novamente em instantes.'),
+            'codigo': 'CONSULTA_INDISPONIVEL'}), 503
     finally:
         if cursor:
             cursor.close()
