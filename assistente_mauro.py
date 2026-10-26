@@ -20,6 +20,7 @@ from banco import con
 from funcao import calcular_saldo, descobre_id_conta, descobre_id_usuario, usuario_pode_acessar_conta
 from limites import _resumo_conta
 from main import app
+import mauro_pix
 
 
 FUSO = ZoneInfo('America/Sao_Paulo')
@@ -130,7 +131,10 @@ def _detectar_intencao(texto, historico=()):
     # sobre como usar o Pix continuam no fluxo de explicação do Arkhé.
     if not _tem(normal, r'\bcomo\b', r'\bfunciona\b', r'\bfuncionamento\b') and _tem(
         normal, r'\b(?:faz|faca|fazer|envia|enviar|manda|mandar|transfira|transferir|pague|pagar|efetue|executa|execute)\w*\b'
-    ) and _tem(normal, r'\bpix\b', r'\btransfer\w*\b', r'\bpagament\w*\b', r'\bbolet\w*\b'):
+    ) and _tem(normal, r'\bpix\b', r'\btransfer\w*\b', r'\bpagament\w*\b', r'\bbolet\w*\b', r'\bchave\b', r'\bconta\b'):
+        return 'PEDIDO_PAGAMENTO'
+    if (_tem(normal, r'\bpix\b') and mauro_pix.extrair_valor(texto)[0] is not None
+            and _tem(normal, r'\bpara\b', r'\bpra\b', r'\bchave\b', r'\bdestinat\w*\b')):
         return 'PEDIDO_PAGAMENTO'
     if _tem(normal, r'\blimit\w*\b', r'\bquanto\s+(?:ainda\s+)?posso\s+(?:transferir|movimentar)\b'):
         return 'LIMITES'
@@ -590,10 +594,11 @@ def listar_mensagens(id_conversa):
             '''SELECT FIRST 100 ID_MENSAGEM, PAPEL, CONTEUDO, CRIADA_EM
                FROM MAURO_MENSAGEM WHERE ID_CONVERSA = ? ORDER BY ID_MENSAGEM''', (id_conversa,),
         )
+        proposta_pix = mauro_pix.obter_ultima_proposta(cursor, id_conversa, contexto) if mauro_pix.tabela_instalada(cursor) else None
         return jsonify({'conversa': {'id': int(conversa[0]), 'titulo': conversa[1]}, 'mensagens': [
             {'id': int(r[0]), 'papel': r[1], 'conteudo': r[2], 'criada_em': _data_json(r[3])}
             for r in cursor.fetchall()
-        ]}), 200
+        ], 'proposta_pix': proposta_pix}), 200
     except Exception:
         current_app.logger.exception('Falha ao carregar mensagens do MAURO')
         return jsonify({'mensagem': 'Não foi possível carregar esta conversa agora.'}), 503
@@ -622,7 +627,7 @@ def enviar_mensagem(id_conversa):
     intencao = 'GERAL'
     try:
         cursor = con.cursor()
-        conversa = _conversa_autorizada(cursor, id_conversa, contexto)
+        conversa = _conversa_autorizada(cursor, id_conversa, contexto, bloquear=True)
         if not conversa:
             con.rollback()
             return jsonify({'mensagem': 'Conversa não encontrada.'}), 404
@@ -636,6 +641,29 @@ def enviar_mensagem(id_conversa):
         )
         historico = [{'papel': r[0], 'conteudo': r[1]} for r in reversed(cursor.fetchall())]
         intencao = _detectar_intencao(texto, historico)
+        pix_instalado = mauro_pix.tabela_instalada(cursor)
+        proposta_aberta = mauro_pix.proposta_ativa(cursor, id_conversa, contexto) if pix_instalado and intencao == 'GERAL' else None
+        continuar_pix = bool(proposta_aberta and intencao == 'GERAL')
+        fluxo_pix = None
+        if intencao == 'PEDIDO_PAGAMENTO' and not pix_instalado:
+            fluxo_pix = {
+                'resposta': 'O fluxo seguro de Pix pelo MAURO ainda está sendo instalado. Nenhuma operação foi iniciada. Use o fluxo Pix da dashboard até a atualização terminar.',
+                'proposta': None, 'auditoria': [], 'persistir_como_operacao': True,
+            }
+        elif intencao == 'PEDIDO_PAGAMENTO' or continuar_pix:
+            fluxo_pix = mauro_pix.processar_mensagem(
+                cursor, id_conversa, contexto, texto,
+                pedido_explicito=(intencao == 'PEDIDO_PAGAMENTO'),
+            )
+        if fluxo_pix is not None:
+            resposta, falha = fluxo_pix['resposta'], None
+            proposta_pix = fluxo_pix.get('proposta')
+            mensagens_pix_auditoria = fluxo_pix.get('auditoria', [])
+            texto_persistido = mauro_pix.sanitizar_mensagem_operacao(texto)
+        else:
+            proposta_pix = None
+            mensagens_pix_auditoria = []
+            texto_persistido = texto
         dados = _dados_financeiros(cursor, contexto, intencao) if intencao not in ('GERAL', 'PEDIDO_PAGAMENTO') else {
             'tipo_conta': contexto['tipo_conta'],
             'funcionalidades_conhecidas': [
@@ -644,9 +672,13 @@ def enviar_mensagem(id_conversa):
                 'notificações e preferências', 'cartões e faturas',
             ],
         }
-        # Fecha a leitura do Firebird antes da chamada de rede ao modelo.
-        con.commit()
-        if intencao == 'PEDIDO_PAGAMENTO':
+        # Consultas Gemini liberam os locks antes da chamada externa; o fluxo
+        # determinístico de Pix mantém proposta e histórico na mesma transação.
+        if fluxo_pix is None:
+            con.commit()
+        if fluxo_pix is not None:
+            pass
+        elif intencao == 'PEDIDO_PAGAMENTO':
             resposta, falha = _resposta_pedido_financeiro(), None
         elif intencao in ('AGENDAMENTOS', 'RECORRENCIAS', 'PENDENCIAS', 'NOTIFICACOES'):
             # Consultas de listas/estados são respondidas a partir do resultado
@@ -667,7 +699,7 @@ def enviar_mensagem(id_conversa):
             )
             return jsonify({'mensagem': falha, 'codigo': 'ASSISTENTE_INDISPONIVEL'}), status
 
-        if intencao != 'GERAL':
+        if fluxo_pix is None and intencao != 'GERAL':
             valores_autorizados = _valores_monetarios(dados)
             valores_informados = set()
             for valor in re.findall(r'R\$\s*([\d.]+,\d{2}|\d+\.\d{2})', resposta, re.IGNORECASE):
@@ -684,11 +716,11 @@ def enviar_mensagem(id_conversa):
         cursor.execute('SELECT COUNT(*) FROM MAURO_MENSAGEM WHERE ID_CONVERSA = ? AND PAPEL = \'USUARIO\'', (id_conversa,))
         primeira_mensagem = int(cursor.fetchone()[0] or 0) == 0
         if primeira_mensagem:
-            titulo = texto[:117] + ('…' if len(texto) > 117 else '')
+            titulo = texto_persistido[:117] + ('…' if len(texto_persistido) > 117 else '')
             cursor.execute('UPDATE MAURO_CONVERSA SET TITULO = ? WHERE ID_CONVERSA = ?', (titulo, id_conversa))
         cursor.execute(
             "INSERT INTO MAURO_MENSAGEM (ID_CONVERSA, PAPEL, CONTEUDO) VALUES (?, 'USUARIO', ?) RETURNING ID_MENSAGEM",
-            (id_conversa, texto),
+            (id_conversa, texto_persistido),
         )
         id_usuario_msg = int(cursor.fetchone()[0])
         cursor.execute(
@@ -708,10 +740,16 @@ def enviar_mensagem(id_conversa):
         )
         if not auditado:
             current_app.logger.warning('Consulta MAURO concluida sem confirmacao do outbox de auditoria')
+        for evento_pix in mensagens_pix_auditoria:
+            mauro_pix._auditar(
+                evento_pix['id'], contexto, evento_pix['evento'], evento_pix['resultado'],
+                valor=evento_pix.get('valor'),
+            )
         return jsonify({
             'mensagem': {'id': id_assistente_msg, 'papel': 'ASSISTENTE', 'conteudo': resposta,
                          'criada_em': datetime.now(FUSO).isoformat(timespec='seconds')},
             'conversa_id': int(id_conversa),
+            'proposta_pix': proposta_pix,
         }), 200
     except Exception:
         con.rollback()
@@ -744,3 +782,4 @@ def registrar_rotas(app_flask):
     app_flask.add_url_rule('/api/v1/assistente/conversas', 'mauro_criar_conversa', criar_conversa, methods=['POST'])
     app_flask.add_url_rule('/api/v1/assistente/conversas/<int:id_conversa>/mensagens', 'mauro_listar_mensagens', listar_mensagens, methods=['GET'])
     app_flask.add_url_rule('/api/v1/assistente/conversas/<int:id_conversa>/mensagens', 'mauro_enviar_mensagem', enviar_mensagem, methods=['POST'])
+    mauro_pix.registrar_rotas(app_flask, _contexto_atual, _conversa_autorizada)

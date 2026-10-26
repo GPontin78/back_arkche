@@ -37,6 +37,15 @@ def carregar_servico():
         ),
         'limites': types.SimpleNamespace(_resumo_conta=lambda *_: {}),
         'main': types.SimpleNamespace(app=AppStub()),
+        'mauro_pix': types.SimpleNamespace(
+            extrair_valor=lambda *_: (None, None),
+            proposta_ativa=lambda *_args, **_kwargs: None,
+            processar_mensagem=lambda *_args, **_kwargs: None,
+            sanitizar_mensagem_operacao=lambda texto: texto,
+            tabela_instalada=lambda *_: False,
+            obter_ultima_proposta=lambda *_: None,
+            registrar_rotas=lambda *_: None,
+        ),
     }
     anteriores = {nome: sys.modules.get(nome) for nome in substitutos}
     sys.modules.update(substitutos)
@@ -126,6 +135,16 @@ class TestIntencoesMauro(unittest.TestCase):
     def test_pedido_de_pix_nao_e_consulta_nem_operacao(self):
         self.assertEqual(mauro._detectar_intencao('Você consegue fazer um Pix?'), 'PEDIDO_PAGAMENTO')
         self.assertIn('ainda não consigo fazer pix', mauro._resposta_pedido_financeiro().lower())
+
+    def test_variações_de_pedido_pix_por_linguagem_natural(self):
+        for texto in (
+            'Mauro, quero fazer um Pix.',
+            'Transfira R$ 20 para esta chave.',
+            'Quero mandar R$ 15 para minha outra conta.',
+            'Quero fazer um Pix de R$ 8,00 para o destinatário da chave',
+        ):
+            with self.subTest(texto=texto):
+                self.assertEqual(mauro._detectar_intencao(texto), 'PEDIDO_PAGAMENTO')
 
 
 class TestConsultasMauro(unittest.TestCase):
