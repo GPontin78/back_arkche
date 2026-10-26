@@ -52,10 +52,15 @@ def conferir(conexao):
 def conferir_log(arquivo):
     cursor = arquivo.cursor()
     try:
-        cursor.execute("SELECT TRIM(RDB$FIELD_NAME) FROM RDB$RELATION_FIELDS WHERE RDB$RELATION_NAME='LOG' ORDER BY RDB$FIELD_POSITION")
-        campos = [r[0] for r in cursor.fetchall()]
+        cursor.execute("""SELECT TRIM(R.RDB$FIELD_NAME),F.RDB$FIELD_TYPE,R.RDB$IDENTITY_TYPE
+            FROM RDB$RELATION_FIELDS R JOIN RDB$FIELDS F ON F.RDB$FIELD_NAME=R.RDB$FIELD_SOURCE
+            WHERE R.RDB$RELATION_NAME='LOG' ORDER BY R.RDB$FIELD_POSITION""")
+        definicoes = cursor.fetchall()
+        campos = [r[0] for r in definicoes]
         if campos and campos != CAMPOS_LOG:
             raise RuntimeError('Já existe uma LOG com estrutura diferente. Nenhuma tabela foi substituída.')
+        if campos and ([r[1] for r in definicoes] != [16,35,37,37,16,37,261,261] or definicoes[0][2] != 1):
+            raise RuntimeError('Tipos ou identidade da LOG diferentes da estrutura estudada')
         return bool(campos)
     finally:
         cursor.close()
