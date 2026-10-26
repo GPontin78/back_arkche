@@ -180,6 +180,9 @@ def whatsapp_saldo_conta():
             return jsonify({"mensagem": "Saldo indisponivel no momento"}), 503
         return jsonify({"vinculado": True, "id_usuario": identidade["id_usuario"],
                         "id_conta": id_conta, "nivel": autorizada["nivel"],
+                        "nome_conta": autorizada["descricao"],
+                        "tipo_conta": autorizada["tipo_conta"],
+                        "conta_final": autorizada["conta_final"],
                         "saldo": float(saldo)}), 200
     except Exception:
         app.logger.exception("Falha ao consultar saldo de conta WhatsApp")
@@ -342,7 +345,7 @@ def _listar_contas_autorizadas(chat_id):
         cursor.execute(
             """SELECT C.ID_CONTA, C.WHATSAPP_AUTORIZADO, C.WHATSAPP_NIVEL,
                       C.TIPO_CONTA, U.TELEFONE, C.NOME_FANTASIA,
-                      C.RAZAO_SOCIAL, C.NUMERO_CONTA
+                      C.RAZAO_SOCIAL, C.NUMERO_CONTA, U.NOME
                FROM CONTA C JOIN USUARIO U ON U.ID_USUARIO = C.ID_USUARIO
                WHERE C.ID_USUARIO = ? AND C.ID_CONTA IN (""" + placeholders + ")",
             (identidade["id_usuario"], *ids))
@@ -361,9 +364,10 @@ def _listar_contas_autorizadas(chat_id):
         nivel = min(nivel, 2 if tipo == 0 else 3)
         if nivel >= 1:
             # Um apelido ajuda o MAURO a diferenciar contas sem expor CPF ou CNPJ.
-            descricao = "Conta pessoal" if tipo == 0 else str(conta[5] or conta[6] or "Conta empresarial")
+            descricao = str(conta[8] or 'Conta pessoal') if tipo == 0 else str(conta[5] or conta[6] or conta[8] or "Conta empresarial")
             contas.append({"id_conta": int(conta[0]), "tipo_conta": tipo, "nivel": nivel,
-                           "descricao": descricao, "conta_final": str(conta[7] or "")[-4:]})
+                           "descricao": descricao, "nome_titular": str(conta[8] or ''),
+                           "conta_final": str(conta[7] or "")[-4:]})
     contas.sort(key=lambda item: item["id_conta"])
     return identidade, contas
 

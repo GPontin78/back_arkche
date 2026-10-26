@@ -92,7 +92,7 @@ class CursorFalso:
         id_usuario, *ids = parametros
         self.linhas = [(id_conta, autorizado, nivel, tipo, telefone,
                         "Empresa ficticia" if tipo == 1 else None, None,
-                        "0000" + str(id_conta))
+                        "0000" + str(id_conta), "Titular ficticio")
                        for id_conta, (usuario, autorizado, nivel, tipo, telefone)
                        in self.contas.items() if id_conta in ids and usuario == id_usuario]
 
@@ -246,6 +246,8 @@ class WhatsAppVinculosTests(unittest.TestCase):
         self.assertEqual(resposta.json["id_conta"], 10)
         self.assertEqual(resposta.json["nivel"], 2)
         self.assertEqual(resposta.json["saldo"], 123.45)
+        self.assertEqual(resposta.json["nome_conta"], "Titular ficticio")
+        self.assertEqual(resposta.json["tipo_conta"], 0)
         self.assertEqual(self.wa._conta_vinculada(CHAT)["id_conta"], 20)
 
     def test_saldo_conta_bloqueia_credencial_ausente_e_outra_titularidade(self):

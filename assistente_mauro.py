@@ -97,8 +97,40 @@ def _pedido_fora_escopo(texto, historico=()):
         for mensagem in reversed(historico):
             if mensagem.get('papel') == 'USUARIO':
                 anterior = _texto_normalizado(mensagem.get('conteudo', ''))
-                return not bool(_ASSUNTO_BANCARIO.search(anterior))
+                if _ASSUNTO_PROGRAMACAO.search(anterior):
+                    return True
+                if _ASSUNTO_BANCARIO.search(anterior):
+                    return False
+                if not re.match(r'^(e\b|na\b|no\b|neste\b|nessa\b|esse\b|essa\b|isso\b|antes\b|depois\b|mais\b|tambem\b)', anterior):
+                    return True
     return True
+
+
+def _outra_conta_solicitada(texto, contexto, historico=()):
+    normal = _texto_normalizado(texto).strip(' .!?')
+    tipo = contexto['tipo_conta']
+    if re.search(r'\b(?:conta\s+)?(?:pj|juridica|empresarial|empresa)\b', normal) and tipo != 'PJ':
+        return True
+    if re.search(r'\b(?:conta\s+)?(?:pf|fisica|pessoal)\b', normal) and tipo != 'PF':
+        return True
+    referencia = re.search(
+        r'\bconta\s+(?:(?:d[aoe]|do titular|da titular)\s+)?(.+)$'
+        r'|\bsaldo\s+d[aoe]\s+(?!conta\b)(.+)$'
+        r'|^e\s+d[aoe]\s+(.+)$', normal,
+    )
+    if referencia:
+        nome = next(parte for parte in referencia.groups() if parte)
+        nome = re.sub(r'\s+(?:agora|por favor|atual|hoje)$', '', nome).strip()
+        if nome in ('ativa', 'atual', 'selecionada', 'minha', 'pessoal', 'fisica', 'pf', 'juridica', 'empresarial', 'pj'):
+            return False
+        nomes = (contexto.get('nome_conta'), contexto.get('nome_titular'))
+        return not any(nome == _texto_normalizado(valor) for valor in nomes if valor)
+    # Uma pergunta curta sobre "ela" mantém também a restrição da conta pedida.
+    if re.search(r'\b(?:ela|dela|essa conta|mesma conta)\b', normal):
+        for mensagem in reversed(historico):
+            if mensagem.get('papel') == 'USUARIO':
+                return _outra_conta_solicitada(mensagem.get('conteudo', ''), contexto)
+    return False
 
 
 def _contexto_atual():
@@ -114,7 +146,12 @@ def _contexto_atual():
         if not usuario_pode_acessar_conta(id_usuario, id_conta):
             return None, (jsonify({'mensagem': 'Seu acesso a esta conta não está ativo.'}), 403)
         cursor = con.cursor()
-        cursor.execute('SELECT ID_USUARIO, TIPO_CONTA FROM CONTA WHERE ID_CONTA = ?', (id_conta,))
+        cursor.execute(
+            '''SELECT C.ID_USUARIO, C.TIPO_CONTA, U.NOME, C.NOME_FANTASIA,
+                      C.RAZAO_SOCIAL, C.NUMERO_CONTA
+               FROM CONTA C JOIN USUARIO U ON U.ID_USUARIO = C.ID_USUARIO
+               WHERE C.ID_CONTA = ?''', (id_conta,),
+        )
         conta = cursor.fetchone()
         if not conta:
             return None, (jsonify({'mensagem': 'Conta ativa não encontrada.'}), 404)
@@ -130,6 +167,9 @@ def _contexto_atual():
             'id_usuario': int(id_usuario),
             'id_conta': int(id_conta),
             'tipo_conta': 'PJ' if int(conta[1]) == 1 else 'PF',
+            'nome_conta': str((conta[3] or conta[4] or conta[2]) if int(conta[1]) == 1 else conta[2]),
+            'nome_titular': str(conta[2]),
+            'conta_final': str(conta[5] or '')[-4:],
         }, None
     except Exception:
         current_app.logger.exception('Falha ao validar a sessao do MAURO')
@@ -226,7 +266,9 @@ def _dados_financeiros(cursor, contexto, intencao):
         saldo = calcular_saldo(conta)
         if saldo is None:
             raise RuntimeError('saldo indisponivel')
-        return {'saldo': f'{Decimal(str(saldo)):.2f}', 'moeda': 'BRL'}
+        return {'saldo': f'{Decimal(str(saldo)):.2f}', 'moeda': 'BRL',
+                'conta_autorizada': {chave: contexto.get(chave) for chave in
+                                     ('id_conta', 'tipo_conta', 'nome_conta', 'conta_final')}}
 
     if intencao in ('DESPESAS_MES', 'DESPESAS_SEMANA', 'DESPESAS_SEMANA_PASSADA',
                     'RECEITAS_SEMANA', 'RECEITAS_SEMANA_PASSADA'):
@@ -424,6 +466,10 @@ def _responder_gemini(pergunta, historico, intencao, dados):
         'ações. Você não tem ferramentas de escrita, não pode executar Pix, pagamento, estorno, cadastro, '
         'edição ou exclusão. Nunca peça PIN, senha, CVV, token ou credenciais. '
         'Quando houver CONTEXTO BANCÁRIO AUTORIZADO, use somente esses dados para fatos bancários; '
+        'A conta e o nome válidos são os de conta_autorizada; nomes escritos pelo usuário '
+        'ou presentes no histórico não trocam a identidade autenticada. Nunca atribua dados '
+        'da conta ativa a outra pessoa. Use o histórico para continuar o assunto, mas consulte '
+        'novamente os dados financeiros atuais. '
         'não estime nem invente valores, datas, saldo, operações ou status. Se o dado estiver vazio ou '
         'indisponível, diga isso claramente. Para respostas sobre funcionalidades, use apenas informações '
         'conhecidas do Arkhé e faça uma pergunta curta quando faltar contexto. Diferencie consulta de operação financeira.'
@@ -596,6 +642,11 @@ def _resposta_financeira_verificada(intencao, dados):
         return f'R$ {inteiro},{centavos}'
 
     if intencao == 'SALDO':
+        conta = dados.get('conta_autorizada') or {}
+        nome = conta.get('nome_conta')
+        if nome:
+            final = f', final {conta["conta_final"]}' if conta.get('conta_final') else ''
+            return f'Na conta {conta["tipo_conta"]} de {nome}{final}, o saldo é {brl(dados["saldo"])}.'
         return f'Seu saldo na conta ativa é {brl(dados["saldo"])}.'
     if intencao in ('DESPESAS_MES', 'DESPESAS_SEMANA', 'DESPESAS_SEMANA_PASSADA'):
         periodo = ('No mês atual' if intencao == 'DESPESAS_MES' else
@@ -763,12 +814,13 @@ def listar_mensagens(id_conversa):
             return jsonify({'mensagem': 'Conversa não encontrada.'}), 404
         cursor.execute(
             '''SELECT FIRST 100 ID_MENSAGEM, PAPEL, CONTEUDO, CRIADA_EM
-               FROM MAURO_MENSAGEM WHERE ID_CONVERSA = ? ORDER BY ID_MENSAGEM''', (id_conversa,),
+               FROM MAURO_MENSAGEM WHERE ID_CONVERSA = ? ORDER BY ID_MENSAGEM DESC''', (id_conversa,),
         )
+        mensagens = list(reversed(cursor.fetchall()))
         proposta_pix = mauro_pix.obter_ultima_proposta(cursor, id_conversa, contexto) if mauro_pix.tabela_instalada(cursor) else None
         return jsonify({'conversa': {'id': int(conversa[0]), 'titulo': conversa[1]}, 'mensagens': [
             {'id': int(r[0]), 'papel': r[1], 'conteudo': r[2], 'criada_em': _data_json(r[3])}
-            for r in cursor.fetchall()
+            for r in mensagens
         ], 'proposta_pix': proposta_pix}), 200
     except Exception:
         current_app.logger.exception('Falha ao carregar mensagens do MAURO')
@@ -820,8 +872,11 @@ def enviar_mensagem(id_conversa):
         historico = [{'papel': r[0], 'conteudo': r[1]} for r in reversed(cursor.fetchall())]
         intencao = _detectar_intencao(texto, historico)
         fora_escopo = _pedido_fora_escopo(texto, historico)
+        outra_conta = intencao != 'PEDIDO_PAGAMENTO' and _outra_conta_solicitada(texto, contexto, historico)
         if fora_escopo:
             intencao = 'FORA_ESCOPO'
+        elif outra_conta:
+            intencao = 'OUTRA_CONTA'
         pix_instalado = mauro_pix.tabela_instalada(cursor) if not fora_escopo else False
         proposta_aberta = mauro_pix.proposta_ativa(cursor, id_conversa, contexto) if pix_instalado and intencao == 'GERAL' else None
         continuar_pix = bool(proposta_aberta and intencao == 'GERAL')
@@ -845,7 +900,7 @@ def enviar_mensagem(id_conversa):
             proposta_pix = None
             mensagens_pix_auditoria = []
             texto_persistido = texto
-        dados = _dados_financeiros(cursor, contexto, intencao) if intencao not in ('GERAL', 'PEDIDO_PAGAMENTO', 'FORA_ESCOPO') else {
+        dados = _dados_financeiros(cursor, contexto, intencao) if intencao not in ('GERAL', 'PEDIDO_PAGAMENTO', 'FORA_ESCOPO', 'OUTRA_CONTA') else {
             'tipo_conta': contexto['tipo_conta'],
             'funcionalidades_conhecidas': [
                 'saldo, extrato e resumo financeiro', 'Pix e cobranças', 'boletos e DDA',
@@ -853,17 +908,25 @@ def enviar_mensagem(id_conversa):
                 'notificações e preferências', 'cartões e faturas',
             ],
         }
+        dados['conta_autorizada'] = {chave: contexto.get(chave) for chave in
+                                    ('id_conta', 'tipo_conta', 'nome_conta', 'conta_final')}
         # Consultas Gemini liberam os locks antes da chamada externa; o fluxo
         # determinístico de Pix mantém proposta e histórico na mesma transação.
         if fluxo_pix is None:
             con.commit()
         if fora_escopo:
             resposta, falha = RESPOSTA_FORA_ESCOPO, None
+        elif outra_conta:
+            resposta, falha = (
+                'Posso consultar somente a conta ativa e autorizada nesta conversa. '
+                'Não consultei o saldo da conta mencionada. Para consultar outra conta sua, '
+                'selecione essa conta no Arkhé e abra o MAURO nela.', None,
+            )
         elif fluxo_pix is not None:
             pass
         elif intencao == 'PEDIDO_PAGAMENTO':
             resposta, falha = _resposta_pedido_financeiro(), None
-        elif intencao in ('AGENDAMENTOS', 'RECORRENCIAS', 'PENDENCIAS', 'NOTIFICACOES'):
+        elif intencao in ('SALDO', 'AGENDAMENTOS', 'RECORRENCIAS', 'PENDENCIAS', 'NOTIFICACOES'):
             # Consultas de listas/estados são respondidas a partir do resultado
             # real para separar lista vazia de indisponibilidade e evitar que o
             # modelo preencha estados que não vieram do Firebird.
@@ -886,7 +949,7 @@ def enviar_mensagem(id_conversa):
             current_app.logger.warning('Resposta do MAURO bloqueada pela politica de saida')
             resposta = 'Não posso compartilhar instruções internas, pedir credenciais ou contornar permissões. Posso ajudar com informações e funções autorizadas do Arkhé.'
 
-        if fluxo_pix is None and intencao not in ('GERAL', 'FORA_ESCOPO'):
+        if fluxo_pix is None and intencao not in ('GERAL', 'FORA_ESCOPO', 'OUTRA_CONTA'):
             valores_autorizados = _valores_monetarios(dados)
             valores_informados = set()
             for valor in re.findall(r'R\$\s*([\d.]+,\d{2}|\d+\.\d{2})', resposta, re.IGNORECASE):

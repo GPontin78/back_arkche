@@ -190,6 +190,108 @@ class RespostaGeminiFake:
         return {'candidates': [{'content': {'parts': [{'text': self.texto}]}}]}
 
 
+class TestContaEHistoricoMauro(unittest.TestCase):
+    def setUp(self):
+        self.contexto = {**CONTEXTO, 'nome_conta': 'Titular de teste',
+                         'nome_titular': 'Titular de teste', 'conta_final': '0009'}
+
+    def test_nome_digitado_nao_troca_a_conta_autenticada(self):
+        for texto in ('puxe o saldo da conta Lais Ribeiro Sinatra',
+                      'puxe o saldo da conta Lais Ribeiro Sinatrar',
+                      'qual o saldo do Lucas?', 'Saldo da conta PJ'):
+            with self.subTest(texto=texto):
+                self.assertTrue(mauro._outra_conta_solicitada(texto, self.contexto))
+        for texto in ('Qual meu saldo?', 'saldo da conta ativa',
+                      'Saldo da conta Titular de teste', 'Saldo da conta PF'):
+            with self.subTest(texto=texto):
+                self.assertFalse(mauro._outra_conta_solicitada(texto, self.contexto))
+
+    def test_referencia_a_conta_negada_continua_negada_no_contexto(self):
+        historico = [{'papel': 'USUARIO', 'conteudo': 'puxe o saldo da conta Lais Ribeiro Sinatrar'}]
+        self.assertTrue(mauro._outra_conta_solicitada('Quanto ela tem?', self.contexto, historico))
+        self.assertFalse(mauro._outra_conta_solicitada('E o meu saldo?', self.contexto, historico))
+
+    def test_saldo_e_nome_vem_da_mesma_conta_sem_modelo(self):
+        outra = {**self.contexto, 'id_conta': 18, 'nome_conta': 'Outra titular de teste'}
+        with patch.object(mauro, 'calcular_saldo', side_effect=lambda id_conta: {9: 12.34, 18: 87.65}[id_conta]) as saldo:
+            dados = mauro._dados_financeiros(CursorFake(), self.contexto, 'SALDO')
+            outros_dados = mauro._dados_financeiros(CursorFake(), outra, 'SALDO')
+        self.assertEqual(saldo.call_args_list[0].args, (9,))
+        self.assertEqual(saldo.call_args_list[1].args, (18,))
+        self.assertIn('Titular de teste', mauro._resposta_financeira_verificada('SALDO', dados))
+        self.assertIn('R$ 12,34', mauro._resposta_financeira_verificada('SALDO', dados))
+        self.assertIn('Outra titular de teste', mauro._resposta_financeira_verificada('SALDO', outros_dados))
+        self.assertIn('R$ 87,65', mauro._resposta_financeira_verificada('SALDO', outros_dados))
+
+    def test_rota_de_outra_conta_nao_consulta_saldo_nem_modelo(self):
+        class CursorConversa:
+            def execute(self, sql, parametros=()):
+                self.sql = sql
+            def fetchall(self):
+                return []
+            def fetchone(self):
+                return (0,) if 'COUNT(*)' in self.sql else (123,)
+            def close(self):
+                pass
+        cursor = CursorConversa()
+        conexao = types.SimpleNamespace(cursor=lambda: cursor, commit=lambda: None, rollback=lambda: None)
+        requisicao = types.SimpleNamespace(
+            get_json=lambda **kwargs: {'mensagem': 'puxe o saldo da conta Lais Ribeiro Sinatrar'}, path='/teste')
+        with patch.object(mauro, 'request', requisicao), patch.object(mauro, 'con', conexao), \
+             patch.object(mauro, '_contexto_atual', return_value=(self.contexto, None)), \
+             patch.object(mauro, '_conversa_autorizada', return_value=(7, 'Conversa')), \
+             patch.object(mauro, '_limitar_requisicoes', return_value=True), \
+             patch.object(mauro.mauro_pix, 'tabela_instalada', return_value=False), \
+             patch.object(mauro, '_dados_financeiros') as consulta, \
+             patch.object(mauro, '_responder_gemini') as modelo:
+            resposta, status = mauro.enviar_mensagem(7)
+        self.assertEqual(status, 200)
+        self.assertIn('Não consultei o saldo', resposta['mensagem']['conteudo'])
+        self.assertNotIn('R$', resposta['mensagem']['conteudo'])
+        consulta.assert_not_called()
+        modelo.assert_not_called()
+
+    def test_reabrir_conversa_preserva_mensagens_antes_de_consultar_proposta(self):
+        class CursorHistorico:
+            def execute(self, sql, parametros=()):
+                self.sql, self.parametros = sql, parametros
+                self.linhas = [(2, 'ASSISTENTE', 'Saldo consultado', None),
+                               (1, 'USUARIO', 'Qual meu saldo?', None)] if 'FROM MAURO_MENSAGEM' in sql else []
+            def fetchall(self):
+                linhas, self.linhas = self.linhas, []
+                return linhas
+            def close(self):
+                pass
+        cursor = CursorHistorico()
+        conexao = types.SimpleNamespace(cursor=lambda: cursor)
+        def verificar_estrutura(cursor):
+            cursor.execute('SELECT COUNT(*) FROM RDB$RELATIONS')
+            return True
+        with patch.object(mauro, 'con', conexao), \
+             patch.object(mauro, '_contexto_atual', return_value=(self.contexto, None)), \
+             patch.object(mauro, '_conversa_autorizada', return_value=(7, 'Saldo')), \
+             patch.object(mauro.mauro_pix, 'tabela_instalada', side_effect=verificar_estrutura), \
+             patch.object(mauro.mauro_pix, 'obter_ultima_proposta', return_value=None, create=True):
+            resposta, status = mauro.listar_mensagens(7)
+        self.assertEqual(status, 200)
+        self.assertEqual([m['id'] for m in resposta['mensagens']], [1, 2])
+        self.assertEqual(resposta['mensagens'][0]['conteudo'], 'Qual meu saldo?')
+
+    def test_historico_e_conta_sao_enviados_ao_modelo_sem_trocar_identidade(self):
+        historico = [{'papel': 'USUARIO', 'conteudo': 'Como acompanho meus boletos?'},
+                     {'papel': 'ASSISTENTE', 'conteudo': 'Consulte a área de boletos.'},
+                     {'papel': 'USUARIO', 'conteudo': 'E os vencidos?'}]
+        with patch.dict(os.environ, {'GEMINI_API_KEY': 'chave-ficticia'}), \
+             patch.object(mauro.requests, 'post', return_value=RespostaGeminiFake(texto='Consulte os vencimentos.')) as chamada:
+            resposta, erro = mauro._responder_gemini(
+                'Onde vejo isso?', historico, 'GERAL', {'conta_autorizada': self.contexto})
+        self.assertIsNone(erro)
+        conteudos = chamada.call_args.kwargs['json']['contents']
+        self.assertEqual(conteudos[0]['parts'][0]['text'], historico[0]['conteudo'])
+        self.assertIn('Titular de teste', conteudos[-1]['parts'][0]['text'])
+        self.assertFalse(mauro._pedido_fora_escopo('E depois?', historico))
+
+
 class TestEscopoMauro(unittest.TestCase):
     def test_recusa_programacao_inclusive_em_pedidos_bancarios(self):
         for pergunta in (

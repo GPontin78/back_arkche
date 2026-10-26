@@ -66,16 +66,36 @@ def api_saldo():
     if erro:
         return erro
 
+    cursor = None
     try:
         saldo = calcular_saldo(integracao['id_conta'])
+        if saldo is None:
+            return jsonify({'mensagem': 'Saldo indisponivel no momento'}), 503
+        cursor = con.cursor()
+        cursor.execute(
+            '''SELECT C.TIPO_CONTA, U.NOME, C.NOME_FANTASIA, C.RAZAO_SOCIAL, C.NUMERO_CONTA
+               FROM CONTA C JOIN USUARIO U ON U.ID_USUARIO = C.ID_USUARIO
+               WHERE C.ID_CONTA = ?''', (integracao['id_conta'],),
+        )
+        conta = cursor.fetchone()
+        if not conta:
+            return jsonify({'mensagem': 'Conta nao encontrada'}), 404
 
         return jsonify({
-            'saldo': float(saldo or 0)
+            'saldo': float(saldo),
+            'id_conta': integracao['id_conta'],
+            'nome_conta': nome_cliente_api(conta[1], conta[2], conta[3], conta[0]),
+            'tipo_conta': conta[0],
+            'conta_final': str(conta[4] or '')[-4:],
         }), 200
 
     except Exception as e:
         print('ERRO API SALDO:', e)
         return jsonify({'mensagem': 'Erro ao consultar saldo'}), 500
+
+    finally:
+        if cursor:
+            cursor.close()
 
 
 # Extrato por periodo da conta autenticada; leitura permitida no nivel 1.
