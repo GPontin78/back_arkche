@@ -323,7 +323,8 @@ def obter_ultima_proposta(cursor, id_conversa, contexto):
 def _nova_proposta(cursor, id_conversa, contexto, anterior=None):
     agora = data_atual()
     cursor.execute(
-        '''SELECT ID_CONTA, TIPO_CONTA, NUMERO_CONTA, NOME_FANTASIA, RAZAO_SOCIAL, U.NOME
+        '''SELECT C.ID_CONTA, C.TIPO_CONTA, C.NUMERO_CONTA,
+                  C.NOME_FANTASIA, C.RAZAO_SOCIAL, U.NOME
            FROM CONTA C LEFT JOIN USUARIO U ON U.ID_USUARIO = C.ID_USUARIO
            WHERE C.ID_CONTA = ?''',
         (contexto['id_conta'],),
