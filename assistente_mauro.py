@@ -959,6 +959,17 @@ def listar_mensagens(id_conversa):
             cursor.close()
 
 
+def _deve_continuar_pix(proposta_aberta, intencao, texto):
+    """Uma proposta aberta só continua com respostas que pertençam ao fluxo Pix."""
+    if not proposta_aberta or intencao != 'GERAL':
+        return False
+    return bool(
+        mensagem_complementar_pix(texto) or
+        mauro_pix.extrair_chave(texto) is not None or
+        _texto_normalizado(texto) in ('sim', 'confirmo', 'pode', 'ok', 'cancelar', 'nao', 'não')
+    )
+
+
 def enviar_mensagem(id_conversa):
     contexto, erro = _contexto_atual()
     if erro:
@@ -1008,11 +1019,7 @@ def enviar_mensagem(id_conversa):
             intencao = 'OUTRA_CONTA'
         pix_instalado = mauro_pix.tabela_instalada(cursor) if not fora_escopo else False
         proposta_aberta = mauro_pix.proposta_ativa(cursor, id_conversa, contexto) if pix_instalado and intencao == 'GERAL' else None
-        continuar_pix = bool(proposta_aberta and intencao == 'GERAL' and (
-            mensagem_complementar_pix(texto) or
-            mauro_pix.extrair_chave(texto) is not None or
-            _texto_normalizado(texto) in ('sim', 'confirmo', 'pode', 'ok', 'cancelar', 'nao', 'não')
-        ))
+        continuar_pix = _deve_continuar_pix(proposta_aberta, intencao, texto)
         fluxo_pix = None
         if intencao == 'PEDIDO_PAGAMENTO' and not pix_instalado:
             fluxo_pix = {
