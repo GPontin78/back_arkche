@@ -377,8 +377,13 @@ def _responder_gemini(pergunta, historico, intencao, dados):
     )
     conteudos = []
     for mensagem in historico[-MAX_MENSAGENS_CONTEXTO:]:
+        if mensagem.get('papel') not in ('USUARIO', 'ASSISTENTE'):
+            continue
+        anterior = str(mensagem.get('conteudo') or '')[:MAX_MENSAGEM]
+        if tentativa_injecao(anterior):
+            continue
         papel = 'model' if mensagem.get('papel') == 'ASSISTENTE' else 'user'
-        conteudos.append({'role': papel, 'parts': [{'text': mensagem['conteudo'][:MAX_MENSAGEM]}]})
+        conteudos.append({'role': papel, 'parts': [{'text': anterior}]})
     payload_atual = (
         f'Pedido atual do usuário: {pergunta}\n\n'
         f'Intenção identificada pelo backend: {intencao}\n'
