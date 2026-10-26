@@ -43,8 +43,8 @@ os.environ['CONTA_LIQUIDACAO_CARTAO'] = '9'
 
 with patch('apscheduler.schedulers.background.BackgroundScheduler.start'):
     import auditoria as _auditoria_teste
-    _auditoria_teste.registrar_rotas = lambda _app: None
-    import main
+    with patch.object(_auditoria_teste, 'registrar_rotas'):
+        import main
 import notificacoes
 
 
