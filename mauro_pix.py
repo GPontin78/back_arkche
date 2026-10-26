@@ -23,7 +23,7 @@ VALOR_RE = re.compile(
     r"(?i)R\$\s*((?:\d{1,3}(?:\.\d{3})+|\d+)(?:,\d{1,2}|\.\d{1,2})?)(?![\d.,])"
 )
 VALOR_REAIS_RE = re.compile(
-    r"(?i)\b((?:\d{1,3}(?:\.\d{3})+|\d+)(?:,\d{1,2}|\.\d{1,2})?)(?![\d.,])\s*(?:reais?|brl)\b"
+    r"(?i)\b((?:\d{1,3}(?:\.\d{3})+|\d+)(?:,\d{1,2}|\.\d{1,2})?)(?![\d.,])\s*(?:reais?|reias|brl)\b"
 )
 EMAIL_RE = re.compile(r"(?i)(?<![\w.+-])[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9-]+(?:\.[A-Z0-9-]+)+")
 UUID_RE = re.compile(r"(?i)(?<![\w])[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?![\w])")
@@ -59,6 +59,14 @@ def extrair_valor(texto):
         encontrado = re.search(
             r"(?i)\b(?:pix|transfer\w*|transfir\w*|mand\w*|envi\w*)\s+(?:de\s+)?"
             r"(\d{1,10}(?:[,.]\d{1,2})?)(?![\d.,])\s+(?:para|pra)\b", texto,
+        )
+    if not encontrado:
+        # Só captura número sem unidade quando ele é explicitamente apresentado
+        # como valor de Pix; nunca interpreta CPF/chave isolada como quantia.
+        encontrado = re.search(
+            r"(?i)\bpix\s+(?:de\s+|no\s+valor\s+de\s+|valor\s+de\s+)"
+            r"(\d{1,10}(?:[,.]\d{1,2})?)(?![\d.,])\b",
+            texto,
         )
     if not encontrado:
         return None, None

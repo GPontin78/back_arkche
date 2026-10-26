@@ -373,6 +373,66 @@ class TestEscopoMauro(unittest.TestCase):
         operacao.assert_not_called()
 
 
+
+class TestMauroWebConversacionalV4(unittest.TestCase):
+    def test_casos_reais_que_eram_recusados(self):
+        hist_despesas = [{'papel': 'USUARIO', 'conteudo': 'Quanto gastei neste mês?'},
+                         {'papel': 'ASSISTENTE', 'conteudo': 'Você teve 6 despesas.'}]
+        casos = [
+            ('Meu salfo', 'SALDO', []),
+            ('Meu slado', 'SALDO', []),
+            ('Quais foram elas?', 'LISTAR_DESPESAS', hist_despesas),
+            ('Para quem eu mais enviei dinheiro?', 'DESTINATARIOS_FREQUENTES', []),
+            ('Quem sou eu?', 'PERFIL', []),
+            ('Que dia é hoje?', 'DATA_ATUAL', []),
+            ('O que você pode fazer?', 'CAPACIDADES', []),
+            ('Sobre o que a gente falou?', 'RESUMO_CONVERSA', []),
+            ('Quero criar um cartão virtual', 'CARTAO_VIRTUAL', []),
+            ('Exclua minha chave Pix', 'EXCLUIR_CHAVE', []),
+            ('Edite meu nome para Igor', 'EDITAR_PERFIL', []),
+            ('Altere meu saldo', 'ALTERAR_SALDO', []),
+        ]
+        for mensagem, intencao, historico in casos:
+            with self.subTest(mensagem=mensagem):
+                self.assertEqual(mauro._detectar_intencao(mensagem, historico), intencao)
+                self.assertFalse(mauro._pedido_fora_escopo(mensagem, historico))
+
+    def test_continuacao_refere_assunto_mais_recente_sem_inventar(self):
+        despesas = [{'papel': 'USUARIO', 'conteudo': 'Quanto gastei este mês?'}]
+        receitas = [{'papel': 'USUARIO', 'conteudo': 'Quanto recebi este mês?'}]
+        self.assertEqual(mauro._detectar_intencao('Quais foram elas?', despesas), 'LISTAR_DESPESAS')
+        self.assertEqual(mauro._detectar_intencao('Quais foram elas?', receitas), 'LISTAR_RECEITAS')
+        self.assertEqual(mauro._detectar_intencao('Quais foram elas?', []), 'GERAL')
+        self.assertFalse(mauro._pedido_fora_escopo('Quais foram elas?', []))
+
+    def test_pedido_de_cartao_nao_e_continuacao_pix(self):
+        hist = [{'papel': 'USUARIO', 'conteudo': 'Quero fazer Pix'},
+                {'papel': 'ASSISTENTE', 'conteudo': 'Qual o valor?'}]
+        self.assertEqual(mauro._detectar_intencao('Quero criar um cartão virtual', hist), 'CARTAO_VIRTUAL')
+        self.assertEqual(mauro._detectar_intencao('Quero fazer um Pix', []), 'PEDIDO_PAGAMENTO')
+        self.assertEqual(mauro._detectar_intencao('R$ 20,00', hist), 'GERAL')
+
+    def test_periodo_pode_ser_herdado_da_pergunta_que_gerou_o_resumo(self):
+        from mauro_conversa import periodo_solicitado
+        hoje = __import__('datetime').date(2026, 10, 26)
+        hist = [{'papel': 'USUARIO', 'conteudo': 'Quanto gastei de 01/10/2026 a 26/10/2026?'}]
+        inicio, fim, rotulo = periodo_solicitado('Quais foram elas?', hist, hoje)
+        self.assertEqual((inicio.isoformat(), fim.isoformat()), ('2026-10-01', '2026-10-27'))
+        self.assertIn('01/10/2026', rotulo)
+        inicio, fim, _ = periodo_solicitado('O que gastei ontem?', (), hoje)
+        self.assertEqual((inicio.isoformat(), fim.isoformat()), ('2026-10-25', '2026-10-26'))
+
+    def test_respostas_perfil_data_e_erro_de_escrita_nao_acionam_gemini(self):
+        dados = {'conta_autorizada': {'id_conta': 9, 'tipo_conta': 'PF',
+                                     'nome_conta': 'Titular de teste',
+                                     'nome_titular': 'Titular de teste', 'conta_final': '0009'}}
+        self.assertIn('Titular de teste', mauro._resposta_financeira_verificada('PERFIL', dados))
+        self.assertIn('horário de Brasília', mauro._resposta_financeira_verificada('DATA_ATUAL', dados))
+        self.assertIn('não pode ser editado', mauro._resposta_financeira_verificada('ALTERAR_SALDO', dados))
+        self.assertIn('PIN', mauro._resposta_financeira_verificada('CAPACIDADES', dados))
+        self.assertNotIn('saldo disponível', mauro._resposta_financeira_verificada('EDITAR_PERFIL', dados))
+
+
 class TestAudioMauro(unittest.TestCase):
     def test_mime_webm_opus_e_normalizado_e_tipo_desconhecido_recusado(self):
         self.assertEqual(mauro._normalizar_mime_audio('audio/webm;codecs=opus'), 'audio/webm')
