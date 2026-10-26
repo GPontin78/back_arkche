@@ -75,6 +75,8 @@ def _json_data(valor):
         return None
     if isinstance(valor, (dict, list)):
         return valor
+    if hasattr(valor, 'read'):
+        valor = valor.read()
     try:
         return json.loads(str(valor))
     except (TypeError, ValueError):
@@ -114,6 +116,11 @@ def _inserir_evento(cursor, evento, resultado, motivo, id_usuario, id_conta,
     )
     cursor.execute("SELECT 1 FROM RDB$TRIGGERS WHERE RDB$TRIGGER_NAME IN ('TG_AI_MOVIMENTACAO_LOG', 'TG_AIUD_MOVIMENTACAO_LOG')")
     if cursor.fetchone():
+        cursor.execute('SELECT ORIGEM_ID FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO=1')
+        configuracao = cursor.fetchone()
+        if configuracao and configuracao[0].endswith('-simples'):
+            return _inserir_evento_simples(cursor, evento, resultado, motivo,
+                id_usuario, id_conta, valor, id_registro, origem, dados)
         cursor.execute('''EXECUTE BLOCK (
             P_EVENTO VARCHAR(48) = ?, P_OPERACAO VARCHAR(12) = ?,
             P_ID_REGISTRO BIGINT = ?, P_ID_USUARIO INTEGER = ?, P_ID_CONTA INTEGER = ?,
@@ -165,6 +172,52 @@ def _inserir_evento(cursor, evento, resultado, motivo, id_usuario, id_conta,
         (EVENTO, TABELA_ORIGEM, OPERACAO, ID_REGISTRO, ID_USUARIO, ID_CONTA,
          VALOR, RESULTADO, MOTIVO, ORIGEM, DADOS_NOVOS)
         VALUES (?, 'FLASK', ?, ?, ?, ?, ?, ?, ?, ?, ?)''', parametros)
+    return True
+
+
+def _inserir_evento_simples(cursor, evento, resultado, motivo, id_usuario,
+                           id_conta, valor, id_registro, origem, dados):
+    dados = dict(dados or {})
+    contexto = getattr(g, 'auditoria_contexto', {})
+    integracao = contexto.get('id_integracao') or dados.get('id_integracao')
+    usuario = str(id_usuario) if id_usuario else f'INTEGRACAO_API:{integracao}' if integracao else None
+    tabela = 'IA' if str(evento).startswith('MAURO_') else 'API' if dados.get('canal') in ('api','whatsapp') or integracao else 'SISTEMA'
+    if 'status_http' in dados:
+        dados = {'metodo':dados.get('metodo'),'status_http':dados['status_http'],**dados.get('ids',{})}
+    dados.pop('id_integracao',None)
+    if id_conta:
+        dados['id_conta'] = id_conta
+    if valor is not None:
+        dados['valor'] = str(valor)
+    if origem:
+        dados['rota'] = _rota_log() if request else str(origem)[:160]
+    if motivo and resultado not in ('SUCESSO','CONCLUIDO','REGISTRADO'):
+        dados['resumo'] = str(motivo)[:180]
+    # O resultado faz parte da ação; não exige colunas extras na tabela.
+    acao = f'{evento} / {resultado}'[:120]
+    novo = json.dumps(dados,ensure_ascii=False,separators=(',',':'),default=str)
+    if len(novo) > 4000:
+        raise ValueError('Dados do log excedem 4000 caracteres')
+    cursor.execute('''EXECUTE BLOCK (
+        P_USUARIO VARCHAR(100)=?, P_TABELA VARCHAR(64)=?, P_REGISTRO BIGINT=?,
+        P_ACAO VARCHAR(120)=?, P_NOVO VARCHAR(4000)=?
+    ) AS
+    DECLARE VARIABLE V_DESTINO VARCHAR(512);
+    DECLARE VARIABLE V_USUARIO VARCHAR(63);
+    DECLARE VARIABLE V_SENHA VARCHAR(255);
+    BEGIN
+        SELECT DATA_SOURCE,USUARIO,SENHA FROM CONFIGURACAO_LOG
+        WHERE ID_CONFIGURACAO=1 INTO :V_DESTINO,:V_USUARIO,:V_SENHA;
+        IF (V_DESTINO IS NULL) THEN EXCEPTION EX_LOG_CONFIGURACAO;
+        EXECUTE STATEMENT (
+            'INSERT INTO LOG (DATA_HORA,USUARIO,TABELA,ID_REGISTRO,ACAO,VALOR_NOVO)
+             VALUES (CURRENT_TIMESTAMP,:usuario,:tabela,:registro,:acao,:novo)'
+        ) (usuario:=:P_USUARIO,tabela:=:P_TABELA,registro:=:P_REGISTRO,
+           acao:=:P_ACAO,novo:=:P_NOVO)
+        ON EXTERNAL DATA SOURCE :V_DESTINO
+        AS USER :V_USUARIO PASSWORD :V_SENHA
+        WITH COMMON TRANSACTION;
+    END''',(usuario,tabela,id_registro,acao,novo))
     return True
 
 
@@ -236,6 +289,11 @@ def _preparar_contexto_trigger():
         try:
             cursor.execute(
                 "SELECT RDB$SET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO', ?) FROM RDB$DATABASE",
+                (str(id_usuario) if id_usuario else None,),
+            )
+            cursor.fetchone()
+            cursor.execute(
+                "SELECT RDB$SET_CONTEXT('USER_SESSION', 'ARKHE_USUARIO_LOG', ?) FROM RDB$DATABASE",
                 (str(id_usuario) if id_usuario else None,),
             )
             cursor.fetchone()
@@ -331,6 +389,62 @@ def _registrar_resposta_relevante(response):
     return response
 
 
+def _consultar_log_simples(id_log=None):
+    try:
+        inicio = _data_or_none(request.args.get('data_inicio'))
+        fim = _data_or_none(request.args.get('data_fim'),fim=True)
+        if inicio and fim and inicio > fim:
+            raise ValueError('Data inicial posterior à data final')
+        registro = _id_or_none(request.args.get('id_registro'))
+        limite = max(1,min(int(request.args.get('limite','100')),200))
+    except (ValueError,TypeError) as erro:
+        return jsonify({'mensagem':str(erro)}),400
+    historico = request.args.get('historico') == '1'
+    # O histórico original é apenas projetado nos oito campos, sem alterar seus dados.
+    fonte = '''(SELECT ID_AUDITORIA AS ID_LOG, CRIADO_EM AS DATA_HORA,
+        CAST(ID_USUARIO AS VARCHAR(100)) AS USUARIO, TABELA_ORIGEM AS TABELA,
+        ID_REGISTRO, EVENTO || ' / ' || RESULTADO AS ACAO,
+        DADOS_ANTERIORES AS VALOR_ANTERIOR, DADOS_NOVOS AS VALOR_NOVO
+        FROM AUDITORIA_EVENTO) H''' if historico else 'LOG'
+    where,params = [],[]
+    for campo,chave in (('USUARIO','usuario'),('TABELA','tabela'),('ACAO','acao')):
+        valor = request.args.get(chave,'').strip()
+        if valor:
+            where.append(f'{campo} CONTAINING ?')
+            params.append(valor[:120])
+    for campo,operador,valor in (('ID_LOG','=',id_log),('ID_REGISTRO','=',registro),
+                                ('DATA_HORA','>=',inicio),('DATA_HORA','<=',fim)):
+        if valor is not None:
+            where.append(f'{campo} {operador} ?')
+            params.append(valor)
+    conexao = cursor = None
+    try:
+        conexao = _conectar_banco_auditoria()
+        cursor = conexao.cursor()
+        cursor.execute(f'''SELECT FIRST {limite} ID_LOG,DATA_HORA,USUARIO,TABELA,
+            ID_REGISTRO,ACAO,VALOR_ANTERIOR,VALOR_NOVO FROM {fonte}
+            {('WHERE '+' AND '.join(where)) if where else ''}
+            ORDER BY DATA_HORA DESC,ID_LOG DESC''',tuple(params))
+        registros = [{
+            'id_log':int(r[0]),'data_hora':_json_timestamp(r[1]),'usuario':r[2],
+            'tabela':r[3],'id_registro':r[4],'acao':r[5],
+            'valor_anterior':_json_data(r[6]),'valor_novo':_json_data(r[7]),
+        } for r in cursor.fetchall()]
+        if id_log is not None:
+            if not registros:
+                return jsonify({'mensagem':'Log não encontrado'}),404
+            return jsonify({'evento':registros[0]}),200
+        return jsonify({'eventos':registros,'historico':historico,'limite':limite}),200
+    except Exception:
+        current_app.logger.exception('Falha ao consultar LOG')
+        return jsonify({'mensagem':'Não foi possível consultar o log.'}),503
+    finally:
+        if cursor:
+            cursor.close()
+        if conexao:
+            conexao.close()
+
+
 def _linha_para_json(row):
     return {
         'id_evento': int(row[0]), 'evento': row[1], 'tabela_origem': row[2],
@@ -379,6 +493,8 @@ def listar_eventos_admin():
     _, erro = _admin()
     if erro:
         return erro
+    if request.args.get('simples') == '1':
+        return _consultar_log_simples()
     filtros = request.args
     try:
         usuario = _id_or_none(filtros.get('usuario_id'))
@@ -457,6 +573,11 @@ def detalhe_evento_admin(id_evento):
     admin_id, erro = _admin()
     if erro:
         return erro
+    if request.args.get('simples') == '1':
+        resposta = _consultar_log_simples(id_evento)
+        if resposta[1] == 200:
+            _registrar_acesso_detalhe(admin_id,'historico' if request.args.get('historico') == '1' else 'log',id_evento)
+        return resposta
     conexao = cursor = None
     try:
         conexao = _conectar_banco_auditoria()
@@ -531,7 +652,13 @@ def status_auditoria_admin():
         conexao = _conectar_banco_auditoria()
         cursor = conexao.cursor()
         cursor.execute('SELECT COUNT(*) FROM AUDITORIA_EVENTO')
-        total = int(cursor.fetchone()[0])
+        historicos = int(cursor.fetchone()[0])
+        cursor.execute("SELECT 1 FROM RDB$RELATIONS WHERE RDB$RELATION_NAME='LOG'")
+        atuais = 0
+        if cursor.fetchone():
+            cursor.execute('SELECT COUNT(*) FROM LOG')
+            atuais = int(cursor.fetchone()[0])
+        total = historicos + atuais
         cursor.close()
         conexao.close()
         banco = True
@@ -548,6 +675,8 @@ def status_auditoria_admin():
         'banco_auditoria': 'conectado' if banco else 'indisponivel',
         'redis': 'conectado' if redis_status else 'indisponivel',
         'eventos_persistidos': total,
+        'eventos_atuais': atuais if banco else None,
+        'eventos_historicos': historicos if banco else None,
         'fonte_persistente': 'Firebird independente',
         **({'detalhe_banco': detalhe_db[:250]} if not banco else {}),
     }), 200 if banco else 503
