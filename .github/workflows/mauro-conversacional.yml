@@ -1,0 +1,27 @@
+name: MAURO web conversational tests
+on:
+  push:
+    branches:
+      - feat/mauro-web-conversacional-v4-20261026
+  pull_request:
+    paths:
+      - assistente_mauro.py
+      - mauro_conversa.py
+      - mauro_pix.py
+      - tests/test_assistente_mauro_intencoes.py
+      - tests/test_mauro_pix_seguro.py
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python -m py_compile assistente_mauro.py mauro_conversa.py mauro_pix.py
+      - run: python -m unittest discover -s tests -p 'test_assistente_mauro_intencoes.py' -v
+      - run: python -m unittest discover -s tests -p 'test_mauro_pix_seguro.py' -v
