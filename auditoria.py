@@ -70,7 +70,7 @@ def _data_or_none(valor, fim=False):
         raise ValueError('Datas devem usar o formato AAAA-MM-DD') from erro
 
 
-def _json_data(valor):
+def _json_data(valor, texto_simples=False):
     if valor is None:
         return None
     if isinstance(valor, (dict, list)):
@@ -80,7 +80,7 @@ def _json_data(valor):
     try:
         return json.loads(str(valor))
     except (TypeError, ValueError):
-        return {'texto': str(valor)}
+        return str(valor) if texto_simples else {'texto': str(valor)}
 
 
 def _json_timestamp(valor):
@@ -195,7 +195,7 @@ def _inserir_evento_simples(cursor, evento, resultado, motivo, id_usuario,
         dados['resumo'] = str(motivo)[:180]
     # O resultado faz parte da ação; não exige colunas extras na tabela.
     acao = f'{evento} / {resultado}'[:120]
-    novo = json.dumps(dados,ensure_ascii=False,separators=(',',':'),default=str)
+    novo = '; '.join(f'{chave.upper()}={"NULL" if conteudo is None else conteudo}' for chave,conteudo in dados.items())
     if len(novo) > 4000:
         raise ValueError('Dados do log excedem 4000 caracteres')
     cursor.execute('''EXECUTE BLOCK (
@@ -428,7 +428,7 @@ def _consultar_log_simples(id_log=None):
         registros = [{
             'id_log':int(r[0]),'data_hora':_json_timestamp(r[1]),'usuario':r[2],
             'tabela':r[3],'id_registro':r[4],'acao':r[5],
-            'valor_anterior':_json_data(r[6]),'valor_novo':_json_data(r[7]),
+            'valor_anterior':_json_data(r[6],texto_simples=True),'valor_novo':_json_data(r[7],texto_simples=True),
         } for r in cursor.fetchall()]
         if id_log is not None:
             if not registros:
