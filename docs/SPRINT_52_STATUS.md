@@ -211,7 +211,7 @@
 - **Frontend/mobile:** web e Expo têm captura push-to-talk, transcrição e revisão do texto antes do envio; o Expo reutiliza o histórico Flask por usuário/conta.
 - **Testes existentes:** 8 casos de áudio no backend; suíte completa local 130/130; web lint/build e Android bundle Expo concluídos.
 - **Estado após esta tarefa:** PARCIAL · perguntas por áudio funcionam em turnos no código local; não é streaming bidirecional nem voz em tempo real.
-- **Publicação/validação:** estas alterações ainda estão em branches locais/em revisão; não foram implantadas nem testadas no app publicado.
+- **Publicação/validação:** backend/web estão em PRs rascunho; a branch Expo foi enviada, mas o conector GitHub não conseguiu abrir sua PR. Nada foi implantado nem testado no app publicado.
 - **Ação/limite:** streaming ao vivo, respostas faladas e build nativo instalado ainda pendem. O uso de Gemini `generateContent` aqui é transcrição, não Gemini Live.
 
 ### 18. Confirmação inequívoca de operação
@@ -633,7 +633,7 @@
 - **Frontend/mobile:** web inclui fluxo de Pix com proposta/PIN; Expo agora tem chat textual e áudio transcrito, mas não expõe autorização/execução de proposta Pix.
 - **Testes existentes:** suíte backend local 130/130; lint/build web e bundle Android Expo passaram; não houve pergunta ao Gemini real nesta execução.
 - **Estado após esta tarefa:** PARCIAL · assistência web existente e tela móvel adicionada localmente; uso mobile ainda não publicado, nem validado contra sessão real.
-- **Publicação/validação:** web, backend e Expo nesta etapa não foram implantados. PRs atuais seguem rascunho; migration de idempotência pendente.
+- **Publicação/validação:** web/backend estão em PRs rascunho; o Expo está numa branch remota sem PR criado. Nada foi implantado; migration de idempotência pendente.
 - **Ação/limite:** não afirmar IA 52/52 ou MAURO mobile em produção; falta publicar/instalar o app e fechar o fluxo mobile de confirmação financeira.
 
 ## Checkpoint de implementação
