@@ -669,6 +669,7 @@ def transcrever_audio(id_conversa):
             motivo=falha[:180] if falha else None, id_usuario=contexto['id_usuario'],
             id_conta=contexto['id_conta'], operacao='READ', origem=request.path,
             dados={'conversa_id': int(id_conversa), 'mime': mime, 'bytes': len(audio)},
+            obrigatorio=True,
         )
         if falha:
             return jsonify({'mensagem': falha, 'codigo': 'TRANSCRICAO_INDISPONIVEL'}), 503
@@ -913,12 +914,13 @@ def criar_conversa():
             (contexto['id_usuario'], contexto['id_conta']),
         )
         row = cursor.fetchone()
-        con.commit()
         registrar_evento_flask(
             evento='MAURO_CONVERSA_CRIADA', resultado='SUCESSO', id_usuario=contexto['id_usuario'],
             id_conta=contexto['id_conta'], id_registro=int(row[0]), operacao='CREATE',
             origem=request.path, dados={'conversa_id': int(row[0])},
+            cursor=cursor,
         )
+        con.commit()
         return jsonify({'conversa': {'id': int(row[0]), 'titulo': 'Conversa com MAURO', 'criada_em': _data_json(row[1])}}), 201
     except Exception:
         con.rollback()
@@ -1118,22 +1120,21 @@ def enviar_mensagem(id_conversa):
         )
         id_assistente_msg = int(cursor.fetchone()[0])
         cursor.execute('UPDATE MAURO_CONVERSA SET ATUALIZADA_EM = CURRENT_TIMESTAMP WHERE ID_CONVERSA = ?', (id_conversa,))
-        con.commit()
-        auditado = registrar_evento_flask(
+        registrar_evento_flask(
             evento='MAURO_CONSULTA', resultado='SUCESSO', id_usuario=contexto['id_usuario'],
             id_conta=contexto['id_conta'], id_registro=id_usuario_msg, operacao='READ',
             origem=request.path,
             dados={'conversa_id': int(id_conversa), 'mensagem_usuario_id': id_usuario_msg,
                    'mensagem_assistente_id': id_assistente_msg, 'intencao': intencao,
                    'caracteres': len(texto)},
+            cursor=cursor,
         )
-        if not auditado:
-            current_app.logger.warning('Consulta MAURO concluida sem confirmacao do outbox de auditoria')
         for evento_pix in mensagens_pix_auditoria:
             mauro_pix._auditar(
                 evento_pix['id'], contexto, evento_pix['evento'], evento_pix['resultado'],
-                valor=evento_pix.get('valor'),
+                valor=evento_pix.get('valor'), cursor=cursor,
             )
+        con.commit()
         return jsonify({
             'mensagem': {'id': id_assistente_msg, 'papel': 'ASSISTENTE', 'conteudo': resposta,
                          'criada_em': datetime.now(FUSO).isoformat(timespec='seconds')},
