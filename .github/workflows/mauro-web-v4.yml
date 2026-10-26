@@ -23,5 +23,6 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python -m py_compile assistente_mauro.py mauro_conversa.py mauro_pix.py
       - run: python -m unittest discover -s tests -p 'test_assistente_mauro_intencoes.py' -v
+      - run: python -m unittest discover -s tests -p 'test_mauro_conversa_consultas.py' -v
       - run: python -m unittest discover -s tests -p 'test_mauro_pix_seguro.py' -v
       - run: python -m unittest discover -s tests -p 'test_seguranca_ia_cpf.py' -v
