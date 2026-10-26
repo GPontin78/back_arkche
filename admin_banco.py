@@ -13,6 +13,7 @@ from flask import current_app, jsonify, request
 from banco import con
 from funcao import descobre_id_usuario
 from limites import usuario_eh_admin_bancario
+from seguranca_ia import tentativa_injecao, resposta_modelo_insegura
 
 
 _LIMITE_PERGUNTAS_ADMIN_POR_MINUTO = 20
@@ -532,6 +533,14 @@ def conversar_mauro_admin():
         return jsonify({'mensagem': 'Digite uma pergunta para o MAURO Administração.'}), 400
     if len(pergunta) > 2000:
         return jsonify({'mensagem': 'A pergunta deve ter no máximo 2.000 caracteres.'}), 400
+    if tentativa_injecao(pergunta):
+        from auditoria import registrar_evento_flask
+        registrar_evento_flask(
+            evento='MAURO_ADMIN_CONSULTA', resultado='RECUSADO',
+            motivo='Tentativa de alterar instrucoes do assistente', id_usuario=id_admin,
+            operacao='DENY', origem=request.path, dados={'tipo': 'prompt_injection', 'tamanho': len(pergunta)},
+        )
+        return jsonify({'mensagem': 'Não posso alterar políticas internas nem conceder novos privilégios por conversa.', 'codigo': 'INSTRUCAO_NAO_PERMITIDA'}), 400
     historico = corpo.get('historico') or []
     if not isinstance(historico, list):
         historico = []
@@ -571,6 +580,9 @@ def conversar_mauro_admin():
         )
         if falha:
             return jsonify({'mensagem': falha}), 503
+        if resposta_modelo_insegura(resposta):
+            current_app.logger.warning('Resposta do MAURO administrativo bloqueada pela politica de saida')
+            resposta = 'Não posso divulgar instruções internas, credenciais ou instruções de alteração de permissões. Consulte os painéis administrativos autorizados.'
         return jsonify({
             'resposta': resposta,
             'gerado_em': indicadores['gerado_em'],
