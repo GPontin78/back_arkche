@@ -430,7 +430,10 @@ class TestMauroWebConversacionalV4(unittest.TestCase):
         self.assertIn('horário de Brasília', mauro._resposta_financeira_verificada('DATA_ATUAL', dados))
         self.assertIn('não pode ser editado', mauro._resposta_financeira_verificada('ALTERAR_SALDO', dados))
         self.assertIn('PIN', mauro._resposta_financeira_verificada('CAPACIDADES', dados))
-        self.assertNotIn('R
+        self.assertNotIn('saldo disponível', mauro._resposta_financeira_verificada('EDITAR_PERFIL', dados))
+
+
+class TestAudioMauro(unittest.TestCase):
     def test_mime_webm_opus_e_normalizado_e_tipo_desconhecido_recusado(self):
         self.assertEqual(mauro._normalizar_mime_audio('audio/webm;codecs=opus'), 'audio/webm')
         self.assertEqual(mauro._normalizar_mime_audio('audio/x-wav'), 'audio/wav')
