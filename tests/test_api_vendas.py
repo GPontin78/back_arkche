@@ -43,9 +43,13 @@ os.environ['CONTA_LIQUIDACAO_CARTAO'] = '9'
 
 with patch('apscheduler.schedulers.background.BackgroundScheduler.start'):
     import auditoria as _auditoria_teste
+    _registrar_rotas_auditoria_original = _auditoria_teste.registrar_rotas
     _auditoria_teste.registrar_rotas = lambda _app: None
     import main
+    _auditoria_teste.registrar_rotas = _registrar_rotas_auditoria_original
 import notificacoes
+import maquininha
+import compra
 
 
 class RedisTeste:
@@ -104,7 +108,8 @@ class ApiVendasTests(unittest.TestCase):
             cursor.execute(statement)
             cls.db.commit()
         for migration_name in ('001_notificacoes_outbox.sql', '002_limites_diurnos_noturnos.sql',
-                               '003_favoritos_pix.sql', '010_limites_conta_credito_cartao.sql'):
+                               '003_favoritos_pix.sql', '010_limites_conta_credito_cartao.sql',
+                               '011_idempotencia_vendas.sql'):
             migration_path = ROOT / 'migrations' / migration_name
             migrated = subprocess.run(
                 [str(Path(os.getenv('ARKHE_ISQL_PATH', r'C:\Program Files\Firebird\Firebird_4_0\isql.exe'))),
@@ -143,7 +148,7 @@ class ApiVendasTests(unittest.TestCase):
                       'LIMITE_CONTA_PERIODO', 'CONTROLE_LIMITE_CONTA']:
             cursor.execute('DELETE FROM ' + table)
         for table in ['NOTIFICACAO_DESTINATARIO', 'NOTIFICACAO', 'PREFERENCIA_NOTIFICACAO',
-                      'EVENTO_NOTIFICACAO_OUTBOX', 'MOVIMENTACAO', 'FATURA_COMPRA', 'COMPRA',
+                      'EVENTO_NOTIFICACAO_OUTBOX', 'IDEMPOTENCIA_VENDA', 'MOVIMENTACAO', 'FATURA_COMPRA', 'COMPRA',
                       'CARTAO', 'COBRANCA', 'INTEGRACAO_API', 'CONTA', 'USUARIO']:
             cursor.execute('DELETE FROM ' + table)
         cursor.execute('''UPDATE POLITICA_LIMITE_OPERACAO SET ATIVO = 0,
@@ -180,8 +185,9 @@ class ApiVendasTests(unittest.TestCase):
         cursor.close()
         return result
 
-    def post(self, path, data):
-        return self.client.post(path, json=data, headers=self.headers)
+    def post(self, path, data, key=None):
+        headers = {**self.headers, 'X-Idempotency-Key': key or uuid.uuid4().hex}
+        return self.client.post(path, json=data, headers=headers)
 
     def sessao(self, client, id_conta):
         token = jwt.encode({'id_usuario': id_conta, 'id_conta': id_conta}, main.app.config['SECRET_KEY'], algorithm='HS256')
@@ -495,17 +501,39 @@ class ApiVendasTests(unittest.TestCase):
         self.assertEqual(self.post('/api/v1/vendas/cartao', {**self.venda, 'valor': 1001, 'tipo': 'CREDITO'}).status_code, 400)
         self.assertEqual(self.sql('SELECT COUNT(*) FROM COMPRA')[0][0], 0)
 
-    def test_repetir_venda_debito_e_credito_em_cinco_minutos(self):
-        first = self.post('/api/v1/vendas/cartao', self.venda)
-        second = self.post('/api/v1/vendas/cartao', self.venda)
+    def test_chave_repetida_retorna_mesma_venda_sem_nova_movimentacao(self):
+        chave = 'venda-retry-0001'
+        first = self.post('/api/v1/vendas/cartao', self.venda, key=chave)
+        second = self.post('/api/v1/vendas/cartao', self.venda, key=chave)
         self.assertEqual(first.status_code, 201)
-        self.assertEqual(second.status_code, 409)
-        self.assertEqual(second.json['codigo'], 'VENDA_SEMELHANTE_RECENTE')
+        self.assertEqual(second.status_code, 201)
+        self.assertEqual(second.json, first.json)
         self.assertEqual(self.sql('SELECT COUNT(*) FROM COMPRA')[0][0], 1)
         self.assertEqual(self.sql('SELECT COUNT(*) FROM MOVIMENTACAO')[0][0], 2)
+        self.assertEqual(self.sql('SELECT COUNT(*) FROM IDEMPOTENCIA_VENDA')[0][0], 1)
+
+    def test_duas_compras_legitimas_iguais_com_chaves_distintas_sao_aprovadas(self):
+        first = self.post('/api/v1/vendas/cartao', self.venda, key='venda-nova-0001')
+        second = self.post('/api/v1/vendas/cartao', self.venda, key='venda-nova-0002')
+        self.assertEqual(first.status_code, 201, first.json)
+        self.assertEqual(second.status_code, 201, second.json)
+        self.assertNotEqual(first.json['id_compra'], second.json['id_compra'])
+        self.assertEqual(self.sql('SELECT COUNT(*) FROM COMPRA')[0][0], 2)
+        self.assertEqual(self.sql('SELECT COUNT(*) FROM MOVIMENTACAO WHERE ID_COMPRA IS NOT NULL')[0][0], 2)
+
+    def test_mesma_chave_com_parametros_diferentes_e_recusada(self):
+        chave = 'venda-retry-0002'
+        self.assertEqual(self.post('/api/v1/vendas/cartao', self.venda, key=chave).status_code, 201)
+        response = self.post('/api/v1/vendas/cartao', {**self.venda, 'valor': 110}, key=chave)
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json['codigo'], 'CHAVE_IDEMPOTENCIA_REUTILIZADA')
+        self.assertEqual(self.sql('SELECT COUNT(*) FROM COMPRA')[0][0], 1)
         credito = {**self.venda, 'tipo': 'CREDITO', 'parcelas': 3}
-        self.assertEqual(self.post('/api/v1/vendas/cartao', credito).status_code, 201)
-        self.assertEqual(self.post('/api/v1/vendas/cartao', credito).status_code, 409)
+        credito_key = 'venda-credito-0001'
+        primeira = self.post('/api/v1/vendas/cartao', credito, key=credito_key)
+        segunda = self.post('/api/v1/vendas/cartao', credito, key=credito_key)
+        self.assertEqual(primeira.status_code, 201)
+        self.assertEqual(segunda.json, primeira.json)
         self.assertEqual(self.sql('SELECT COUNT(*) FROM COMPRA')[0][0], 2)
 
     def test_conta_pf_nao_recebe_pela_api(self):
@@ -539,7 +567,8 @@ class ApiVendasTests(unittest.TestCase):
     def test_concorrencia_nao_gasta_saldo_duas_vezes(self):
         def cobrar(value):
             with main.app.test_client() as client:
-                result = client.post('/api/v1/vendas/cartao', headers=self.headers,
+                headers = {**self.headers, 'X-Idempotency-Key': f'venda-limite-{value:03d}'}
+                result = client.post('/api/v1/vendas/cartao', headers=headers,
                                      json={**self.venda, 'valor': value})
                 return result.status_code, result.json
         with ThreadPoolExecutor(max_workers=2) as pool:
@@ -547,16 +576,29 @@ class ApiVendasTests(unittest.TestCase):
         self.assertEqual(sum(status == 201 for status, _ in results), 1, results)
         self.assertEqual(self.sql('SELECT COUNT(*) FROM COMPRA')[0][0], 1)
 
-    def test_concorrencia_venda_igual(self):
+    def test_concorrencia_chave_igual_persiste_uma_venda(self):
+        chave = 'venda-concorrente-0001'
         def cobrar(_):
             with main.app.test_client() as client:
-                result = client.post('/api/v1/vendas/cartao', headers=self.headers, json=self.venda)
-                return result.status_code
+                result = client.post('/api/v1/vendas/cartao', headers={**self.headers, 'X-Idempotency-Key': chave}, json=self.venda)
+                return result.status_code, result.json
         with ThreadPoolExecutor(max_workers=2) as pool:
             results = list(pool.map(cobrar, range(2)))
-        self.assertTrue(all(status in (201, 409) for status in results), results)
-        self.assertEqual(results.count(201), 1)
+        self.assertEqual([status for status, _ in results], [201, 201], results)
+        self.assertEqual(results[0][1], results[1][1])
         self.assertEqual(self.sql('SELECT COUNT(*) FROM COMPRA')[0][0], 1)
+        self.assertEqual(self.sql('SELECT COUNT(*) FROM MOVIMENTACAO WHERE ID_COMPRA IS NOT NULL')[0][0], 1)
+
+    def test_concorrencia_duas_compras_iguais_com_chaves_distintas(self):
+        def cobrar(chave):
+            with main.app.test_client() as client:
+                headers = {**self.headers, 'X-Idempotency-Key': chave}
+                return client.post('/api/v1/vendas/cartao', headers=headers, json=self.venda)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            resultados = list(pool.map(cobrar, ['venda-distinta-0001', 'venda-distinta-0002']))
+        self.assertEqual([resposta.status_code for resposta in resultados], [201, 201])
+        self.assertNotEqual(resultados[0].json['id_compra'], resultados[1].json['id_compra'])
+        self.assertEqual(self.sql('SELECT COUNT(*) FROM COMPRA')[0][0], 2)
 
     def test_boleto_pago_nao_bloqueia_nova_emissao_igual(self):
         first = self.post('/api/v1/cobrancas/boletos', self.boleto)
@@ -575,12 +617,68 @@ class ApiVendasTests(unittest.TestCase):
         self.assertTrue(all(status in (201, 409) for status in results), results)
         self.assertEqual(self.sql('SELECT COUNT(*) FROM COBRANCA')[0][0], 1)
 
-    def test_protecao_venda_limitada_a_cinco_minutos(self):
-        self.assertEqual(self.post('/api/v1/vendas/cartao', self.venda).status_code, 201)
-        self.sql('UPDATE COMPRA SET DATA_COMPRA = DATEADD(-6 MINUTE TO DATA_COMPRA)')
-        self.sql('UPDATE MOVIMENTACAO SET DATA_MOVIMENTACAO = DATEADD(-6 MINUTE TO DATA_MOVIMENTACAO) WHERE ID_RECEBEDOR = 2')
-        self.assertEqual(self.post('/api/v1/vendas/cartao', self.venda).status_code, 201)
+    def test_chave_de_idempotencia_obrigatoria_na_venda_api(self):
+        response = self.client.post('/api/v1/vendas/cartao', json=self.venda, headers=self.headers)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.sql('SELECT COUNT(*) FROM COMPRA')[0][0], 0)
+
+    def test_maquininha_replay_persistente_e_chaves_distintas_para_compras_legitimas(self):
+        cartao_ficticio = (1, 1, '2481000000000001', Decimal('1000'), 0, 1, 'Titular ficticio', 0)
+        def comprar(chave, valor=10):
+            with patch.object(maquininha, 'validar_conta_recebedora', return_value=(2, None)), \
+                 patch.object(maquininha, 'buscar_cartao_fisico', return_value=cartao_ficticio), \
+                 patch.object(maquininha, 'verificar_pin_usuario', return_value={'valido': True}):
+                return self.client.post('/maquininha/comprar', json={
+                    'uid': 'TESTE', 'pin': '123456', 'valor': valor, 'tipo': 'DEBITO',
+                    'parcelas': 1, 'chave_idempotencia': chave,
+                })
+
+        primeira = comprar('maquininha-chave-01')
+        repetida = comprar('maquininha-chave-01')
+        distinta = comprar('maquininha-chave-02')
+        self.assertEqual(primeira.status_code, 200, primeira.json)
+        self.assertEqual(repetida.status_code, 200, repetida.json)
+        self.assertEqual(repetida.json, primeira.json)
+        self.assertEqual(distinta.status_code, 200, distinta.json)
+        self.assertNotEqual(distinta.json['id_compra'], primeira.json['id_compra'])
         self.assertEqual(self.sql('SELECT COUNT(*) FROM COMPRA')[0][0], 2)
+        self.assertEqual(self.sql('SELECT COUNT(*) FROM MOVIMENTACAO WHERE ID_COMPRA IS NOT NULL')[0][0], 2)
+        self.assertEqual(self.sql('SELECT COUNT(*) FROM IDEMPOTENCIA_VENDA WHERE CANAL = ?', ('MAQUININHA',))[0][0], 2)
+
+    def test_maquininha_credito_mantem_modelo_atual_sem_movimento_debito(self):
+        cartao_ficticio = (1, 1, '2481000000000001', Decimal('1000'), 0, 1, 'Titular ficticio', 0)
+        with patch.object(maquininha, 'validar_conta_recebedora', return_value=(2, None)), \
+             patch.object(maquininha, 'buscar_cartao_fisico', return_value=cartao_ficticio), \
+             patch.object(maquininha, 'verificar_pin_usuario', return_value={'valido': True}), \
+             patch.object(maquininha, 'calcular_limite_cartao', return_value=Decimal('0')):
+            response = self.client.post('/maquininha/comprar', json={
+                'uid': 'TESTE', 'pin': '123456', 'valor': 100, 'tipo': 'CREDITO',
+                'parcelas': 2, 'chave_idempotencia': 'maquininha-credito-01',
+            })
+        self.assertEqual(response.status_code, 200, response.json)
+        self.assertEqual(self.sql('SELECT COUNT(*) FROM COMPRA')[0][0], 1)
+        self.assertEqual(self.sql('SELECT COUNT(*) FROM MOVIMENTACAO WHERE ID_COMPRA IS NOT NULL')[0][0], 0)
+        self.assertEqual(self.sql('SELECT COUNT(*) FROM IDEMPOTENCIA_VENDA WHERE ID_MOVIMENTACAO IS NULL')[0][0], 1)
+
+    def test_fluxo_legado_replay_persistente_e_compras_iguais_validas(self):
+        self.sessao(self.client, 1)
+        payload = {
+            'numero_cartao': '2481000000000001', 'valor_compra': 10,
+            'tipo': 0, 'qtd_parcela': 1,
+            'chave_idempotencia': 'legado-compra-0001',
+        }
+        first = self.client.post('/adicionar_compra', json=payload)
+        replay = self.client.post('/adicionar_compra', json=payload)
+        second = self.client.post('/adicionar_compra', json={
+            **payload, 'chave_idempotencia': 'legado-compra-0002',
+        })
+        self.assertEqual(first.status_code, 200, first.json)
+        self.assertEqual(replay.status_code, 200, replay.json)
+        self.assertEqual(replay.json, first.json)
+        self.assertEqual(second.status_code, 200, second.json)
+        self.assertNotEqual(first.json['id_compra'], second.json['id_compra'])
+        self.assertEqual(self.sql('SELECT COUNT(*) FROM COMPRA')[0][0], 2)
+        self.assertEqual(self.sql("SELECT COUNT(*) FROM IDEMPOTENCIA_VENDA WHERE CANAL = 'LEGADO'")[0][0], 2)
 
     def test_venda_em_outra_empresa_nao_bloqueada(self):
         self.assertEqual(self.post('/api/v1/vendas/cartao', self.venda).status_code, 201)

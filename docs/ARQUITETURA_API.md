@@ -34,7 +34,15 @@ Os caminhos, métodos e contratos abaixo são usados por integrações existente
 | POST | `/api/v1/cobrancas/boletos` | Credenciais da integração |
 | GET | `/api/v1/cobrancas/boletos/<id_cobranca>` | Credenciais da integração; somente cobrança da conta vinculada |
 | GET | `/api/v1/cobrancas/boletos/<id_cobranca>/pdf` | Credenciais da integração; somente cobrança da conta vinculada |
-| POST | `/api/v1/vendas/cartao` | Credenciais da integração; validações originais |
+| POST | `/api/v1/vendas/cartao` | Credenciais da integração + `X-Idempotency-Key` (8–128 caracteres) |
+
+Vendas de cartão gravam a chave, a compra, a movimentação e a resposta no mesmo
+commit Firebird. Repetir a mesma chave e os mesmos parâmetros devolve a resposta
+original; reutilizar a chave com outro conteúdo retorna `409`. Gere uma chave nova
+para cada venda e reutilize-a somente ao repetir a mesma solicitação após falha de
+rede. Compras legítimas com o mesmo cartão, valor e estabelecimento são aceitas
+quando têm chaves distintas. O servidor não usa proximidade de horário como prova
+de duplicidade.
 
 Gerenciamento das credenciais permanece protegido pela sessão bancária:
 

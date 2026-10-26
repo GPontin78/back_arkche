@@ -1,10 +1,17 @@
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+import fdb
 from flask import jsonify, request
 from main import app
 from banco import con
 from funcao import dados_conta, verificar_pin_usuario, pode_debitar_saldo, calcular_limite_cartao, data_atual
 from limites import aplicar_limite
 from notificacoes import registrar_evento_bancario, registrar_evento_seguranca, tentar_publicar_eventos
+from vendas_idempotencia import (
+    assinatura_venda,
+    obter_resposta_venda,
+    registrar_venda_idempotente,
+    validar_chave_venda,
+)
 
 CARTOES_FISICOS = {
     '0D94A4A5': 4,  # Cartao da Lais
@@ -75,40 +82,6 @@ def buscar_cartao_fisico(uid):
             cursor.close()
 
 
-def compra_duplicada_maquininha(id_cartao, id_conta_pagador, id_recebedor, valor, agora):
-    cursor = None
-
-    try:
-        cursor = con.cursor()
-
-        cursor.execute("""
-            SELECT FIRST 1 1
-            FROM COMPRA C
-            INNER JOIN MOVIMENTACAO M
-                ON M.ID_PAGADOR = ?
-               AND M.ID_RECEBEDOR = ?
-               AND M.VALOR = C.VALOR_COMPRA
-               AND M.DATA_MOVIMENTACAO = C.DATA_COMPRA
-            WHERE C.ID_CARTAO = ?
-              AND C.TIPO = 0
-              AND C.VALOR_COMPRA = ?
-              AND C.DATA_COMPRA BETWEEN DATEADD(-5 MINUTE TO ?) AND ?
-        """, (
-            id_conta_pagador,
-            id_recebedor,
-            id_cartao,
-            valor,
-            agora,
-            agora
-        ))
-
-        return cursor.fetchone() is not None
-
-    finally:
-        if cursor:
-            cursor.close()
-
-
 @app.route('/maquininha/identificar', methods=['POST'])
 def identificar_cartao_maquininha():
     id_recebedor, erro = validar_conta_recebedora()
@@ -164,6 +137,14 @@ def comprar_maquininha():
     uid = normalizar_uid(dados.get('uid'))
     pin = str(dados.get('pin') or '')
     tipo = str(dados.get('tipo') or '').upper().strip()
+    chave_idempotencia = validar_chave_venda(dados.get('chave_idempotencia'))
+
+    if not chave_idempotencia:
+        return jsonify({
+            'aprovado': False,
+            'codigo': 'CHAVE_IDEMPOTENCIA_OBRIGATORIA',
+            'mensagem': 'Inicie novamente a venda para gerar uma chave de operacao segura.',
+        }), 400
 
     if not uid:
         return jsonify({
@@ -312,41 +293,46 @@ def comprar_maquininha():
             cursor.close()
 
     data_compra = data_atual()
+    cursor = None
 
-    if tipo == 'DEBITO':
-        if compra_duplicada_maquininha(
-            id_cartao,
-            id_conta_pagador,
-            id_recebedor,
-            valor,
-            data_compra
-        ):
-            return jsonify({
-                'aprovado': False,
-                'codigo': 'COMPRA_DUPLICADA',
-                'mensagem': 'Compra duplicada. Aguarde 5 minutos para repetir o mesmo valor neste estabelecimento.'
-            }), 409
+    try:
+        cursor = con.cursor()
 
-        if not pode_debitar_saldo(id_conta_pagador, valor):
+        # Serializa a mesma origem/destino antes de ler a chave persistida e
+        # antes de avaliar saldo/limites. A chave é confirmada junto da venda.
+        for id_conta in sorted({int(id_conta_pagador), int(id_recebedor)}):
+            cursor.execute('SELECT ID_CONTA FROM CONTA WHERE ID_CONTA = ? WITH LOCK', (id_conta,))
+            if not cursor.fetchone():
+                con.rollback()
+                return jsonify({'aprovado': False, 'codigo': 'CONTA_INVALIDA', 'mensagem': 'Conta nao encontrada'}), 404
+
+        cursor.execute('SELECT LIMITE, STATUS FROM CARTAO WHERE ID_CARTAO = ? WITH LOCK', (id_cartao,))
+        cartao_bloqueado = cursor.fetchone()
+        if not cartao_bloqueado or cartao_bloqueado[1] != 0:
+            con.rollback()
+            return jsonify({'aprovado': False, 'codigo': 'CARTAO_BLOQUEADO', 'mensagem': 'Cartao bloqueado'}), 400
+
+        assinatura = assinatura_venda(
+            id_cartao=int(id_cartao), id_pagador=int(id_conta_pagador),
+            id_recebedor=int(id_recebedor), valor=str(valor), tipo=tipo,
+            parcelas=int(qtd_parcela),
+        )
+        repeticao = obter_resposta_venda(
+            cursor, 'MAQUININHA', id_recebedor, chave_idempotencia, assinatura,
+        )
+        if repeticao is not None:
+            con.rollback()
+            return repeticao
+
+        if tipo == 'DEBITO' and not pode_debitar_saldo(id_conta_pagador, valor):
+            con.rollback()
             return jsonify({
                 'aprovado': False,
                 'codigo': 'SALDO_INSUFICIENTE',
                 'mensagem': 'Saldo insuficiente'
             }), 400
 
-    cursor = None
-
-    try:
-        cursor = con.cursor()
-
         if tipo == 'CREDITO':
-            # O mesmo bloqueio é usado pela administração do limite do cartão,
-            # evitando que a aprovação concorra com uma alteração de crédito.
-            cursor.execute('SELECT LIMITE, STATUS FROM CARTAO WHERE ID_CARTAO = ? WITH LOCK', (id_cartao,))
-            cartao_bloqueado = cursor.fetchone()
-            if not cartao_bloqueado or cartao_bloqueado[1] != 0:
-                con.rollback()
-                return jsonify({'aprovado': False, 'codigo': 'CARTAO_BLOQUEADO', 'mensagem': 'Cartao bloqueado'}), 400
             limite_total = Decimal(str(cartao_bloqueado[0] or 0))
             limite_utilizado = Decimal(str(calcular_limite_cartao(id_cartao) or 0))
             if limite_utilizado + valor > limite_total:
@@ -360,6 +346,7 @@ def comprar_maquininha():
         if restricao_limite:
             return restricao_limite
 
+        id_movimentacao = None
         if tipo == 'DEBITO':
             cursor.execute("""
                 INSERT INTO COMPRA (
@@ -388,6 +375,7 @@ def comprar_maquininha():
                     ID_COMPRA
                 )
                 VALUES (?, ?, ?, ?, ?)
+                RETURNING ID_MOVIMENTACAO
             """, (
                 id_conta_pagador,
                 id_recebedor,
@@ -395,6 +383,7 @@ def comprar_maquininha():
                 data_compra,
                 id_compra
             ))
+            id_movimentacao = cursor.fetchone()[0]
 
             eventos = registrar_evento_bancario(
                 cursor, chave_operacao=f'compra:{id_compra}', categoria='CARTAO',
@@ -451,20 +440,40 @@ def comprar_maquininha():
                 dados_adicionais={'tipo': tipo, 'parcelas': qtd_parcela, 'final_cartao': numero_cartao[-4:]}
             )
 
-        con.commit()
-        tentar_publicar_eventos(eventos)
-
-        return jsonify({
+        resposta = {
             'aprovado': True,
             'codigo': 'APROVADO',
             'mensagem': 'Compra aprovada',
+            'id_compra': int(id_compra),
+            'id_movimentacao': int(id_movimentacao) if id_movimentacao is not None else None,
             'valor': float(valor),
             'tipo': tipo,
             'parcelas': qtd_parcela,
             'final_cartao': numero_cartao[-4:],
-            'nome': nome_usuario
-        }), 200
+            'nome': nome_usuario,
+        }
+        registrar_venda_idempotente(
+            cursor, 'MAQUININHA', id_recebedor, chave_idempotencia,
+            assinatura, id_compra, id_movimentacao, resposta, 200,
+        )
+        con.commit()
+        tentar_publicar_eventos(eventos)
 
+        return jsonify(resposta), 200
+
+    except (fdb.IntegrityError, fdb.TransactionConflict):
+        con.rollback()
+        if cursor and 'assinatura' in locals():
+            try:
+                repeticao = obter_resposta_venda(
+                    cursor, 'MAQUININHA', id_recebedor, chave_idempotencia,
+                    assinatura,
+                )
+                if repeticao is not None:
+                    return repeticao
+            except Exception:
+                con.rollback()
+        return jsonify({'aprovado': False, 'codigo': 'OPERACAO_CONCORRENTE', 'mensagem': 'Venda concorrente; consulte o extrato antes de tentar novamente.'}), 409
     except Exception as e:
         con.rollback()
         print('ERRO MAQUININHA:', e)
