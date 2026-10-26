@@ -118,9 +118,11 @@ def aplicar_ddl(conexao, destino, usuario, senha, origem):
             (destino, usuario, senha, origem + '-log-v2'))
         for comando in comandos[3:]:
             cursor.execute(comando)
+        for comando in comandos_sql((ROOT / 'migrations/012_log_tabelas_principais.sql').read_text(encoding='utf-8')):
+            cursor.execute(comando)
         testar_eds(cursor)
         cursor.execute("SELECT COUNT(*) FROM RDB$TRIGGERS WHERE COALESCE(RDB$SYSTEM_FLAG,0)=0")
-        if cursor.fetchone() != (107,):
+        if cursor.fetchone() != (35,):
             raise RuntimeError('Quantidade inesperada de triggers. Migração revertida.')
         conexao.commit()
     except Exception:
@@ -195,10 +197,10 @@ def main():
         conferir_principal(conexao, esperado)
         aplicar_ddl(conexao, destino, usuario_audit, senha_audit, origem)
         (pasta / 'resultado.json').write_text(json.dumps({
-            'triggers_log':105, 'triggers_financeiras':2, 'backups':backups,
+            'triggers_log':33, 'triggers_financeiras':2, 'backups':backups,
             'historico_antes':total_antes, 'pendentes_antigos':pendentes,
         }, indent=2), encoding='utf-8')
-        print('Aplicado: 105 triggers de LOG e 2 regras financeiras preservadas; EDS validado por leitura.')
+        print('Aplicado: 33 triggers de LOG e 2 regras financeiras preservadas; EDS validado por leitura.')
         print('Rollback do DDL:', pasta / 'rollback-triggers.sql')
     finally:
         conexao.close()

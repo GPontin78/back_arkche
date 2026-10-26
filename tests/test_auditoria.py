@@ -12,8 +12,9 @@ class TestAuditoriaAdmin(unittest.TestCase):
     def setUpClass(cls):
         cls.app = Flask('auditoria_admin_test')
         auditoria.registrar_rotas(cls.app)
-        # Os testes de rota não conectam ao Firebird; instrumentação é coberta em produção.
+        # A persistência dos hooks é coberta pela suíte de Firebirds descartáveis.
         cls.app.before_request_funcs[None] = []
+        cls.app.after_request_funcs[None] = []
         cls.client = cls.app.test_client()
 
     def test_feed_stream_status_e_detalhe_negam_nao_administrador(self):

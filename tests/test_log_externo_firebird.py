@@ -13,7 +13,7 @@ from unittest.mock import patch
 import uuid
 
 import fdb
-from flask import Flask, current_app, request
+from flask import Flask, current_app, g, request
 
 import auditoria
 
@@ -150,8 +150,90 @@ class LogExternoFirebird(unittest.TestCase):
     def test_migracao_instala_todas_as_triggers_sem_procedure(self):
         self.assertEqual(self.sql("SELECT COUNT(*) FROM RDB$TRIGGERS WHERE RDB$TRIGGER_NAME STARTING WITH 'ARKHE_AUD_'")[0][0], 0)
         self.assertEqual(self.sql("SELECT COUNT(*) FROM RDB$PROCEDURES WHERE RDB$PROCEDURE_NAME='ARKHE_AUDIT_ENQUEUE'")[0][0], 0)
-        self.assertEqual(self.sql("SELECT COUNT(*) FROM RDB$TRIGGERS WHERE COALESCE(RDB$SYSTEM_FLAG,0)=0")[0][0], 107)
+        self.assertEqual(self.sql("SELECT COUNT(*) FROM RDB$TRIGGERS WHERE COALESCE(RDB$SYSTEM_FLAG,0)=0")[0][0], 35)
         self.assertEqual(self.sql("SELECT COUNT(*) FROM AUDITORIA_EVENTO WHERE EVENTO='HISTORICO'", banco=self.audit)[0][0], 1)
+
+    def test_reducao_idempotente_recusa_trigger_modificada(self):
+        from scripts.restringir_log_principal import aplicar, conferir
+        self.assertEqual(len(conferir(self.con)), 35)
+
+        self.assertFalse(aplicar(self.con))
+        self.sql('ALTER TRIGGER TG_AI_USUARIO_LOG INACTIVE')
+        with self.assertRaisesRegex(RuntimeError, 'mudou'):
+            aplicar(self.con)
+        self.con.rollback()
+        self.assertEqual(len(conferir(self.con)), 35)
+
+    def test_reducao_da_instalacao_011_e_rollback(self):
+        from scripts.aplicar_log_externo import comandos_sql
+        from scripts.gerar_migracao_log import CAMPOS, TABELAS_PRINCIPAIS, gerar_trigger
+        from scripts.restringir_log_principal import aplicar, conferir, salvar_rollback
+        campos = {(r[0],r[1]):r for r in self.schema['fields']}
+        for tabela in CAMPOS:
+            if tabela not in TABELAS_PRINCIPAIS:
+                for operacao in ('INSERT','UPDATE','DELETE'):
+                    self.sql(gerar_trigger(tabela,operacao,campos).strip().removesuffix('^'))
+        self.con.commit()
+        atuais = conferir(self.con)
+        self.assertEqual(len(atuais),107)
+        with tempfile.TemporaryDirectory(prefix='arkhe-log-teste-rollback-') as pasta:
+            salvar_rollback(Path(pasta),atuais)
+            self.assertTrue(aplicar(self.con))
+            self.assertEqual(len(conferir(self.con)),35)
+            for comando in comandos_sql((Path(pasta)/'rollback-reducao.sql').read_text(encoding='utf-8')):
+                self.sql(comando)
+            self.con.commit()
+            self.assertEqual(len(conferir(self.con)),107)
+            self.assertTrue(aplicar(self.con))
+        self.assertEqual(self.sql("SELECT COUNT(*) FROM AUDITORIA_EVENTO WHERE EVENTO='HISTORICO'",banco=self.audit)[0][0],1)
+
+    def test_http_sistema_api_mcp_recusas_e_urls_sem_segredos(self):
+        app = Flask('teste_cobertura_http_log')
+        app.config.update(self.app.config)
+        app.after_request(auditoria._registrar_resposta_relevante)
+
+        @app.route('/favoritos/<int:id_favorito>', methods=['DELETE'])
+        def favorito(id_favorito):
+            return {'mensagem':'Excluido'}, 200
+
+        @app.route('/api/v1/saldo')
+        def api_saldo():
+            g.auditoria_contexto = {'id_integracao':7, 'id_conta':9, 'origem':'api'}
+            return {'saldo':250}, 200
+
+        @app.route('/api/v1/admin/auditoria/stream')
+        def feed():
+            return '', 200
+
+        @app.route('/recuperar/<token>')
+        def recuperar(token):
+            return {}, 403
+
+        with patch.object(auditoria, 'descobre_id_usuario', return_value=44), \
+             patch.object(auditoria, 'descobre_id_conta', return_value=9):
+            cliente = app.test_client()
+            self.assertEqual(cliente.delete('/favoritos/21', json={'pin':'999999'}).status_code,200)
+            self.assertEqual(cliente.get('/api/v1/saldo?segredo=123').status_code,200)
+            self.assertEqual(cliente.get('/recuperar/token-privado').status_code,403)
+            self.assertEqual(cliente.get('/api/v1/admin/auditoria/stream').status_code,200)
+        # Headers não autenticados jamais fornecem o ator do MCP.
+        with patch.object(auditoria, 'descobre_id_usuario', return_value=None), \
+             patch.object(auditoria, 'descobre_id_conta', return_value=None):
+            self.assertEqual(cliente.get('/internal/mcp/saldo', headers={'X-Arkhe-Session':'segredo-mcp'}).status_code,404)
+        self.audit.rollback()
+        linhas = self.sql("SELECT EVENTO,OPERACAO,ID_USUARIO,ID_CONTA,RESULTADO,ORIGEM,DADOS_NOVOS FROM AUDITORIA_EVENTO WHERE EVENTO IN ('SISTEMA_REQUISICAO','MCP_REQUISICAO')", banco=self.audit)
+        favorito = next(r for r in linhas if r[5] == '/favoritos/<int:id_favorito>')
+        self.assertEqual(favorito[1:5], ('DELETE',44,9,'SUCESSO'))
+        api = next(r for r in linhas if r[5] == '/api/v1/saldo')
+        self.assertEqual(api[2:4], (None,9))
+        self.assertEqual(json.loads(api[6])['id_integracao'],7)
+        mcp = next(r for r in linhas if r[0] == 'MCP_REQUISICAO')
+        self.assertEqual(mcp[1:5], ('DENY',None,None,'RECUSADO'))
+        self.assertEqual(json.loads(mcp[6])['ferramenta'],'consultar_saldo')
+        texto = str(linhas)
+        for segredo in ('999999','segredo-mcp','token-privado','segredo=123'):
+            self.assertNotIn(segredo,texto)
+        self.assertNotIn('/api/v1/admin/auditoria/stream',texto)
 
     def test_insert_update_delete_gravam_direto_no_outro_banco(self):
         self.sql("INSERT INTO MOVIMENTACAO (ID_MOVIMENTACAO,ID_PAGADOR,ID_RECEBEDOR,VALOR,DATA_MOVIMENTACAO) VALUES (1001,9,10,25.50,CURRENT_TIMESTAMP)")
@@ -187,19 +269,16 @@ class LogExternoFirebird(unittest.TestCase):
         self.con.rollback()
         self.assertFalse(self.sql('SELECT 1 FROM MOVIMENTACAO WHERE ID_MOVIMENTACAO=1004'))
 
-    def test_ia_grava_mensagens_proposta_pin_sem_copiar_segredos(self):
+    def test_tabelas_auxiliares_preservam_dados_sem_triggers_de_log(self):
         self.sql("INSERT INTO MAURO_CONVERSA (ID_CONVERSA,ID_USUARIO,ID_CONTA) VALUES (2001,44,9)")
         self.sql("INSERT INTO MAURO_MENSAGEM (ID_MENSAGEM,ID_CONVERSA,PAPEL,CONTEUDO) VALUES (2002,2001,'USUARIO',?)", ('texto confidencial 123456',))
         self.sql("INSERT INTO MAURO_PIX_PROPOSTA (ID_PROPOSTA,ID_CONVERSA,ID_USUARIO,ID_CONTA_ORIGEM,NOME_ORIGEM,CONTA_ORIGEM_RESUMO,EXPIRA_EM) VALUES (2003,2001,44,9,'Teste','Conta teste',DATEADD(5 MINUTE TO CURRENT_TIMESTAMP))")
         self.sql("INSERT INTO MAURO_PIX_PIN_TENTATIVA (ID_TENTATIVA,ID_USUARIO,ID_CONTA,ID_PROPOSTA,RESULTADO) VALUES (2004,44,9,2003,'RECUSADO')")
         self.con.commit()
-        mensagens = self.eventos('MAURO_MENSAGEM', 2002)
-        self.assertEqual(mensagens[0][3:], (44, 9))
-        self.assertNotIn('confidencial', mensagens[0][2])
-        self.assertNotIn('123456', mensagens[0][2])
-        self.assertEqual(json.loads(mensagens[0][2])['caracteres'], 25)
-        self.assertTrue(self.eventos('MAURO_PIX_PROPOSTA', 2003))
-        self.assertTrue(self.eventos('MAURO_PIX_PIN_TENTATIVA', 2004))
+        for tabela, registro in (('MAURO_CONVERSA',2001), ('MAURO_MENSAGEM',2002),
+                                 ('MAURO_PIX_PROPOSTA',2003), ('MAURO_PIX_PIN_TENTATIVA',2004)):
+            self.assertFalse(self.eventos(tabela,registro))
+        self.assertEqual(self.sql('SELECT CONTEUDO FROM MAURO_MENSAGEM WHERE ID_MENSAGEM=2002')[0][0], 'texto confidencial 123456')
 
     def test_log_python_create_execute_e_rollback_da_mesma_transacao(self):
         cursor = self.con.cursor()
@@ -228,8 +307,8 @@ class LogExternoFirebird(unittest.TestCase):
         self.assertEqual(len(self.eventos('COMPRA',4002)),1)
 
     def test_todas_as_tabelas_tem_log_de_insert_update_delete_com_json_valido(self):
-        from scripts.gerar_migracao_log import CAMPOS
-        for indice, tabela in enumerate(CAMPOS):
+        from scripts.gerar_migracao_log import CAMPOS, TABELAS_PRINCIPAIS
+        for indice, tabela in enumerate(TABELAS_PRINCIPAIS):
             with self.subTest(tabela=tabela):
                 definicoes = [r for r in self.schema['fields'] if r[0] == tabela]
                 chave = CAMPOS[tabela].split()[0]
