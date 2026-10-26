@@ -1,0 +1,23 @@
+name: Validate integration listing
+on:
+  push:
+    branches:
+      - 'fix/integracoes-listagem-import-20261026'
+  pull_request:
+    paths:
+      - 'api/get.py'
+      - 'tests/test_integracoes_listagem.py'
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python -m py_compile api/get.py tests/test_integracoes_listagem.py
+      - run: python -m unittest discover -s tests -p 'test_integracoes_listagem.py' -v
