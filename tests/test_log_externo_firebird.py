@@ -187,7 +187,7 @@ class LogExternoFirebird(unittest.TestCase):
             self.assertTrue(aplicar(self.con))
         self.assertEqual(self.sql("SELECT COUNT(*) FROM AUDITORIA_EVENTO WHERE EVENTO='HISTORICO'",banco=self.audit)[0][0],1)
 
-    def test_http_sistema_api_mcp_recusas_e_urls_sem_segredos(self):
+    def test_http_sistema_api_recusas_e_urls_sem_segredos(self):
         app = Flask('teste_cobertura_http_log')
         app.config.update(self.app.config)
         app.after_request(auditoria._registrar_resposta_relevante)
@@ -216,22 +216,22 @@ class LogExternoFirebird(unittest.TestCase):
             self.assertEqual(cliente.get('/api/v1/saldo?segredo=123').status_code,200)
             self.assertEqual(cliente.get('/recuperar/token-privado').status_code,403)
             self.assertEqual(cliente.get('/api/v1/admin/auditoria/stream').status_code,200)
-        # Headers não autenticados jamais fornecem o ator do MCP.
+        # Credenciais não validadas jamais fornecem o ator da API.
         with patch.object(auditoria, 'descobre_id_usuario', return_value=None), \
              patch.object(auditoria, 'descobre_id_conta', return_value=None):
-            self.assertEqual(cliente.get('/internal/mcp/saldo', headers={'X-Arkhe-Session':'segredo-mcp'}).status_code,404)
+            self.assertEqual(cliente.get('/api/v1/recurso-inexistente', headers={'X-Client-ID':'pretenso', 'X-Client-Secret':'segredo-api'}).status_code,404)
         self.audit.rollback()
-        linhas = self.sql("SELECT EVENTO,OPERACAO,ID_USUARIO,ID_CONTA,RESULTADO,ORIGEM,DADOS_NOVOS FROM AUDITORIA_EVENTO WHERE EVENTO IN ('SISTEMA_REQUISICAO','MCP_REQUISICAO')", banco=self.audit)
+        linhas = self.sql("SELECT EVENTO,OPERACAO,ID_USUARIO,ID_CONTA,RESULTADO,ORIGEM,DADOS_NOVOS FROM AUDITORIA_EVENTO WHERE EVENTO='SISTEMA_REQUISICAO'", banco=self.audit)
         favorito = next(r for r in linhas if r[5] == '/favoritos/<int:id_favorito>')
         self.assertEqual(favorito[1:5], ('DELETE',44,9,'SUCESSO'))
         api = next(r for r in linhas if r[5] == '/api/v1/saldo')
         self.assertEqual(api[2:4], (None,9))
         self.assertEqual(json.loads(api[6])['id_integracao'],7)
-        mcp = next(r for r in linhas if r[0] == 'MCP_REQUISICAO')
-        self.assertEqual(mcp[1:5], ('DENY',None,None,'RECUSADO'))
-        self.assertEqual(json.loads(mcp[6])['ferramenta'],'consultar_saldo')
+        recusada = next(r for r in linhas if json.loads(r[6]).get('status_http') == 404)
+        self.assertEqual(recusada[1:5], ('DENY',None,None,'RECUSADO'))
+        self.assertEqual(json.loads(recusada[6])['canal'],'api')
         texto = str(linhas)
-        for segredo in ('999999','segredo-mcp','token-privado','segredo=123'):
+        for segredo in ('999999','segredo-api','pretenso','token-privado','segredo=123'):
             self.assertNotIn(segredo,texto)
         self.assertNotIn('/api/v1/admin/auditoria/stream',texto)
 

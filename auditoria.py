@@ -259,15 +259,12 @@ def _rota_log():
     # A rota parametrizada evita copiar tokens e dados pessoais presentes na URL.
     if request.url_rule:
         return request.url_rule.rule[:160]
-    if request.path.startswith('/internal/mcp/'):
-        return '/internal/mcp/<rota>'
     return '/rota-nao-encontrada'
 
 
 def _registrar_resposta_relevante(response):
     caminho = request.path or ''
     assistente = caminho.startswith('/api/v1/assistente/') or caminho == '/api/v1/admin/banco/assistente'
-    mcp = caminho.startswith('/internal/mcp/')
     login = caminho in ('/login', '/login_usuario')
     escrita_recusada = request.method in ('POST', 'PUT', 'PATCH', 'DELETE') and response.status_code >= 400
     login_recusado = login and response.status_code >= 400
@@ -280,8 +277,8 @@ def _registrar_resposta_relevante(response):
     contexto = getattr(g, 'auditoria_contexto', {})
     id_usuario = contexto.get('id_usuario') if contexto else descobre_id_usuario()
     id_conta = contexto.get('id_conta') if contexto else descobre_id_conta()
-    canal = 'mcp' if mcp else contexto.get('origem', 'api' if caminho.startswith('/api/v1/') else 'sistema')
-    if not (id_usuario or contexto or assistente or mcp or login or escrita_recusada or caminho.startswith(('/api/v1/', '/internal/whatsapp/'))):
+    canal = contexto.get('origem', 'api' if caminho.startswith('/api/v1/') else 'sistema')
+    if not (id_usuario or contexto or assistente or login or escrita_recusada or caminho.startswith(('/api/v1/', '/internal/whatsapp/'))):
         return response
     try:
         if login and not id_usuario:
@@ -296,9 +293,7 @@ def _registrar_resposta_relevante(response):
                     cursor.close()
         resultado = 'SUCESSO' if response.status_code < 400 else 'FALHA' if response.status_code >= 500 else 'RECUSADO'
         motivo = f'Requisição HTTP {response.status_code}'
-        if mcp:
-            evento = 'MCP_REQUISICAO'
-        elif assistente:
+        if assistente:
             evento = 'MAURO_REQUISICAO'
             motivo = f'Requisição do assistente (HTTP {response.status_code})'
         elif login:
@@ -315,16 +310,6 @@ def _registrar_resposta_relevante(response):
                  'ids': {k:v for k,v in (request.view_args or {}).items() if isinstance(v, int)}}
         if contexto.get('id_integracao'):
             dados['id_integracao'] = contexto['id_integracao']
-        if mcp:
-            recurso = caminho.removeprefix('/internal/mcp/').split('/')[0]
-            dados['ferramenta'] = {
-                'conta':'consultar_dados_conta', 'saldo':'consultar_saldo',
-                'extrato':'consultar_extrato', 'dda':'consultar_dda',
-                'boletos':'consultar_boletos', 'faturas':'consultar_faturas',
-                'limites':'consultar_limites', 'chaves-pix':'listar_chaves_pix',
-                'funcionarios':'consultar_funcionarios', 'folhas':'consultar_folhas',
-                'relatorios':'gerar_relatorio_funcionarios_pdf',
-            }.get(recurso, 'desconhecida')
         registrar_evento_flask(
             evento=evento, resultado=resultado, motivo=motivo,
             id_usuario=id_usuario, id_conta=id_conta,

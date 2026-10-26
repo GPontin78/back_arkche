@@ -94,13 +94,9 @@ não altera a resposta de uma escrita já confirmada nem oculta uma recusa origi
 O log transacional das tabelas principais e das ações semânticas da IA permanece
 obrigatório. Alterações SQL diretas nas tabelas auxiliares deixam de ser auditadas.
 
-### MCP: limite verificado
+### Integrações pela API
 
-O serviço `LucasGajardoni/arkhe-mcp` aponta para este backend e solicita rotas
-`/internal/mcp/...`, ausentes nesta versão. O backend registra toda chamada MCP
-que receber com ferramenta/recurso e status HTTP, inclusive 404, sem atribuir
-identidade com base em headers não autenticados. Isso não cria as rotas faltantes,
-não autentica sessões do MCP e não registra chamadas recusadas no próprio servidor
-MCP antes de chegarem ao banco (incluindo seu health check). O repositório MCP
-conectado está disponível apenas para leitura. O funcionamento completo e o log
-no próprio servidor MCP continuam pendentes de ajuste nessa integração.
+As integrações usam as chamadas normais da API. A auditoria registra o recurso,
+o método, o resultado HTTP e a conta/integração identificada pela autenticação
+existente. O fluxo da IA mantém os eventos semânticos da aplicação e as mudanças
+nas tabelas principais continuam registradas pelas triggers.
