@@ -567,14 +567,17 @@ class TestConversacaoNatural(unittest.TestCase):
 
     def test_pix_pendente_nao_sequestra_uma_mensagem_nova(self):
         proposta = object()
-        for texto in ('Oi, Mauro', 'Preciso de ajuda', 'Como vai?', 'Quero entender minha conta'):
-            with self.subTest(texto=texto):
-                self.assertFalse(mauro._deve_continuar_pix(proposta, 'GERAL', texto))
-        self.assertFalse(mauro._deve_continuar_pix(proposta, 'SALDO', 'sim'))
-        self.assertFalse(mauro._deve_continuar_pix(None, 'GERAL', 'sim'))
-        for texto in ('sim', 'cancelar', 'R$ 25,00', 'cliente@exemplo.com'):
-            with self.subTest(texto=texto):
-                self.assertTrue(mauro._deve_continuar_pix(proposta, 'GERAL', texto))
+        # A suíte injeta um módulo Pix mínimo: simulamos apenas o extrator de chave.
+        extrator = lambda texto: ('email', texto) if '@' in texto else None
+        with patch.object(mauro.mauro_pix, 'extrair_chave', side_effect=extrator, create=True):
+            for texto in ('Oi, Mauro', 'Preciso de ajuda', 'Como vai?', 'Quero entender minha conta'):
+                with self.subTest(texto=texto):
+                    self.assertFalse(mauro._deve_continuar_pix(proposta, 'GERAL', texto))
+            self.assertFalse(mauro._deve_continuar_pix(proposta, 'SALDO', 'sim'))
+            self.assertFalse(mauro._deve_continuar_pix(None, 'GERAL', 'sim'))
+            for texto in ('sim', 'cancelar', 'R$ 25,00', 'cliente@exemplo.com'):
+                with self.subTest(texto=texto):
+                    self.assertTrue(mauro._deve_continuar_pix(proposta, 'GERAL', texto))
 
     def test_consultas_agrupadas_na_conta_autorizada(self):
         class Cursor:
