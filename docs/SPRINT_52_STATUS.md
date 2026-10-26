@@ -205,14 +205,14 @@
 ### 17. Texto e áudio em tempo real
 
 - **Solicitado:** Conversar com o assistente por texto e áudio em tempo real.
-- **Evidência localizada:** arkhe-web/src/components/Mauro/AssistenteMauro.jsx; back_arkche/assistente_mauro.py; app/ sem checkout verificável.
-- **Endpoints/integrações:** Web text chat uses /api/v1/assistente/conversas; no audio/transcription endpoint found in Flask; n8n workflow is external
-- **Persistência/objetos:** No voice/audio persistence or speech-processing schema found
-- **Frontend/mobile:** arkhe-web MAURO supports text only in checked code; Expo has no MAURO screen
-- **Testes existentes:** Não foi localizado teste de mídia bidirecional ou gravação de voz nesta inspeção.
-- **Estado inicial:** PARCIAL · chat de texto existe; voz em tempo real não comprovada.
-- **Publicação/validação:** Publicação não revalidada nesta tarefa; código local não é prova de deploy.
-- **Ação/limite:** O diretório do app Expo não contém um checkout verificável nesta workspace.
+- **Evidência localizada:** `assistente_mauro.py`; `arkhe-web/src/components/Mauro/AssistenteMauro.jsx`; `.codex-pptx-build/arkhe-app-source/src/pages/Mauro/index.jsx`.
+- **Endpoints/integrações:** `/api/v1/assistente/conversas` e `/api/v1/assistente/conversas/<id>/audio/transcrever`; Flask envia áudio curto ao Gemini no backend.
+- **Persistência/objetos:** histórico fica em `MAURO_CONVERSA`/`MAURO_MENSAGEM` associado à conta ativa; áudio bruto não é persistido.
+- **Frontend/mobile:** web e Expo têm captura push-to-talk, transcrição e revisão do texto antes do envio; o Expo reutiliza o histórico Flask por usuário/conta.
+- **Testes existentes:** 8 casos de áudio no backend; suíte completa local 130/130; web lint/build e Android bundle Expo concluídos.
+- **Estado após esta tarefa:** PARCIAL · perguntas por áudio funcionam em turnos no código local; não é streaming bidirecional nem voz em tempo real.
+- **Publicação/validação:** estas alterações ainda estão em branches locais/em revisão; não foram implantadas nem testadas no app publicado.
+- **Ação/limite:** streaming ao vivo, respostas faladas e build nativo instalado ainda pendem. O uso de Gemini `generateContent` aqui é transcrição, não Gemini Live.
 
 ### 18. Confirmação inequívoca de operação
 
@@ -627,21 +627,21 @@
 ### 52. IA fora do WhatsApp
 
 - **Solicitado:** Disponibilizar a inteligência artificial fora do canal WhatsApp.
-- **Evidência localizada:** arkhe-web/src/components/Mauro/AssistenteMauro.jsx; back_arkche/assistente_mauro.py; Mauro Pix separado.
-- **Endpoints/integrações:** Web UI AssistenteMauro uses the same Flask conversation endpoints; no Mauro route or UI found in Expo checkout
-- **Persistência/objetos:** MAURO_CONVERSA/MENSAGEM in backend; Expo app checkout contains no assistant feature
-- **Frontend/mobile:** arkhe-web/src/components/Mauro/AssistenteMauro.jsx; Expo app lacks same feature
-- **Testes existentes:** A equipe reportou Gemini configurado/respondendo em sessão anterior; não foi feita pergunta live nesta produção.
-- **Estado inicial:** CHAT WEB IMPLEMENTADO · canal publicado foi observado na navegação anterior; teste Gemini live pendente aqui.
-- **Publicação/validação:** Publicação não revalidada nesta tarefa; código local não é prova de deploy.
-- **Ação/limite:** O checkout do app Expo não está disponível nesta workspace; não afirmar cobertura mobile.
+- **Evidência localizada:** `assistente_mauro.py`, `mauro_pix.py`, `arkhe-web/src/components/Mauro/AssistenteMauro.jsx` e `.codex-pptx-build/arkhe-app-source/src/pages/Mauro/index.jsx`.
+- **Endpoints/integrações:** Web e Expo usam as rotas Flask de conversa; autenticação, conversa e histórico respeitam a conta selecionada no backend.
+- **Persistência/objetos:** `MAURO_CONVERSA`/`MAURO_MENSAGEM`; Gemini chamado pelo servidor e credencial não enviada ao cliente.
+- **Frontend/mobile:** web inclui fluxo de Pix com proposta/PIN; Expo agora tem chat textual e áudio transcrito, mas não expõe autorização/execução de proposta Pix.
+- **Testes existentes:** suíte backend local 130/130; lint/build web e bundle Android Expo passaram; não houve pergunta ao Gemini real nesta execução.
+- **Estado após esta tarefa:** PARCIAL · assistência web existente e tela móvel adicionada localmente; uso mobile ainda não publicado, nem validado contra sessão real.
+- **Publicação/validação:** web, backend e Expo nesta etapa não foram implantados. PRs atuais seguem rascunho; migration de idempotência pendente.
+- **Ação/limite:** não afirmar IA 52/52 ou MAURO mobile em produção; falta publicar/instalar o app e fechar o fluxo mobile de confirmação financeira.
 
 ## Checkpoint de implementação
 
 1. P0: idempotência persistente por chave para API, maquininha e rota de compra legado foi implementada localmente e coberta por Firebird isolado. A migration 011 ainda precisa de backup validado antes da produção. Isto não substitui o motor de risco/bloqueio requerido no item 30.
-2. Próximos grupos por ordem: autorização/sessões e isolamento; classificações/alertas; cartão virtual; MAURO admin e ações; voz/web+Expo; APIs/rate limiting; integração n8n; regressão e validação externa.
+2. Próximos grupos por ordem: autorização/sessões e isolamento; classificação e alertas; cartão virtual; modo administrativo e ações do MAURO; completar voz em tempo real; n8n; regressão e validação externa.
 3. Não publicar uma migração em produção sem backup recém-criado e validado. Não executar operações que alterem saldos nem bloquear titulares reais.
-4. Estado atual: matriz criada; não afirmar 52/52. Backend: `python -m unittest discover -s tests -v` no `.venv` passou 122/122 com Firebird temporário; frontend: `npm run lint` e `npm run build` passaram; o teste `node tests/maquininha.mjs` não foi executado por falta do pacote Playwright no workspace. Atualizar este arquivo por módulo, incluindo testes realmente executados e hash do commit.
+4. Estado atual: matriz criada; não afirmar 52/52. Este é um progresso de branches; não foi implantado no Arkhé.
 
 ## Checkpoint de implementação — 2026-10-26
 
@@ -651,3 +651,13 @@
 - **Navegador:** a inspeção solicitada pelo fluxo de validação não avançou: o controle do Chrome encerrou a automação porque não conseguiu determinar com confiança a URL da janela ativa. Não foi inferida autenticação nem testada a aplicação publicada.
 - **Próxima continuidade:** tratar, com módulos e checkpoints separados, risco/fraude com critérios justificáveis, classificação e alertas financeiros, sessões/dispositivos, cartão virtual persistido, modo administrativo do MAURO, voz web/Expo e validação real das integrações externas. A inspeção do n8n/WAHA depende de acesso ao workflow e não deve alterar o MAURO do WhatsApp.
 - **Classificação geral:** a matriz de 52 itens é uma auditoria inicial com progresso parcial; não certifica publicação nem 52/52 concluídos.
+
+## Checkpoint incremental — MAURO com áudio por turnos — 2026-10-26
+
+- **Backend:** `assistente_mauro.py` adiciona transcrição autenticada, valida conversa/conta ativa, aceita somente áudio permitido de até 2 MB, limita o uso e envia o áudio ao Gemini somente no servidor. Não persiste áudio bruto nem transcrição até o usuário revisar e enviar. A rota registra somente metadados de auditoria. Oito testes específicos e suíte completa 130/130 passaram com Firebird temporário.
+- **Web:** gravação limitada a 30 segundos, envio ao Flask e prévia editável; lint e build passaram.
+- **Expo:** nova tela MAURO compartilha conversas Flask do usuário/conta ativa, tem gravação curta via `expo-audio`, revisão antes de enviar e atalho na dashboard. Android export compilou. A instalação nativa requer build/instalação do app e permissão de microfone em runtime.
+- **Limite funcional:** trata-se de fala para texto em turnos, sem áudio de resposta, streaming duplex nem Gemini Live. O requisito 17 continua parcial.
+- **Branches:** áudio backend/web foi acrescentado às PRs já abertas; a implementação Expo está local na branch `codex/main-sprint-mauro-mobile-audio`. Nenhuma PR desta etapa foi mesclada nem implantada.
+- **Ambiente externo:** Chrome/EasyPanel não foram acessados nesta execução; o controle do Chrome já havia encerrado por não determinar a URL ativa com confiança. Não se validou Gemini online, sessão real, Firebird online ou deploy.
+- **Reinstalação Expo:** `npm ci --legacy-peer-deps --no-audit --no-fund` concluiu; `expo export --platform android` passou. A instalação inicial padrão foi bloqueada por conflito de peer dependency React/React DOM no lockfile; o uso de `legacy-peer-deps` apenas manteve as versões travadas e permitiu validar o bundle.

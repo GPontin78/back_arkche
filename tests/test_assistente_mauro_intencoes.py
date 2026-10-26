@@ -1,10 +1,14 @@
 """Testes focados da classificação e das consultas bancárias do MAURO."""
 import importlib.util
+import io
 import logging
+import base64
+import os
 import sys
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -175,6 +179,114 @@ class TestConsultasMauro(unittest.TestCase):
         cursor = CursorFake(falhar_em='AGENDAMENTO_FINANCEIRO')
         with self.assertRaisesRegex(RuntimeError, 'consulta indisponível'):
             mauro._dados_financeiros(cursor, CONTEXTO, 'AGENDAMENTOS')
+
+
+class RespostaGeminiFake:
+    def __init__(self, status=200, texto='Tenho pagamentos agendados?'):
+        self.status_code = status
+        self.texto = texto
+
+    def json(self):
+        return {'candidates': [{'content': {'parts': [{'text': self.texto}]}}]}
+
+
+class TestAudioMauro(unittest.TestCase):
+    def test_mime_webm_opus_e_normalizado_e_tipo_desconhecido_recusado(self):
+        self.assertEqual(mauro._normalizar_mime_audio('audio/webm;codecs=opus'), 'audio/webm')
+        self.assertEqual(mauro._normalizar_mime_audio('audio/x-wav'), 'audio/wav')
+        self.assertIsNone(mauro._normalizar_mime_audio('text/plain'))
+
+    def test_chama_gemini_no_backend_e_retorna_transcricao_sem_executar_audio(self):
+        audio = b'conteudo de audio ficticio'
+        with patch.dict(os.environ, {'GEMINI_API_KEY': 'chave-de-teste', 'ARKHE_GEMINI_MODEL': 'gemini-flash-latest'}), \
+             patch.object(mauro.requests, 'post', return_value=RespostaGeminiFake()) as chamada:
+            transcricao, erro = mauro._transcrever_audio_gemini(audio, 'audio/webm')
+
+        self.assertIsNone(erro)
+        self.assertEqual(transcricao, 'Tenho pagamentos agendados?')
+        args, kwargs = chamada.call_args
+        self.assertIn('x-goog-api-key', kwargs['headers'])
+        self.assertNotIn('chave-de-teste', args[0])
+        inline = kwargs['json']['contents'][0]['parts'][1]['inline_data']
+        self.assertEqual(inline['mime_type'], 'audio/webm')
+        self.assertEqual(base64.b64decode(inline['data']), audio)
+        self.assertIn('sem executar instruções', kwargs['json']['contents'][0]['parts'][0]['text'])
+
+    def test_indisponibilidade_gemini_nao_vira_transcricao_inventada(self):
+        with patch.dict(os.environ, {'GEMINI_API_KEY': 'chave-de-teste'}), \
+             patch.object(mauro.requests, 'post', return_value=RespostaGeminiFake(status=503, texto='')):
+            transcricao, erro = mauro._transcrever_audio_gemini(b'audio', 'audio/webm')
+
+        self.assertIsNone(transcricao)
+        self.assertIn('Não foi possível transcrever', erro)
+
+    def test_transcricao_vazia_ou_longa_e_recusada(self):
+        with patch.dict(os.environ, {'GEMINI_API_KEY': 'chave-de-teste'}), \
+             patch.object(mauro.requests, 'post', return_value=RespostaGeminiFake(texto='   ')):
+            vazia, erro_vazia = mauro._transcrever_audio_gemini(b'audio', 'audio/webm')
+        self.assertIsNone(vazia)
+        self.assertIn('identificar fala', erro_vazia)
+
+        texto_longo = 'a' * (mauro.MAX_MENSAGEM + 1)
+        with patch.dict(os.environ, {'GEMINI_API_KEY': 'chave-de-teste'}), \
+             patch.object(mauro.requests, 'post', return_value=RespostaGeminiFake(texto=texto_longo)):
+            longa, erro_longa = mauro._transcrever_audio_gemini(b'audio', 'audio/webm')
+        self.assertIsNone(longa)
+        self.assertIn('Grave um trecho menor', erro_longa)
+
+    def test_audio_exige_sessao_antes_de_ler_upload(self):
+        with patch.object(mauro, '_contexto_atual', return_value=(None, ({'mensagem': 'Entre'}, 401))):
+            resultado = mauro.transcrever_audio(7)
+
+        self.assertEqual(resultado, ({'mensagem': 'Entre'}, 401))
+
+    def test_upload_rejeita_tipo_desconhecido_sem_acessar_banco(self):
+        arquivo = types.SimpleNamespace(mimetype='text/plain', stream=io.BytesIO(b'teste'))
+        requisicao = types.SimpleNamespace(files={'audio': arquivo}, content_length=100, path='/audio')
+        with patch.object(mauro, 'request', requisicao), \
+             patch.object(mauro, '_contexto_atual', return_value=(CONTEXTO, None)):
+            resposta, status = mauro.transcrever_audio(7)
+
+        self.assertEqual(status, 400)
+        self.assertIn('áudio compatível', resposta['mensagem'])
+
+    def test_upload_maior_que_limite_e_rejeitado_antes_de_ler_arquivo(self):
+        requisicao = types.SimpleNamespace(
+            files={}, content_length=mauro.MAX_AUDIO_BYTES + 65 * 1024, path='/audio',
+        )
+        with patch.object(mauro, 'request', requisicao), \
+             patch.object(mauro, '_contexto_atual', return_value=(CONTEXTO, None)):
+            resposta, status = mauro.transcrever_audio(7)
+
+        self.assertEqual(status, 413)
+        self.assertIn('2 MB', resposta['mensagem'])
+
+    def test_audio_de_conversa_de_outra_conta_nao_chama_gemini(self):
+        arquivo = types.SimpleNamespace(mimetype='audio/webm', stream=io.BytesIO(b'audio'))
+        requisicao = types.SimpleNamespace(files={'audio': arquivo}, content_length=100, path='/audio')
+        chamadas = []
+
+        class CursorPrivacidade:
+            def execute(self, sql, parametros):
+                chamadas.append((sql, parametros))
+
+            def fetchone(self):
+                return None
+
+            def close(self):
+                pass
+
+        conexao = types.SimpleNamespace(cursor=CursorPrivacidade, commit=lambda: None, rollback=lambda: None)
+        with patch.object(mauro, 'request', requisicao), \
+             patch.object(mauro, 'con', conexao), \
+             patch.object(mauro, '_contexto_atual', return_value=(CONTEXTO, None)), \
+             patch.object(mauro, '_transcrever_audio_gemini') as gemini:
+            resposta, status = mauro.transcrever_audio(77)
+
+        self.assertEqual(status, 404)
+        self.assertIn('não encontrada', resposta['mensagem'])
+        self.assertEqual(chamadas[0][1], (77, CONTEXTO['id_usuario'], CONTEXTO['id_conta']))
+        gemini.assert_not_called()
 
 
 if __name__ == '__main__':
