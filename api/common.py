@@ -8,7 +8,7 @@ import re
 import redis
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
-from flask import current_app, jsonify, make_response, request
+from flask import current_app, g, jsonify, make_response, request
 
 from banco import con
 from funcao import verificar_pin
@@ -57,10 +57,12 @@ def autenticar_integracao():
         cursor.execute("""UPDATE INTEGRACAO_API SET ULTIMO_USO = CURRENT_TIMESTAMP WHERE ID_INTEGRACAO = ?""", (id_integracao,))
         con.commit()
 
-        return {
+        contexto = {
             'id_integracao': id_integracao,
             'id_conta': id_conta
-        }, None
+        }
+        g.auditoria_contexto = {**contexto, 'origem': 'api'}
+        return contexto, None
 
     except Exception as e:
         con.rollback()
@@ -139,8 +141,10 @@ def autenticar_requisicao(nivel_whatsapp=1, permitir_whatsapp=False):
         return None, (jsonify({"mensagem": "Autenticacao WhatsApp indisponivel"}), 503)
     if not conta:
         return None, (jsonify({"mensagem": mensagem}), 403)
-    return {"id_conta": conta["id_conta"], "id_usuario": conta["id_usuario"],
-            "id_integracao": None, "origem": "whatsapp", "nivel": conta["nivel"]}, None
+    contexto = {"id_conta": conta["id_conta"], "id_usuario": conta["id_usuario"],
+                "id_integracao": None, "origem": "whatsapp", "nivel": conta["nivel"]}
+    g.auditoria_contexto = contexto
+    return contexto, None
 
 def conectar_redis_operacoes(endereco):
     """Conecta o Redis usado na prevencao de pagamentos duplicados."""

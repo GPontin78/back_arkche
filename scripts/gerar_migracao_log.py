@@ -9,6 +9,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = ROOT / 'tests/fixtures/log_schema_online_20261026.json'
 
+TABELAS_PRINCIPAIS = (
+    'USUARIO', 'CONTA', 'MOVIMENTACAO', 'COBRANCA', 'CARTAO', 'CHAVE_PIX',
+    'COMPRA', 'FATURA', 'AGENDAMENTO_FINANCEIRO', 'RECORRENCIA_FINANCEIRA',
+    'ESTORNO_FINANCEIRO',
+)
+
 # Somente metadados da operação. Conteúdo de mensagens, dados pessoais,
 # chaves Pix, códigos, PIN, CVV, senhas, tokens e hashes não são copiados.
 CAMPOS = {
@@ -168,48 +174,17 @@ END^
 
 
 def main():
-    schema = json.loads(SCHEMA.read_text(encoding='utf-8'))
-    campos = {(r[0], r[1]): r for r in schema['fields']}
-    sql = ['''/* Log direto no Firebird separado. Publicar o backend ANTES deste DDL.
-   Executar com backup verificado. Não altera nem apaga registros existentes.
-   A transação comum acompanha commit/rollback; EDS não oferece commit em duas fases.
-   As filas antigas permanecem disponíveis para o worker terminar a entrega.
-*/
-SET BAIL ON;
-SET AUTODDL OFF;
-CREATE SEQUENCE GEN_LOG_EVENTO;
-CREATE EXCEPTION EX_LOG_CONFIGURACAO 'Configure o destino do LOG nesta conexao antes de alterar dados.';
-CREATE TABLE CONFIGURACAO_LOG (
-    ID_CONFIGURACAO SMALLINT NOT NULL PRIMARY KEY CHECK (ID_CONFIGURACAO = 1),
-    DATA_SOURCE VARCHAR(512) NOT NULL,
-    USUARIO VARCHAR(63) NOT NULL,
-    SENHA VARCHAR(255) NOT NULL,
-    ORIGEM_ID VARCHAR(80) NOT NULL
-);
-/* A configuração é inserida por parâmetros pelo aplicador, antes do COMMIT.
-   Não conceder SELECT nesta tabela aos usuários de negócio. */
-SET TERM ^;
-''']
+    # A 011 já foi publicada: preserva seu histórico e gera apenas a redução.
+    sql = ["/* Publicar a auditoria HTTP antes de retirar as triggers auxiliares. */",
+           'SET BAIL ON;', 'SET AUTODDL OFF;']
     for tabela in CAMPOS:
-        for operacao in ('INSERT', 'UPDATE', 'DELETE'):
-            sql.append(gerar_trigger(tabela, operacao, campos))
-            sigla = {'INSERT':'AI','UPDATE':'AU','DELETE':'AD'}[operacao]
-            nome = f'TG_{sigla}_{tabela}_LOG'
-            sql.append(f'GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER {nome}^\n')
-            sql.append(f'GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER {nome}^\n')
-            for origem in {'COMPRA': ('CARTAO',), 'FATURA_COMPRA': ('CARTAO','COMPRA'), 'MAURO_MENSAGEM': ('MAURO_CONVERSA',)}.get(tabela, ()):
-                sql.append(f'GRANT SELECT ON {origem} TO TRIGGER {nome}^\n')
-    for nome, tabela, tipo, posicao, inativo, corpo in schema['triggers']:
-        if nome.startswith('ARKHE_AUD_'):
-            sql.append(f'DROP TRIGGER {nome}^\n')
-        else:
-            # Mantém tipo, posição e regras das duas triggers financeiras.
-            corpo = '\n'.join(l.rstrip() for l in corpo.replace('\r', '').splitlines() if l.strip())
-            sql.append(f'CREATE OR ALTER TRIGGER {nome} FOR {tabela}\nACTIVE AFTER INSERT POSITION {posicao}\n{corpo}^\n')
-    sql.append('DROP PROCEDURE ARKHE_AUDIT_ENQUEUE^\nSET TERM ;^\nCOMMIT;\n')
-    caminho = ROOT / 'migrations/011_log_externo_padronizado.sql'
-    caminho.write_text('\n'.join(sql), encoding='utf-8')
-    print(f'{len(CAMPOS) * 3} triggers de log; 2 triggers financeiras preservadas: {caminho}')
+        if tabela not in TABELAS_PRINCIPAIS:
+            for sigla in ('AI', 'AU', 'AD'):
+                sql.append(f'DROP TRIGGER TG_{sigla}_{tabela}_LOG;')
+    sql.append('COMMIT;')
+    caminho = ROOT / 'migrations/012_log_tabelas_principais.sql'
+    caminho.write_text('\n'.join(sql) + '\n', encoding='utf-8')
+    print(f'{len(TABELAS_PRINCIPAIS) * 3} triggers de log mantidas: {caminho}')
 
 
 if __name__ == '__main__':

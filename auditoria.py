@@ -12,7 +12,7 @@ from datetime import date, datetime
 
 import fdb
 import redis
-from flask import Response, current_app, jsonify, request, stream_with_context
+from flask import Response, current_app, g, jsonify, request, stream_with_context
 
 from banco import con
 from funcao import descobre_id_conta, descobre_id_usuario
@@ -241,7 +241,7 @@ def _preparar_contexto_trigger():
             cursor.fetchone()
             cursor.execute(
                 "SELECT RDB$SET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM', ?) FROM RDB$DATABASE",
-                (request.path[:160],),
+                (_rota_log(),),
             )
             cursor.fetchone()
             con.commit()
@@ -255,24 +255,35 @@ def _preparar_contexto_trigger():
             pass
 
 
+def _rota_log():
+    # A rota parametrizada evita copiar tokens e dados pessoais presentes na URL.
+    if request.url_rule:
+        return request.url_rule.rule[:160]
+    if request.path.startswith('/internal/mcp/'):
+        return '/internal/mcp/<rota>'
+    return '/rota-nao-encontrada'
+
+
 def _registrar_resposta_relevante(response):
     caminho = request.path or ''
-    assistente = caminho.startswith('/api/v1/assistente/')
-    consulta_assistente = assistente and request.method == 'GET'
+    assistente = caminho.startswith('/api/v1/assistente/') or caminho == '/api/v1/admin/banco/assistente'
+    mcp = caminho.startswith('/internal/mcp/')
     login = caminho in ('/login', '/login_usuario')
     escrita_recusada = request.method in ('POST', 'PUT', 'PATCH', 'DELETE') and response.status_code >= 400
     login_recusado = login and response.status_code >= 400
-    if not login and not escrita_recusada and not consulta_assistente:
-        if request.method in ('POST', 'PUT', 'PATCH', 'DELETE') and response.status_code < 400:
-            try:
-                cliente = _redis()
-                cliente.publish(CANAL_AUDITORIA, json.dumps({'origem': caminho}))
-                cliente.close()
-            except Exception:
-                pass  # O feed também se atualiza a cada 30 segundos.
+    # O próprio feed não produz eventos a cada atualização automática.
+    if request.method == 'OPTIONS' or caminho.startswith('/static/') or (
+        caminho in ('/api/v1/admin/auditoria', '/api/v1/admin/auditoria/status', '/api/v1/admin/auditoria/stream')
+        and response.status_code < 400
+    ):
+        return response
+    contexto = getattr(g, 'auditoria_contexto', {})
+    id_usuario = contexto.get('id_usuario') if contexto else descobre_id_usuario()
+    id_conta = contexto.get('id_conta') if contexto else descobre_id_conta()
+    canal = 'mcp' if mcp else contexto.get('origem', 'api' if caminho.startswith('/api/v1/') else 'sistema')
+    if not (id_usuario or contexto or assistente or mcp or login or escrita_recusada or caminho.startswith(('/api/v1/', '/internal/whatsapp/'))):
         return response
     try:
-        id_usuario = descobre_id_usuario()
         if login and not id_usuario:
             cpf = (request.get_json(silent=True) or {}).get('cpf')
             if cpf:
@@ -283,10 +294,12 @@ def _registrar_resposta_relevante(response):
                     id_usuario = int(usuario[0]) if usuario else None
                 finally:
                     cursor.close()
-        id_conta = descobre_id_conta()
-        if assistente:
+        resultado = 'SUCESSO' if response.status_code < 400 else 'FALHA' if response.status_code >= 500 else 'RECUSADO'
+        motivo = f'Requisição HTTP {response.status_code}'
+        if mcp:
+            evento = 'MCP_REQUISICAO'
+        elif assistente:
             evento = 'MAURO_REQUISICAO'
-            resultado = 'SUCESSO' if response.status_code < 400 else 'FALHA' if response.status_code >= 500 else 'RECUSADO'
             motivo = f'Requisição do assistente (HTTP {response.status_code})'
         elif login:
             cookie_autenticacao = any(cookie.startswith('access_token=') for cookie in response.headers.getlist('Set-Cookie'))
@@ -296,19 +309,39 @@ def _registrar_resposta_relevante(response):
                       'Sessão autenticada' if cookie_autenticacao else 'Etapa de autenticação iniciada')
             resultado = 'RECUSADO' if login_recusado else 'SUCESSO' if cookie_autenticacao else 'PENDENTE'
         else:
-            evento = 'OPERACAO_RECUSADA'
-            motivo = f'Operação recusada pelo backend (HTTP {response.status_code})'
-            resultado = 'RECUSADO'
+            evento = 'OPERACAO_RECUSADA' if escrita_recusada else 'SISTEMA_REQUISICAO'
+        dados = {'metodo': request.method, 'status_http': response.status_code,
+                 'canal': canal, 'recurso': request.endpoint,
+                 'ids': {k:v for k,v in (request.view_args or {}).items() if isinstance(v, int)}}
+        if contexto.get('id_integracao'):
+            dados['id_integracao'] = contexto['id_integracao']
+        if mcp:
+            recurso = caminho.removeprefix('/internal/mcp/').split('/')[0]
+            dados['ferramenta'] = {
+                'conta':'consultar_dados_conta', 'saldo':'consultar_saldo',
+                'extrato':'consultar_extrato', 'dda':'consultar_dda',
+                'boletos':'consultar_boletos', 'faturas':'consultar_faturas',
+                'limites':'consultar_limites', 'chaves-pix':'listar_chaves_pix',
+                'funcionarios':'consultar_funcionarios', 'folhas':'consultar_folhas',
+                'relatorios':'gerar_relatorio_funcionarios_pdf',
+            }.get(recurso, 'desconhecida')
         registrar_evento_flask(
             evento=evento, resultado=resultado, motivo=motivo,
             id_usuario=id_usuario, id_conta=id_conta,
-            operacao='READ' if consulta_assistente or (login and response.status_code < 400) else 'DENY', origem=caminho,
-            dados={'metodo': request.method, 'status_http': response.status_code,
-                   **(request.view_args or {})},
+            operacao='DENY' if response.status_code >= 400 else {'POST':'INSERT', 'PUT':'UPDATE', 'PATCH':'UPDATE', 'DELETE':'DELETE'}.get(request.method, 'READ'),
+            origem=_rota_log(), dados=dados,
         )
+        if request.method in ('POST', 'PUT', 'PATCH', 'DELETE') and response.status_code < 400:
+            try:
+                cliente = _redis()
+                cliente.publish(CANAL_AUDITORIA, json.dumps({'origem': _rota_log()}))
+                cliente.close()
+            except Exception:
+                pass  # O feed também consulta o arquivo periodicamente.
     except Exception:
-        current_app.logger.exception('Falha ao registrar evento HTTP recusado')
-        if assistente or login:
+        current_app.logger.exception('Falha ao registrar evento HTTP')
+        # Escritas já confirmadas mantêm a resposta; o log financeiro é transacional.
+        if request.method == 'GET' and response.status_code < 400:
             return current_app.make_response((jsonify({'mensagem': 'Não foi possível registrar o log da operação.'}), 503))
     return response
 
