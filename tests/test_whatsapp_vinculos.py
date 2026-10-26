@@ -86,7 +86,13 @@ class CursorFalso:
         self.contas = contas
         self.linhas = []
 
+    def fetchone(self):
+        return self.linhas.pop(0) if self.linhas else None
+
     def execute(self, comando, parametros=()):
+        if "RDB$SET_CONTEXT" in comando:
+            self.linhas = [(1,)]
+            return
         if "ID_CONTA IN (" not in comando:
             raise AssertionError("SQL inesperado: " + comando[:80])
         id_usuario, *ids = parametros

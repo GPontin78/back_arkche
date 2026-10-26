@@ -54,6 +54,9 @@ def autenticar_integracao():
         if not verificar_pin(client_secret, client_secret_hash):
             return None, (jsonify({'mensagem': 'Credenciais da API invalidas'}), 401)
 
+        cursor.execute("SELECT RDB$SET_CONTEXT('USER_SESSION','ARKHE_USUARIO_LOG',?) FROM RDB$DATABASE",
+            (f'INTEGRACAO_API:{id_integracao}',))
+        cursor.fetchone()
         cursor.execute("""UPDATE INTEGRACAO_API SET ULTIMO_USO = CURRENT_TIMESTAMP WHERE ID_INTEGRACAO = ?""", (id_integracao,))
         con.commit()
 
@@ -143,6 +146,13 @@ def autenticar_requisicao(nivel_whatsapp=1, permitir_whatsapp=False):
         return None, (jsonify({"mensagem": mensagem}), 403)
     contexto = {"id_conta": conta["id_conta"], "id_usuario": conta["id_usuario"],
                 "id_integracao": None, "origem": "whatsapp", "nivel": conta["nivel"]}
+    cursor = con.cursor()
+    try:
+        cursor.execute("SELECT RDB$SET_CONTEXT('USER_SESSION','ARKHE_USUARIO_LOG',?) FROM RDB$DATABASE",
+            (str(conta['id_usuario']),))
+        cursor.fetchone()
+    finally:
+        cursor.close()
     g.auditoria_contexto = contexto
     return contexto, None
 

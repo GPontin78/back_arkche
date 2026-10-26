@@ -1,4 +1,9 @@
-# Log direto no Firebird separado
+# Log do sistema
+
+A estrutura atual é a tabela `LOG`, com os oito campos definidos em
+[LOG_SIMPLES.md](LOG_SIMPLES.md). `AUDITORIA_EVENTO` permanece como histórico anterior.
+
+## Histórico técnico das migrações anteriores
 
 Cada tabela principal tem uma trigger `TG_AIUD_<TABELA>_LOG`, com
 `AFTER INSERT OR UPDATE OR DELETE`. A significa AFTER; I, U e D indicam as três
