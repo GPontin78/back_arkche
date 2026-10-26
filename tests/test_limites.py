@@ -110,12 +110,25 @@ class LimitesIsoladosTests(unittest.TestCase):
         self.assertEqual(resultado[0].get_json()['codigo'], 'LIMITE_ATINGIDO')
         self.assertIn('acumulado', resultado[0].get_json()['mensagem'])
 
-    def test_politicas_desativadas_nao_recusam_e_continuam_serializando_a_conta(self):
+    def test_politica_inativa_usa_teto_de_segurança_e_recusa_excesso(self):
         cursor = CursorFake(ativo_operacao=0, ativo_periodo=0)
-        resultado, auditoria = self._avaliar(cursor, Decimal('100000'))
+        resultado, auditoria = self._avaliar(cursor, Decimal('5000.01'))
+        self.assertEqual(resultado[1], 403)
+        self.assertEqual(resultado[0].get_json()['codigo'], 'LIMITE_ATINGIDO')
+        auditoria.assert_called_once()
+        self.assertTrue(any('UPDATE CONTROLE_LIMITE_CONTA' in sql.upper() for sql, _ in cursor.queries))
+
+    def test_politica_inativa_permite_valores_ate_5000(self):
+        cursor = CursorFake(ativo_operacao=0, ativo_periodo=0)
+        resultado, auditoria = self._avaliar(cursor, Decimal('5000'))
         self.assertIsNone(resultado)
         auditoria.assert_not_called()
-        self.assertTrue(any('UPDATE CONTROLE_LIMITE_CONTA' in sql.upper() for sql, _ in cursor.queries))
+
+    def test_politica_explicita_do_admin_pode_definir_valores_menores(self):
+        cursor = CursorFake(limite_operacao=Decimal('250'), limite_acumulado=Decimal('800'))
+        resultado, _ = self._avaliar(cursor, Decimal('251'))
+        self.assertEqual(resultado[1], 403)
+        self.assertIn('250.00', resultado[0].get_json()['mensagem'])
 
     def test_migracao_e_aditiva_e_prepara_o_controle_concorrente(self):
         sql = (ROOT / 'migrations' / '002_limites_diurnos_noturnos.sql').read_text(encoding='utf-8').upper()
