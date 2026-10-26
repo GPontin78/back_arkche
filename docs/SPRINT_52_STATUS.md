@@ -495,13 +495,13 @@
 ### 41. Rate limiting
 
 - **Solicitado:** Limitar requisições das APIs para reduzir abuso e sobrecarga.
-- **Evidência localizada:** api/common.py inclui idempotência e limites específicos do WhatsApp; cobertura de rate limit geral não foi localizada.
-- **Endpoints/integrações:** Specific counters in api/common.py and WhatsApp paths; no global Flask rate limit found in the scan
-- **Persistência/objetos:** Redis-based per-route counters; central/global coverage not confirmed
+- **Evidência localizada:** api/common.py agora aplica cota Redis compartilhada após autenticação de credenciais da integração, sem tocar nas rotas WhatsApp.
+- **Endpoints/integrações:** Rotas `/api/v1/...` autenticadas por `X-Client-ID` e `X-Client-Secret`; parâmetros `ARKHE_API_RATE_LIMIT` e `ARKHE_API_RATE_WINDOW_SECONDS`.
+- **Persistência/objetos:** Redis `INCR` + `EXPIRE` atômicos por ID de integração; `429` com `Retry-After`; falha fechada `503` se Redis estiver indisponível.
 - **Frontend/mobile:** arkhe-web integration page; no central limiter dashboard found
-- **Testes existentes:** Não foi localizado teste abrangente de rate limit da API pública.
-- **Estado inicial:** PARCIAL / NÃO COMPROVADO GLOBALMENTE.
-- **Publicação/validação:** Publicação não revalidada nesta tarefa; código local não é prova de deploy.
+- **Testes existentes:** `tests/test_api_rate_limiting.py` tem 6 casos incluindo integração com a autenticação real: 429, janelas, isolamento entre integrações, Redis offline, configuração inválida e bypass somente em TESTING.
+- **Estado após esta tarefa:** IMPLEMENTADO LOCALMENTE E TESTADO; limite default 120/minuto por integração; WhatsApp, rotas internas e sessões de usuário não são alterados por este controle.
+- **Publicação/validação:** Publicação pendente; requer release backend e configuração Redis existente, sem migration própria.
 - **Ação/limite:** Não bombardear serviços publicados para demonstrar rate limiting.
 
 ### 42. Painel de integrações
@@ -641,4 +641,4 @@
 1. P0: idempotência persistente por chave para API, maquininha e rota de compra legado foi implementada localmente e coberta por Firebird isolado. A migration 011 ainda precisa de backup validado antes da produção. Isto não substitui o motor de risco/bloqueio requerido no item 30.
 2. Próximos grupos por ordem: autorização/sessões e isolamento; classificações/alertas; cartão virtual; MAURO admin e ações; voz/web+Expo; APIs/rate limiting; integração n8n; regressão e validação externa.
 3. Não publicar uma migração em produção sem backup recém-criado e validado. Não executar operações que alterem saldos nem bloquear titulares reais.
-4. Estado atual: matriz criada; não afirmar 52/52. Backend: `python -m unittest discover -s tests -v` no `.venv` passou 116/116; frontend: `npm run lint` e `npm run build` passaram; o teste `node tests/maquininha.mjs` não foi executado por falta do pacote Playwright no workspace. Atualizar este arquivo por módulo, incluindo testes realmente executados e hash do commit.
+4. Estado atual: matriz criada; não afirmar 52/52. Backend: `python -m unittest discover -s tests -v` no `.venv` passou 122/122 com Firebird temporário; frontend: `npm run lint` e `npm run build` passaram; o teste `node tests/maquininha.mjs` não foi executado por falta do pacote Playwright no workspace. Atualizar este arquivo por módulo, incluindo testes realmente executados e hash do commit.
