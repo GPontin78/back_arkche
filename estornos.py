@@ -483,6 +483,51 @@ def devolver_movimentacao(id_movimentacao, estorno_boleto=False):
             cursor.close()
 
 
+def historico_estornos_conta():
+    """Mostra apenas cancelamentos e devolucoes relacionados a conta ativa.
+
+    Nao devolve dados de outras contas nem o identificador pessoal de quem
+    executou a operacao. Historico global permanece exclusivo do admin.
+    """
+    id_usuario = descobre_id_usuario()
+    id_conta = descobre_id_conta()
+    if not id_usuario or not id_conta:
+        return jsonify({'mensagem': 'Entre na conta para consultar suas devoluções'}), 401
+    if not _conta_acessivel(id_usuario, id_conta):
+        return jsonify({'mensagem': 'Acesso não autorizado a esta conta'}), 403
+    cursor = None
+    try:
+        cursor = con.cursor()
+        if not _tem_estrutura_estornos(cursor):
+            return jsonify({'instalada': False, 'historico': []}), 200
+        cursor.execute(
+            """SELECT FIRST 100 E.ID_ESTORNO, E.TIPO_OPERACAO, E.ID_COBRANCA,
+                      E.ID_MOVIMENTACAO_ORIGINAL, E.ID_MOVIMENTACAO_REVERSA,
+                      E.ID_CONTA_PAGADOR, E.ID_CONTA_RECEBEDOR, E.VALOR,
+                      E.STATUS, E.MOTIVO, E.CRIADO_EM
+                 FROM ESTORNO_FINANCEIRO E
+                WHERE E.ID_CONTA_PAGADOR = ? OR E.ID_CONTA_RECEBEDOR = ?
+                ORDER BY E.CRIADO_EM DESC, E.ID_ESTORNO DESC""",
+            (int(id_conta), int(id_conta)),
+        )
+        registros = cursor.fetchall()
+        historico = [{
+            'id_estorno': r[0], 'tipo_operacao': r[1],
+            'id_cobranca': r[2], 'id_movimentacao_original': r[3],
+            'id_movimentacao_reversa': r[4],
+            'valor': float(r[7]), 'status': r[8], 'motivo': r[9],
+            'criado_em': _serializar_data(r[10]),
+            'participacao': 'recebedor_original' if int(r[6]) == int(id_conta) else 'pagador_original',
+        } for r in registros]
+        return jsonify({'instalada': True, 'historico': historico}), 200
+    except Exception:
+        current_app.logger.exception('Falha ao consultar devoluções da conta ativa')
+        return jsonify({'mensagem': 'Não foi possível consultar as devoluções desta conta'}), 500
+    finally:
+        if cursor:
+            cursor.close()
+
+
 def historico_admin_estornos():
     id_usuario = descobre_id_usuario()
     if not id_usuario:
@@ -525,6 +570,7 @@ def registrar_rotas(app):
     app.add_url_rule('/api/v1/cobrancas/<int:id_cobranca>/cancelar', 'cancelar_cobranca_financeira', cancelar_cobranca, methods=['POST'])
     app.add_url_rule('/api/v1/movimentacoes/<int:id_movimentacao>/devolver', 'devolver_movimentacao', devolver_movimentacao, methods=['POST'])
     app.add_url_rule('/api/v1/movimentacoes/<int:id_movimentacao>/estornar', 'estornar_boleto', lambda id_movimentacao: devolver_movimentacao(id_movimentacao, True), methods=['POST'])
+    app.add_url_rule('/api/v1/estornos/minha-conta', 'historico_estornos_conta', historico_estornos_conta, methods=['GET'])
     app.add_url_rule('/api/v1/estornos/admin', 'historico_admin_estornos', historico_admin_estornos, methods=['GET'])
     app.add_url_rule('/api/v1/estornos/admin/migracao', 'status_migracao_estornos', status_migracao_estornos, methods=['GET'])
     app.add_url_rule('/api/v1/estornos/admin/migracao', 'instalar_migracao_estornos', instalar_migracao_estornos, methods=['POST'])

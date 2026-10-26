@@ -88,6 +88,48 @@ class TestRegrasEstorno(unittest.TestCase):
                  patch.object(estornos, '_conta_acessivel', return_value=True):
                 return estornos.devolver_movimentacao(900, estorno_boleto)
 
+    def test_historico_pessoal_bloqueia_conta_sem_permissao(self):
+        with app.test_request_context('/api/v1/estornos/minha-conta'):
+            with patch.object(estornos, 'descobre_id_usuario', return_value=13), \
+                 patch.object(estornos, 'descobre_id_conta', return_value=2), \
+                 patch.object(estornos, '_conta_acessivel', return_value=False):
+                resposta, status = estornos.historico_estornos_conta()
+        self.assertEqual(status, 403)
+        self.assertIn('não autorizado', resposta.get_json()['mensagem'])
+
+    def test_historico_pessoal_filtra_somente_conta_ativa(self):
+        class Cursor:
+            def __init__(self):
+                self.parametros = []
+                self.consulta = ''
+            def execute(self, sql, parametros=()):
+                self.consulta = sql.upper()
+                self.parametros = parametros
+            def fetchall(self):
+                return [(4, 'DEVOLUCAO_PIX_TRANSFERENCIA', None, 40, 41,
+                         10, 20, 38.50, 'CONCLUIDO', 'Devolução legítima',
+                         '2026-10-26 09:30')]
+            def close(self):
+                pass
+        class Conexao:
+            def __init__(self):
+                self.cursor_ativo = Cursor()
+            def cursor(self):
+                return self.cursor_ativo
+        conexao = Conexao()
+        with app.test_request_context('/api/v1/estornos/minha-conta'):
+            with patch.object(estornos, 'con', conexao), \
+                 patch.object(estornos, 'descobre_id_usuario', return_value=7), \
+                 patch.object(estornos, 'descobre_id_conta', return_value=20), \
+                 patch.object(estornos, '_conta_acessivel', return_value=True), \
+                 patch.object(estornos, '_tem_estrutura_estornos', return_value=True):
+                resposta, status = estornos.historico_estornos_conta()
+        self.assertEqual(status, 200)
+        self.assertEqual(conexao.cursor_ativo.parametros, (20, 20))
+        self.assertIn('WHERE E.ID_CONTA_PAGADOR = ? OR E.ID_CONTA_RECEBEDOR = ?', conexao.cursor_ativo.consulta)
+        self.assertNotIn('ID_USUARIO_RESPONSAVEL', str(resposta.get_json()))
+        self.assertEqual(resposta.get_json()['historico'][0]['participacao'], 'recebedor_original')
+
     def test_movimentacao_de_cartao_e_recusada_sem_estorno(self):
         self.movimento = (*self.movimento[:8], 1, *self.movimento[9:])
         resposta, status = self.executar_devolucao()
