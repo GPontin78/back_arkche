@@ -373,6 +373,208 @@ class TestEscopoMauro(unittest.TestCase):
         operacao.assert_not_called()
 
 
+
+class TestMauroWebConversacionalV4(unittest.TestCase):
+    def test_casos_reais_que_eram_recusados(self):
+        hist_despesas = [{'papel': 'USUARIO', 'conteudo': 'Quanto gastei neste mês?'},
+                         {'papel': 'ASSISTENTE', 'conteudo': 'Você teve 6 despesas.'}]
+        casos = [
+            ('Meu salfo', 'SALDO', []),
+            ('Meu slado', 'SALDO', []),
+            ('Quais foram elas?', 'LISTAR_DESPESAS', hist_despesas),
+            ('Para quem eu mais enviei dinheiro?', 'DESTINATARIOS_FREQUENTES', []),
+            ('Quem sou eu?', 'PERFIL', []),
+            ('Que dia é hoje?', 'DATA_ATUAL', []),
+            ('O que você pode fazer?', 'CAPACIDADES', []),
+            ('Sobre o que a gente falou?', 'RESUMO_CONVERSA', []),
+            ('Quero criar um cartão virtual', 'CARTAO_VIRTUAL', []),
+            ('Exclua minha chave Pix', 'EXCLUIR_CHAVE', []),
+            ('Edite meu nome para Igor', 'EDITAR_PERFIL', []),
+            ('Altere meu saldo', 'ALTERAR_SALDO', []),
+        ]
+        for mensagem, intencao, historico in casos:
+            with self.subTest(mensagem=mensagem):
+                self.assertEqual(mauro._detectar_intencao(mensagem, historico), intencao)
+                self.assertFalse(mauro._pedido_fora_escopo(mensagem, historico))
+
+    def test_continuacao_refere_assunto_mais_recente_sem_inventar(self):
+        despesas = [{'papel': 'USUARIO', 'conteudo': 'Quanto gastei este mês?'}]
+        receitas = [{'papel': 'USUARIO', 'conteudo': 'Quanto recebi este mês?'}]
+        self.assertEqual(mauro._detectar_intencao('Quais foram elas?', despesas), 'LISTAR_DESPESAS')
+        self.assertEqual(mauro._detectar_intencao('Quais foram elas?', receitas), 'LISTAR_RECEITAS')
+        self.assertEqual(mauro._detectar_intencao('Quais foram elas?', []), 'GERAL')
+        self.assertFalse(mauro._pedido_fora_escopo('Quais foram elas?', []))
+
+    def test_pedido_de_cartao_nao_e_continuacao_pix(self):
+        hist = [{'papel': 'USUARIO', 'conteudo': 'Quero fazer Pix'},
+                {'papel': 'ASSISTENTE', 'conteudo': 'Qual o valor?'}]
+        self.assertEqual(mauro._detectar_intencao('Quero criar um cartão virtual', hist), 'CARTAO_VIRTUAL')
+        self.assertEqual(mauro._detectar_intencao('Quero fazer um Pix', []), 'PEDIDO_PAGAMENTO')
+        self.assertEqual(mauro._detectar_intencao('R$ 20,00', hist), 'GERAL')
+
+    def test_periodo_pode_ser_herdado_da_pergunta_que_gerou_o_resumo(self):
+        from mauro_conversa import periodo_solicitado
+        hoje = __import__('datetime').date(2026, 10, 26)
+        hist = [{'papel': 'USUARIO', 'conteudo': 'Quanto gastei de 01/10/2026 a 26/10/2026?'}]
+        inicio, fim, rotulo = periodo_solicitado('Quais foram elas?', hist, hoje)
+        self.assertEqual((inicio.isoformat(), fim.isoformat()), ('2026-10-01', '2026-10-27'))
+        self.assertIn('01/10/2026', rotulo)
+        inicio, fim, _ = periodo_solicitado('O que gastei ontem?', (), hoje)
+        self.assertEqual((inicio.isoformat(), fim.isoformat()), ('2026-10-25', '2026-10-26'))
+
+    def test_respostas_perfil_data_e_erro_de_escrita_nao_acionam_gemini(self):
+        dados = {'conta_autorizada': {'id_conta': 9, 'tipo_conta': 'PF',
+                                     'nome_conta': 'Titular de teste',
+                                     'nome_titular': 'Titular de teste', 'conta_final': '0009'}}
+        self.assertIn('Titular de teste', mauro._resposta_financeira_verificada('PERFIL', dados))
+        self.assertIn('horário de Brasília', mauro._resposta_financeira_verificada('DATA_ATUAL', dados))
+        self.assertIn('não pode ser editado', mauro._resposta_financeira_verificada('ALTERAR_SALDO', dados))
+        self.assertIn('PIN', mauro._resposta_financeira_verificada('CAPACIDADES', dados))
+        self.assertNotIn('R
+    def test_mime_webm_opus_e_normalizado_e_tipo_desconhecido_recusado(self):
+        self.assertEqual(mauro._normalizar_mime_audio('audio/webm;codecs=opus'), 'audio/webm')
+        self.assertEqual(mauro._normalizar_mime_audio('audio/x-wav'), 'audio/wav')
+        self.assertIsNone(mauro._normalizar_mime_audio('text/plain'))
+
+    def test_chama_gemini_no_backend_e_retorna_transcricao_sem_executar_audio(self):
+        audio = b'conteudo de audio ficticio'
+        with patch.dict(os.environ, {'GEMINI_API_KEY': 'chave-de-teste', 'ARKHE_GEMINI_MODEL': 'gemini-flash-latest'}), \
+             patch.object(mauro.requests, 'post', return_value=RespostaGeminiFake()) as chamada:
+            transcricao, erro = mauro._transcrever_audio_gemini(audio, 'audio/webm')
+
+        self.assertIsNone(erro)
+        self.assertEqual(transcricao, 'Tenho pagamentos agendados?')
+        args, kwargs = chamada.call_args
+        self.assertIn('x-goog-api-key', kwargs['headers'])
+        self.assertNotIn('chave-de-teste', args[0])
+        inline = kwargs['json']['contents'][0]['parts'][1]['inline_data']
+        self.assertEqual(inline['mime_type'], 'audio/webm')
+        self.assertEqual(base64.b64decode(inline['data']), audio)
+        self.assertIn('sem executar instruções', kwargs['json']['contents'][0]['parts'][0]['text'])
+
+    def test_indisponibilidade_gemini_nao_vira_transcricao_inventada(self):
+        with patch.dict(os.environ, {'GEMINI_API_KEY': 'chave-de-teste'}), \
+             patch.object(mauro.requests, 'post', return_value=RespostaGeminiFake(status=503, texto='')):
+            transcricao, erro = mauro._transcrever_audio_gemini(b'audio', 'audio/webm')
+
+        self.assertIsNone(transcricao)
+        self.assertIn('Não foi possível transcrever', erro)
+
+    def test_transcricao_vazia_ou_longa_e_recusada(self):
+        with patch.dict(os.environ, {'GEMINI_API_KEY': 'chave-de-teste'}), \
+             patch.object(mauro.requests, 'post', return_value=RespostaGeminiFake(texto='   ')):
+            vazia, erro_vazia = mauro._transcrever_audio_gemini(b'audio', 'audio/webm')
+        self.assertIsNone(vazia)
+        self.assertIn('identificar fala', erro_vazia)
+
+        texto_longo = 'a' * (mauro.MAX_MENSAGEM + 1)
+        with patch.dict(os.environ, {'GEMINI_API_KEY': 'chave-de-teste'}), \
+             patch.object(mauro.requests, 'post', return_value=RespostaGeminiFake(texto=texto_longo)):
+            longa, erro_longa = mauro._transcrever_audio_gemini(b'audio', 'audio/webm')
+        self.assertIsNone(longa)
+        self.assertIn('Grave um trecho menor', erro_longa)
+
+    def test_audio_exige_sessao_antes_de_ler_upload(self):
+        with patch.object(mauro, '_contexto_atual', return_value=(None, ({'mensagem': 'Entre'}, 401))):
+            resultado = mauro.transcrever_audio(7)
+
+        self.assertEqual(resultado, ({'mensagem': 'Entre'}, 401))
+
+    def test_upload_rejeita_tipo_desconhecido_sem_acessar_banco(self):
+        arquivo = types.SimpleNamespace(mimetype='text/plain', stream=io.BytesIO(b'teste'))
+        requisicao = types.SimpleNamespace(files={'audio': arquivo}, content_length=100, path='/audio')
+        with patch.object(mauro, 'request', requisicao), \
+             patch.object(mauro, '_contexto_atual', return_value=(CONTEXTO, None)):
+            resposta, status = mauro.transcrever_audio(7)
+
+        self.assertEqual(status, 400)
+        self.assertIn('áudio compatível', resposta['mensagem'])
+
+    def test_upload_maior_que_limite_e_rejeitado_antes_de_ler_arquivo(self):
+        requisicao = types.SimpleNamespace(
+            files={}, content_length=mauro.MAX_AUDIO_BYTES + 65 * 1024, path='/audio',
+        )
+        with patch.object(mauro, 'request', requisicao), \
+             patch.object(mauro, '_contexto_atual', return_value=(CONTEXTO, None)):
+            resposta, status = mauro.transcrever_audio(7)
+
+        self.assertEqual(status, 413)
+        self.assertIn('8 MB', resposta['mensagem'])
+
+    def test_audio_de_conversa_de_outra_conta_nao_chama_gemini(self):
+        arquivo = types.SimpleNamespace(mimetype='audio/webm', stream=io.BytesIO(b'audio'))
+        requisicao = types.SimpleNamespace(files={'audio': arquivo}, content_length=100, path='/audio')
+        chamadas = []
+
+        class CursorPrivacidade:
+            def execute(self, sql, parametros):
+                chamadas.append((sql, parametros))
+
+            def fetchone(self):
+                return None
+
+            def close(self):
+                pass
+
+        conexao = types.SimpleNamespace(cursor=CursorPrivacidade, commit=lambda: None, rollback=lambda: None)
+        with patch.object(mauro, 'request', requisicao), \
+             patch.object(mauro, 'con', conexao), \
+             patch.object(mauro, '_contexto_atual', return_value=(CONTEXTO, None)), \
+             patch.object(mauro, '_transcrever_audio_gemini') as gemini:
+            resposta, status = mauro.transcrever_audio(77)
+
+        self.assertEqual(status, 404)
+        self.assertIn('não encontrada', resposta['mensagem'])
+        self.assertEqual(chamadas[0][1], (77, CONTEXTO['id_usuario'], CONTEXTO['id_conta']))
+        gemini.assert_not_called()
+
+
+if __name__ == '__main__':
+    unittest.main()
+, mauro._resposta_financeira_verificada('EDITAR_PERFIL', dados))
+
+    def test_consulta_agrupada_so_usa_conta_autorizada(self):
+        class CursorDestinatarios:
+            def __init__(self):
+                self.chamadas = []
+            def execute(self, sql, parametros):
+                self.chamadas.append((sql, parametros))
+            def fetchall(self):
+                return [('Destinatário de teste', 135.50, 3), ('Outro', 20, 1)]
+        cursor = CursorDestinatarios()
+        dados = mauro._dados_financeiros(cursor, CONTEXTO, 'DESTINATARIOS_FREQUENTES',
+                                        'Para quem eu mais enviei dinheiro?')
+        self.assertEqual(cursor.chamadas[0][1], (CONTEXTO['id_conta'],))
+        self.assertIn('M.ID_PAGADOR = ?', cursor.chamadas[0][0])
+        self.assertIn('GROUP BY', cursor.chamadas[0][0])
+        resposta = mauro._resposta_financeira_verificada('DESTINATARIOS_FREQUENTES', dados)
+        self.assertIn('Destinatário de teste', resposta)
+        self.assertIn('R$ 135,50', resposta)
+
+    def test_listagem_despesas_do_periodo_tem_contagem_e_25_itens_no_maximo(self):
+        class CursorDespesas:
+            def __init__(self):
+                self.chamadas = []
+                self.sql = ''
+            def execute(self, sql, params):
+                self.chamadas.append((sql, params))
+                self.sql = sql
+            def fetchone(self):
+                return (6,)
+            def fetchall(self):
+                return [(20, '2026-10-26 08:40:51', 'Destinatário de teste') for _ in range(6)]
+        cursor = CursorDespesas()
+        dados = mauro._dados_financeiros(
+            cursor, CONTEXTO, 'LISTAR_DESPESAS', 'Quais foram elas?',
+            [{'papel': 'USUARIO', 'conteudo': 'Quanto gastei neste mês?'}])
+        self.assertEqual(dados['quantidade'], 6)
+        self.assertIn('FIRST 25', cursor.chamadas[1][0])
+        self.assertEqual(cursor.chamadas[0][1][0], CONTEXTO['id_conta'])
+        self.assertEqual(cursor.chamadas[1][1][0], CONTEXTO['id_conta'])
+        self.assertEqual(cursor.chamadas[1][1][1], CONTEXTO['id_conta'])
+        self.assertIn('R$ 20,00', mauro._resposta_financeira_verificada('LISTAR_DESPESAS', dados))
+
+
 class TestAudioMauro(unittest.TestCase):
     def test_mime_webm_opus_e_normalizado_e_tipo_desconhecido_recusado(self):
         self.assertEqual(mauro._normalizar_mime_audio('audio/webm;codecs=opus'), 'audio/webm')
