@@ -1,0 +1,27 @@
+name: Validate AI security and restricted CPF API
+on:
+  push:
+    branches: ['feat/seguranca-ia-verificacao-cpf-20261026']
+  pull_request:
+    paths:
+      - 'seguranca_ia.py'
+      - 'assistente_mauro.py'
+      - 'admin_banco.py'
+      - 'api/cpf_consulta.py'
+      - 'tests/test_seguranca_ia_cpf.py'
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python -m py_compile seguranca_ia.py assistente_mauro.py admin_banco.py api/cpf_consulta.py tests/test_seguranca_ia_cpf.py
+      - run: python -m unittest discover -s tests -p 'test_seguranca_ia_cpf.py' -v
+      - run: python -m unittest discover -s tests -p 'test_assistente_mauro_intencoes.py' -v
+      - run: python -m unittest discover -s tests -p 'test_admin_banco.py' -v
