@@ -259,7 +259,7 @@ class TestAudioMauro(unittest.TestCase):
             resposta, status = mauro.transcrever_audio(7)
 
         self.assertEqual(status, 413)
-        self.assertIn('2 MB', resposta['mensagem'])
+        self.assertIn('8 MB', resposta['mensagem'])
 
     def test_audio_de_conversa_de_outra_conta_nao_chama_gemini(self):
         arquivo = types.SimpleNamespace(mimetype='audio/webm', stream=io.BytesIO(b'audio'))

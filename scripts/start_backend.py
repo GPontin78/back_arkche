@@ -12,7 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKER_COMMAND = [sys.executable, "-u", "scripts/notificacoes_worker.py"]
-WEB_COMMAND = ["gunicorn", "--bind", "0.0.0.0:5000", "main:app"]
+WEB_COMMAND = ["gunicorn", "--timeout", "90", "--bind", "0.0.0.0:5000", "main:app"]
 STOPPING = False
 
 

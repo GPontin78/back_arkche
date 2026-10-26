@@ -28,7 +28,7 @@ FUSO = ZoneInfo('America/Sao_Paulo')
 MAX_MENSAGEM = 2000
 MAX_MENSAGENS_CONTEXTO = 10
 LIMITE_POR_MINUTO = 20
-MAX_AUDIO_BYTES = 2 * 1024 * 1024
+MAX_AUDIO_BYTES = 8 * 1024 * 1024
 MIMES_AUDIO = {
     'audio/webm': 'audio/webm', 'audio/ogg': 'audio/ogg',
     'audio/mp4': 'audio/mp4', 'audio/mpeg': 'audio/mpeg',
@@ -445,7 +445,7 @@ def _transcrever_audio_gemini(audio, mime):
         resposta = requests.post(
             f'https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent',
             headers={'x-goog-api-key': chave, 'Content-Type': 'application/json'},
-            json=payload, timeout=(5, 25),
+            json=payload, timeout=(5, 60),
         )
         if resposta.status_code >= 400:
             current_app.logger.warning('Gemini recusou a transcrição de áudio: HTTP %s', resposta.status_code)
@@ -471,7 +471,7 @@ def transcrever_audio(id_conversa):
     limite_requisicao = MAX_AUDIO_BYTES + 64 * 1024
     request.max_content_length = limite_requisicao
     if request.content_length and request.content_length > limite_requisicao:
-        return jsonify({'mensagem': 'O áudio deve ter no máximo 2 MB.'}), 413
+        return jsonify({'mensagem': 'O áudio deve ter no máximo 8 MB.'}), 413
     audio_file = request.files.get('audio')
     mime = _normalizar_mime_audio(audio_file.mimetype if audio_file else None)
     if not audio_file or not mime:
@@ -480,7 +480,7 @@ def transcrever_audio(id_conversa):
     if not audio:
         return jsonify({'mensagem': 'O arquivo de áudio está vazio.'}), 400
     if len(audio) > MAX_AUDIO_BYTES:
-        return jsonify({'mensagem': 'O áudio deve ter no máximo 2 MB.'}), 413
+        return jsonify({'mensagem': 'O áudio deve ter no máximo 8 MB.'}), 413
 
     cursor = None
     try:
