@@ -15,6 +15,8 @@ import transferencia
 import pix
 import pdf 
 import api
+from api.rate_limit import limitar_api
+app.before_request(limitar_api)
 import cartao
 import acesso
 import folha
