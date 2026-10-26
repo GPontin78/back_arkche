@@ -90,8 +90,8 @@ class TestRegrasEstorno(unittest.TestCase):
 
     def test_historico_pessoal_bloqueia_conta_sem_permissao(self):
         with app.test_request_context('/api/v1/estornos/minha-conta'):
-            with patch.object(estornos, 'descobre_id_usuario', return_value=13), \\
-                 patch.object(estornos, 'descobre_id_conta', return_value=2), \\
+            with patch.object(estornos, 'descobre_id_usuario', return_value=13), \
+                 patch.object(estornos, 'descobre_id_conta', return_value=2), \
                  patch.object(estornos, '_conta_acessivel', return_value=False):
                 resposta, status = estornos.historico_estornos_conta()
         self.assertEqual(status, 403)
@@ -118,10 +118,10 @@ class TestRegrasEstorno(unittest.TestCase):
                 return self.cursor_ativo
         conexao = Conexao()
         with app.test_request_context('/api/v1/estornos/minha-conta'):
-            with patch.object(estornos, 'con', conexao), \\
-                 patch.object(estornos, 'descobre_id_usuario', return_value=7), \\
-                 patch.object(estornos, 'descobre_id_conta', return_value=20), \\
-                 patch.object(estornos, '_conta_acessivel', return_value=True), \\
+            with patch.object(estornos, 'con', conexao), \
+                 patch.object(estornos, 'descobre_id_usuario', return_value=7), \
+                 patch.object(estornos, 'descobre_id_conta', return_value=20), \
+                 patch.object(estornos, '_conta_acessivel', return_value=True), \
                  patch.object(estornos, '_tem_estrutura_estornos', return_value=True):
                 resposta, status = estornos.historico_estornos_conta()
         self.assertEqual(status, 200)
