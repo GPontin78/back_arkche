@@ -1,6 +1,8 @@
 """Testes unitarios isolados: sem banco, sem Gemini e sem Redis reais."""
 import ast
+import hashlib
 import os
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -23,7 +25,6 @@ def carregar_endpoint():
     funcao.decorator_list = []
     namespace = {
         'autenticar_integracao': Mock(return_value=({'id_integracao': 71, 'id_conta': 12}, None)),
-        '_autorizar_consulta_cpf': Mock(return_value=True),
         '_limitar_consulta_cpf': Mock(return_value=True),
         'normalizar_cpf': lambda value: ''.join(c for c in value if c.isdigit()),
         'validar_cpf': lambda value: value in (CPF_VALIDO, '529.982.247-25'),
@@ -73,12 +74,54 @@ class ConsultaCPF(unittest.TestCase):
         with self.app.test_request_context('/api/v1/contas/verificar-cpf', method='POST', json=corpo):
             return self.endpoint()
 
-    def test_negado_sem_opt_in(self):
-        self.namespace['_autorizar_consulta_cpf'].return_value = False
-        resultado, codigo = self.chamar({'cpf': CPF_VALIDO})
-        self.assertEqual(codigo, 403)
-        self.namespace['_limitar_consulta_cpf'].assert_not_called()
-        self.namespace['con'].cursor.assert_not_called()
+    def test_credencial_api_normal_nao_exige_opt_in(self):
+        self.namespace['con'].cursor.return_value.fetchone.return_value = (1,)
+        with patch.dict(os.environ, {'ARKHE_API_CONSULTA_CPF_CLIENT_IDS': ''}):
+            resposta, codigo = self.chamar({'cpf': CPF_VALIDO})
+        self.assertEqual(codigo, 200)
+        self.assertEqual(resposta.get_json(), {'possui_conta': True})
+        self.namespace['autenticar_integracao'].assert_called_once()
+        self.namespace['_limitar_consulta_cpf'].assert_called_once()
+
+    def test_credencial_invalida_ou_inativa_nao_acessa_dados(self):
+        for status in (401, 403):
+            with self.subTest(status=status):
+                self.namespace['autenticar_integracao'].return_value = (
+                    None, ({'mensagem': 'Acesso negado'}, status)
+                )
+                resposta, codigo = self.chamar({'cpf': CPF_VALIDO})
+                self.assertEqual(codigo, status)
+                self.namespace['_limitar_consulta_cpf'].assert_not_called()
+                self.namespace['con'].cursor.assert_not_called()
+
+    def test_limites_por_integracao_minuto_dia_e_documento(self):
+        path = ROOT / 'api' / 'cpf_consulta.py'
+        arvore = ast.parse(path.read_text(encoding='utf-8'))
+        codigo_lua = ast.literal_eval(next(
+            no.value for no in arvore.body if isinstance(no, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == '_LUA_LIMITE_CPF' for t in no.targets)
+        ))
+        funcao = next(no for no in arvore.body if isinstance(no, ast.FunctionDef)
+                      and no.name == '_limitar_consulta_cpf')
+        cliente = Mock()
+        cliente.eval.return_value = 1
+        redis_falso = types.SimpleNamespace(
+            Redis=types.SimpleNamespace(from_url=Mock(return_value=cliente)),
+            RedisError=Exception,
+        )
+        ambiente = {'os': os, 'hashlib': hashlib, 'redis': redis_falso,
+                    'current_app': Mock(), '_LUA_LIMITE_CPF': codigo_lua}
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[funcao], type_ignores=[])),
+                     str(path), 'exec'), ambiente)
+        with patch.dict(os.environ, {'ARKHE_WHATSAPP_REDIS_URL': '', 'REDIS_URL': 'redis://teste'}):
+            self.assertTrue(ambiente['_limitar_consulta_cpf'](71, CPF_VALIDO))
+        argumentos = cliente.eval.call_args.args
+        self.assertEqual(argumentos[1], 3)
+        self.assertEqual(argumentos[-6:], (60, 10, 86400, 20, 86400, 100))
+        self.assertEqual(len(argumentos[2:5]), 3)
+        self.assertNotIn(CPF_VALIDO, str(argumentos))
+        self.assertIn('KEYS[3]', codigo_lua)
+        cliente.close.assert_called_once()
 
     def test_bloqueia_cpf_invalido(self):
         resultado, codigo = self.chamar({'cpf': '00000000000'})
