@@ -369,7 +369,7 @@
 - **Estado inicial:** O código rejeitava vendas parecidas em cinco minutos, não identificava a mesma solicitação; no endpoint de API a junção não usava `M.ID_COMPRA = C.ID_COMPRA`. A maquininha tinha heurística separada para débito. Nenhuma delas provava fraude nem bloqueava cartão/conta.
 - **Correção local:** API, maquininha e rota legado usam agora chave persistida em `IDEMPOTENCIA_VENDA`, gravada no mesmo commit da COMPRA/MOVIMENTACAO; a mesma chave e parâmetros devolvem a resposta anterior; mesma chave com parâmetros diferentes retorna 409; chaves distintas permitem compras legítimas iguais. Nenhum valor ou cartão real foi usado.
 - **Resultado real:** 41/41 testes do módulo `tests/test_api_vendas.py` e 116/116 testes da suíte backend passaram com Firebird isolado local. A contabilidade para API de crédito permaneceu ligada por `MOVIMENTACAO.ID_COMPRA`; não foi alterada a semântica já existente da maquininha, cujo crédito registra COMPRA/FATURA sem movimento de liquidação.
-- **Publicação/validação:** Correção ainda não publicada; migration 011 depende de backup Firebird validado antes de aplicar no online.
+- **Publicação/validação:** Correção enviada à branch `codex/main-sprint-p0-idempotency` (`262b696`); não foi mesclada à `main` nem implantada. A migration 011 depende de backup Firebird online validado antes de aplicar.
 - **Pendência:** Detecção explicável de risco e fluxo de bloqueio/revisão/desbloqueio continuam ausentes. Idempotência evita replay técnico; não substitui antifraude nem satisfaz sozinho o requisito de bloqueio até confirmação.
 
 ### 31. PIN para ação sensível
@@ -501,7 +501,7 @@
 - **Frontend/mobile:** arkhe-web integration page; no central limiter dashboard found
 - **Testes existentes:** `tests/test_api_rate_limiting.py` tem 6 casos incluindo integração com a autenticação real: 429, janelas, isolamento entre integrações, Redis offline, configuração inválida e bypass somente em TESTING.
 - **Estado após esta tarefa:** IMPLEMENTADO LOCALMENTE E TESTADO; limite default 120/minuto por integração; WhatsApp, rotas internas e sessões de usuário não são alterados por este controle.
-- **Publicação/validação:** Publicação pendente; requer release backend e configuração Redis existente, sem migration própria.
+- **Publicação/validação:** Enviada à branch `codex/main-sprint-p0-idempotency` (`a5a78d3`); não mesclada nem implantada. Requer release backend e `REDIS_URL`; sem migration própria.
 - **Ação/limite:** Não bombardear serviços publicados para demonstrar rate limiting.
 
 ### 42. Painel de integrações
@@ -642,3 +642,12 @@
 2. Próximos grupos por ordem: autorização/sessões e isolamento; classificações/alertas; cartão virtual; MAURO admin e ações; voz/web+Expo; APIs/rate limiting; integração n8n; regressão e validação externa.
 3. Não publicar uma migração em produção sem backup recém-criado e validado. Não executar operações que alterem saldos nem bloquear titulares reais.
 4. Estado atual: matriz criada; não afirmar 52/52. Backend: `python -m unittest discover -s tests -v` no `.venv` passou 122/122 com Firebird temporário; frontend: `npm run lint` e `npm run build` passaram; o teste `node tests/maquininha.mjs` não foi executado por falta do pacote Playwright no workspace. Atualizar este arquivo por módulo, incluindo testes realmente executados e hash do commit.
+
+## Checkpoint de implementação — 2026-10-26
+
+- **Backend:** branch `codex/main-sprint-p0-idempotency`; commits `262b696` e `a5a78d3`; [PR #5](https://github.com/GPontin78/back_arkche/pull/5), aberto como rascunho. Suíte completa local: 122/122 testes com Firebird temporário.
+- **Frontend:** branch `codex/main-sprint-client-idempotency`; commit `8fcdc94`; [PR #2](https://github.com/LucasGajardoni/arkhe-web/pull/2), aberto como rascunho. `npm run lint` e `npm run build` passaram; `node tests/maquininha.mjs` não iniciou por ausência do pacote Playwright neste workspace.
+- **Produção:** nenhuma migration ou operação financeira foi executada no Firebird online. Migration 011 precisa de backup recente, restauração/validação do arquivo de backup e aplicação na base principal antes da versão backend dependente da tabela. Nenhum deploy foi realizado.
+- **Navegador:** a inspeção solicitada pelo fluxo de validação não avançou: o controle do Chrome encerrou a automação porque não conseguiu determinar com confiança a URL da janela ativa. Não foi inferida autenticação nem testada a aplicação publicada.
+- **Próxima continuidade:** tratar, com módulos e checkpoints separados, risco/fraude com critérios justificáveis, classificação e alertas financeiros, sessões/dispositivos, cartão virtual persistido, modo administrativo do MAURO, voz web/Expo e validação real das integrações externas. A inspeção do n8n/WAHA depende de acesso ao workflow e não deve alterar o MAURO do WhatsApp.
+- **Classificação geral:** a matriz de 52 itens é uma auditoria inicial com progresso parcial; não certifica publicação nem 52/52 concluídos.
