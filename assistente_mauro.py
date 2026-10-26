@@ -23,6 +23,8 @@ from limites import _resumo_conta
 from main import app
 import mauro_pix
 from seguranca_ia import tentativa_injecao, resposta_modelo_insegura
+from mauro_conversa import (intencao_especial, assunto_bancario_em_andamento, assunto_anterior,
+                           mensagem_complementar_pix, periodo_solicitado, resumo_conversa)
 
 
 FUSO = ZoneInfo('America/Sao_Paulo')
@@ -81,6 +83,12 @@ def _pedido_fora_escopo(texto, historico=()):
     sem_chaves = re.sub(r'\S+@\S+', '[chave]', normal)
     if _ASSUNTO_PROGRAMACAO.search(sem_chaves):
         return True
+    if intencao_especial(texto, historico):
+        return False
+    if re.fullmatch(r'(?:quais (?:foram|sao) (?:elas|eles)|me mostre (?:elas|eles)|lista (?:elas|eles))[.!?]*', normal):
+        return False  # o MAURO pedira esclarecimento quando nao houver contexto
+    if assunto_bancario_em_andamento(historico) and mensagem_complementar_pix(texto):
+        return False
     if _ASSUNTO_BANCARIO.search(normal):
         return False
     if re.fullmatch(r'(oi|ola|bom dia|boa tarde|boa noite|tudo bem|obrigad[oa]|valeu|tchau)(?:[,\s]+mauro)?[!?.\s]*', normal):
@@ -194,6 +202,9 @@ def _conversa_autorizada(cursor, id_conversa, contexto, bloquear=False):
 
 
 def _detectar_intencao(texto, historico=()):
+    especial = intencao_especial(texto, historico)
+    if especial:
+        return especial
     normal = _texto_normalizado(texto)
     palavras = set(re.findall(r'[a-z0-9]+', normal))
     if _tem(normal, r'\bsald\w*\b', r'\bquanto\s+(?:eu\s+)?(?:tenho|temos)\b'):
@@ -257,7 +268,7 @@ def _detectar_intencao(texto, historico=()):
     return 'GERAL'
 
 
-def _dados_financeiros(cursor, contexto, intencao):
+def _dados_financeiros(cursor, contexto, intencao, pergunta='', historico=()):
     conta = contexto['id_conta']
     agora = datetime.now(FUSO).replace(tzinfo=None)
     hoje = agora.date()
@@ -900,7 +911,11 @@ def enviar_mensagem(id_conversa):
             proposta_pix = None
             mensagens_pix_auditoria = []
             texto_persistido = texto
-        dados = _dados_financeiros(cursor, contexto, intencao) if intencao not in ('GERAL', 'PEDIDO_PAGAMENTO', 'FORA_ESCOPO', 'OUTRA_CONTA') else {
+        dados = _dados_financeiros(cursor, contexto, intencao, texto, historico) if intencao not in (
+            'GERAL', 'PEDIDO_PAGAMENTO', 'FORA_ESCOPO', 'OUTRA_CONTA', 'PERFIL',
+            'DATA_ATUAL', 'CAPACIDADES', 'RESUMO_CONVERSA', 'CARTAO_VIRTUAL',
+            'ALTERAR_SALDO', 'EDITAR_PERFIL', 'EXCLUIR_CHAVE',
+        ) else {
             'tipo_conta': contexto['tipo_conta'],
             'funcionalidades_conhecidas': [
                 'saldo, extrato e resumo financeiro', 'Pix e cobranças', 'boletos e DDA',
@@ -908,6 +923,8 @@ def enviar_mensagem(id_conversa):
                 'notificações e preferências', 'cartões e faturas',
             ],
         }
+        if intencao == 'RESUMO_CONVERSA':
+            dados['resumo_conversa'] = resumo_conversa(historico)
         dados['conta_autorizada'] = {chave: contexto.get(chave) for chave in
                                     ('id_conta', 'tipo_conta', 'nome_conta', 'conta_final')}
         # Consultas Gemini liberam os locks antes da chamada externa; o fluxo
@@ -926,7 +943,13 @@ def enviar_mensagem(id_conversa):
             pass
         elif intencao == 'PEDIDO_PAGAMENTO':
             resposta, falha = _resposta_pedido_financeiro(), None
-        elif intencao in ('SALDO', 'AGENDAMENTOS', 'RECORRENCIAS', 'PENDENCIAS', 'NOTIFICACOES'):
+        elif intencao in (
+            'SALDO', 'AGENDAMENTOS', 'RECORRENCIAS', 'PENDENCIAS', 'NOTIFICACOES',
+            'LISTAR_DESPESAS', 'LISTAR_RECEITAS', 'DESTINATARIOS_FREQUENTES',
+            'MOVIMENTACOES', 'MAIORES_GASTOS', 'PERFIL', 'DATA_ATUAL',
+            'CAPACIDADES', 'RESUMO_CONVERSA', 'CARTAO_VIRTUAL', 'ALTERAR_SALDO',
+            'EDITAR_PERFIL', 'EXCLUIR_CHAVE',
+        ):
             # Consultas de listas/estados são respondidas a partir do resultado
             # real para separar lista vazia de indisponibilidade e evitar que o
             # modelo preencha estados que não vieram do Firebird.
