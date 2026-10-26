@@ -240,6 +240,38 @@
           }
         }
       ]
+    },
+    {
+      "name": "Verificar CPF com permissao especial (restrito)",
+      "request": {
+        "description": "Apenas Client IDs expressamente aprovados pelo administrador. Credenciais PJ comuns retornam 403. CPF nunca deve ser enviado por URL. Redis obrigatorio; 10 consultas/minuto por integracao, 20/dia por CPF. Exemplo apenas para ambiente de demonstracao.",
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-Client-ID",
+            "value": "{{client_id}}"
+          },
+          {
+            "key": "X-Client-Secret",
+            "value": "{{client_secret}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{api_url}}/api/v1/contas/verificar-cpf",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"cpf\": \"52998224725\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "response": []
     }
   ]
 }
