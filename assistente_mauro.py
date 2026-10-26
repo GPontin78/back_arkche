@@ -350,7 +350,7 @@ def _dados_financeiros(cursor, contexto, intencao, pergunta='', historico=()):
             raise RuntimeError('saldo indisponivel')
         return {'saldo': f'{Decimal(str(saldo)):.2f}', 'moeda': 'BRL',
                 'conta_autorizada': {chave: contexto.get(chave) for chave in
-                                     ('id_conta', 'tipo_conta', 'nome_conta', 'conta_final')}}
+                                     ('id_conta', 'tipo_conta', 'nome_conta', 'nome_titular', 'conta_final')}}
 
     if intencao in ('DESPESAS_MES', 'DESPESAS_SEMANA', 'DESPESAS_SEMANA_PASSADA',
                     'RECEITAS_SEMANA', 'RECEITAS_SEMANA_PASSADA'):
@@ -1040,7 +1040,7 @@ def enviar_mensagem(id_conversa):
         if intencao == 'RESUMO_CONVERSA':
             dados['resumo_conversa'] = resumo_conversa(historico)
         dados['conta_autorizada'] = {chave: contexto.get(chave) for chave in
-                                    ('id_conta', 'tipo_conta', 'nome_conta', 'conta_final')}
+                                    ('id_conta', 'tipo_conta', 'nome_conta', 'nome_titular', 'conta_final')}
         # Consultas Gemini liberam os locks antes da chamada externa; o fluxo
         # determinístico de Pix mantém proposta e histórico na mesma transação.
         if fluxo_pix is None:
