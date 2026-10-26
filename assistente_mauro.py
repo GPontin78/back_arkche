@@ -1008,7 +1008,11 @@ def enviar_mensagem(id_conversa):
             intencao = 'OUTRA_CONTA'
         pix_instalado = mauro_pix.tabela_instalada(cursor) if not fora_escopo else False
         proposta_aberta = mauro_pix.proposta_ativa(cursor, id_conversa, contexto) if pix_instalado and intencao == 'GERAL' else None
-        continuar_pix = bool(proposta_aberta and intencao == 'GERAL')
+        continuar_pix = bool(proposta_aberta and intencao == 'GERAL' and (
+            mensagem_complementar_pix(texto) or
+            mauro_pix.extrair_chave(texto) is not None or
+            _texto_normalizado(texto) in ('sim', 'confirmo', 'pode', 'ok', 'cancelar', 'nao', 'não')
+        ))
         fluxo_pix = None
         if intencao == 'PEDIDO_PAGAMENTO' and not pix_instalado:
             fluxo_pix = {
