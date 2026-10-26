@@ -16,6 +16,10 @@ from notificacoes import registrar_evento_bancario, tentar_publicar_eventos
 OPERACOES = ('TRANSFERENCIA', 'PAGAMENTO')
 PERIODOS = ('DIURNO', 'NOTURNO')
 TIPOS_CONTA = ('PF', 'PJ')
+# Regra de seguranca para PF/PJ em ambos os periodos quando o administrador
+# ainda nao configurou uma politica explicita. O admin pode alterar os tetos
+# pela rota autorizada de politica, sem conceder esse poder aos titulares.
+TETO_PADRAO_SEM_POLITICA = Decimal('5000.00')
 
 
 def _periodo_agora(agora=None):
@@ -96,9 +100,9 @@ def _politica_atual(cursor, tipo_conta, operacao, periodo):
     )
     periodo_row = cursor.fetchone()
     return {
-        'limite_por_operacao': Decimal(str(operacao_row[1])) if operacao_row and int(operacao_row[0]) == 1 and operacao_row[1] is not None else None,
+        'limite_por_operacao': Decimal(str(operacao_row[1])) if operacao_row and int(operacao_row[0]) == 1 and operacao_row[1] is not None else TETO_PADRAO_SEM_POLITICA,
         'limite_por_operacao_favorito': Decimal(str(operacao_row[2])) if operacao_row and int(operacao_row[0]) == 1 and len(operacao_row) > 2 and operacao_row[2] is not None else None,
-        'limite_acumulado': Decimal(str(periodo_row[1])) if periodo_row and int(periodo_row[0]) == 1 and periodo_row[1] is not None else None,
+        'limite_acumulado': Decimal(str(periodo_row[1])) if periodo_row and int(periodo_row[0]) == 1 and periodo_row[1] is not None else TETO_PADRAO_SEM_POLITICA,
     }
 
 
@@ -292,7 +296,7 @@ def _resumo_conta(cursor, id_conta, tipo_conta):
            WHERE TIPO_CONTA = ? AND PERIODO = ?''', (tipo_conta, periodo)
     )
     acumulado = cursor.fetchone()
-    limite_acumulado_banco = Decimal(str(acumulado[1])) if acumulado and int(acumulado[0]) == 1 and acumulado[1] is not None else None
+    limite_acumulado_banco = Decimal(str(acumulado[1])) if acumulado and int(acumulado[0]) == 1 and acumulado[1] is not None else TETO_PADRAO_SEM_POLITICA
     cursor.execute(
         '''SELECT LIMITE_ACUMULADO FROM LIMITE_CONTA_PERIODO
            WHERE ID_CONTA = ? AND PERIODO = ?''', (int(id_conta), periodo)
@@ -307,7 +311,7 @@ def _resumo_conta(cursor, id_conta, tipo_conta):
     )
     operacoes = []
     for operacao, ativo, maximo, maximo_favorito in cursor.fetchall():
-        maximo_banco = Decimal(str(maximo)) if int(ativo) == 1 and maximo is not None else None
+        maximo_banco = Decimal(str(maximo)) if int(ativo) == 1 and maximo is not None else TETO_PADRAO_SEM_POLITICA
         maximo_favorito_banco = Decimal(str(maximo_favorito)) if int(ativo) == 1 and maximo_favorito is not None else None
         conta = _politica_da_conta(cursor, id_conta, operacao, periodo)
         maximo_conta = conta['limite_por_operacao']
@@ -648,7 +652,7 @@ def consultar_configuracao_limites_conta():
                    WHERE TIPO_CONTA = ? AND PERIODO = ?''', (tipo, periodo)
             )
             row = cursor.fetchone()
-            teto_acumulado_banco = Decimal(str(row[1])) if row and int(row[0]) == 1 and row[1] is not None else None
+            teto_acumulado_banco = Decimal(str(row[1])) if row and int(row[0]) == 1 and row[1] is not None else TETO_PADRAO_SEM_POLITICA
             cursor.execute(
                 '''SELECT LIMITE_ACUMULADO FROM LIMITE_CONTA_PERIODO
                    WHERE ID_CONTA = ? AND PERIODO = ?''', (id_conta, periodo)
@@ -754,7 +758,7 @@ def atualizar_configuracao_limites_conta():
         anteriores['limite_acumulado'] = str(row[0]) if row and row[0] is not None else None
         cursor.execute('SELECT ATIVO, LIMITE_ACUMULADO FROM POLITICA_LIMITE_PERIODO WHERE TIPO_CONTA = ? AND PERIODO = ?', (tipo, periodo))
         banco_periodo = cursor.fetchone()
-        teto_acumulado_banco = Decimal(str(banco_periodo[1])) if banco_periodo and int(banco_periodo[0]) == 1 and banco_periodo[1] is not None else None
+        teto_acumulado_banco = Decimal(str(banco_periodo[1])) if banco_periodo and int(banco_periodo[0]) == 1 and banco_periodo[1] is not None else TETO_PADRAO_SEM_POLITICA
         if (limite_acumulado is not None and teto_acumulado_banco is not None
                 and limite_acumulado > teto_acumulado_banco):
             raise ValueError('O limite acumulado individual não pode superar o teto bancário ativo')
