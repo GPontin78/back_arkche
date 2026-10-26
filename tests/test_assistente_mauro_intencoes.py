@@ -532,5 +532,78 @@ class TestAudioMauro(unittest.TestCase):
         gemini.assert_not_called()
 
 
+
+class TestConversacaoNatural(unittest.TestCase):
+    def test_typos_e_perguntas_naturais(self):
+        casos = {
+            'Meu salfo': 'SALDO',
+            'Meu slado': 'SALDO',
+            'Quem sou eu?': 'PERFIL',
+            'Que dia é hoje?': 'DATA_ATUAL',
+            'O que você pode fazer?': 'CAPACIDADES',
+            'Sobre o que a gente falou?': 'RESUMO_CONVERSA',
+            'Quero criar um cartão virtual': 'CARTAO_VIRTUAL',
+            'Para quem eu mais enviei dinheiro?': 'DESTINATARIOS_FREQUENTES',
+            'Edite meu nome para Igor': 'EDITAR_PERFIL',
+            'Altere meu saldo': 'ALTERAR_SALDO',
+            'Exclua minha chave pix': 'EXCLUIR_CHAVE',
+        }
+        for pergunta, intencao in casos.items():
+            with self.subTest(pergunta=pergunta):
+                self.assertEqual(mauro._detectar_intencao(pergunta), intencao)
+                self.assertFalse(mauro._pedido_fora_escopo(pergunta))
+
+    def test_qual_foram_elas_herda_consulta_de_despesas(self):
+        historico = [
+            {'papel': 'USUARIO', 'conteudo': 'Quanto gastei neste mês?'},
+            {'papel': 'ASSISTENTE', 'conteudo': 'Você gastou R$ 240,00 em seis despesas.'},
+        ]
+        self.assertEqual(mauro._detectar_intencao('Quais foram elas?', historico), 'LISTAR_DESPESAS')
+        self.assertFalse(mauro._pedido_fora_escopo('Quais foram elas?', historico))
+
+    def test_muda_assunto_sem_reutilizar_pix(self):
+        self.assertEqual(mauro._detectar_intencao('Quero criar um cartão virtual'), 'CARTAO_VIRTUAL')
+        self.assertFalse(mauro.mauro_pix.extrair_valor('Quero criar um cartão virtual')[0] if hasattr(mauro.mauro_pix, 'extrair_valor') else False)
+
+    def test_pix_pendente_nao_sequestra_uma_mensagem_nova(self):
+        proposta = object()
+        # A suíte injeta um módulo Pix mínimo: simulamos apenas o extrator de chave.
+        extrator = lambda texto: ('email', texto) if '@' in texto else None
+        with patch.object(mauro.mauro_pix, 'extrair_chave', side_effect=extrator, create=True):
+            for texto in ('Oi, Mauro', 'Preciso de ajuda', 'Como vai?', 'Quero entender minha conta'):
+                with self.subTest(texto=texto):
+                    self.assertFalse(mauro._deve_continuar_pix(proposta, 'GERAL', texto))
+            self.assertFalse(mauro._deve_continuar_pix(proposta, 'SALDO', 'sim'))
+            self.assertFalse(mauro._deve_continuar_pix(None, 'GERAL', 'sim'))
+            for texto in ('sim', 'cancelar', 'R$ 25,00', 'cliente@exemplo.com'):
+                with self.subTest(texto=texto):
+                    self.assertTrue(mauro._deve_continuar_pix(proposta, 'GERAL', texto))
+
+    def test_consultas_agrupadas_na_conta_autorizada(self):
+        class Cursor:
+            def __init__(self):
+                self.queries = []
+            def execute(self, sql, parametros):
+                self.queries.append((sql, parametros))
+            def fetchall(self):
+                return [('Destinatário teste', 120, 3)]
+        cursor = Cursor()
+        dados = mauro._dados_financeiros(cursor, CONTEXTO, 'DESTINATARIOS_FREQUENTES',
+                                        'Para quem eu mais enviei dinheiro?')
+        self.assertEqual(cursor.queries[0][1], (CONTEXTO['id_conta'],))
+        self.assertIn('M.ID_PAGADOR = ?', cursor.queries[0][0])
+        self.assertIn('R$ 120,00', mauro._resposta_financeira_verificada('DESTINATARIOS_FREQUENTES', dados))
+
+    def test_identidade_vem_do_contexto_autenticado(self):
+        resposta = mauro._resposta_financeira_verificada('PERFIL', {
+            'conta_autorizada': {
+                'nome_titular': 'Titular de teste', 'nome_conta': 'Empresa fictícia',
+                'tipo_conta': 'PJ', 'conta_final': '0012',
+            }
+        })
+        self.assertIn('Titular de teste', resposta)
+        self.assertIn('PJ', resposta)
+
+
 if __name__ == '__main__':
     unittest.main()
