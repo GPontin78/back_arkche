@@ -173,18 +173,85 @@ END^
 '''
 
 
+def gerar_trigger_unica(tabela, campos_schema):
+    insercao = parametros(tabela, 'INSERT')
+    alteracao = parametros(tabela, 'UPDATE')
+    exclusao = parametros(tabela, 'DELETE')
+    valores = []
+    for i, u, d in zip(insercao, alteracao, exclusao):
+        if i == u == d:
+            valores.append(i)
+        elif i == u:
+            valores.append(f'CASE WHEN DELETING THEN {d} ELSE {i} END')
+        else:
+            valores.append(f'CASE WHEN INSERTING THEN {i} WHEN UPDATING THEN {u} ELSE {d} END')
+    evento, registro, usuario, conta, valor, resultado = valores
+    return f'''CREATE OR ALTER TRIGGER TG_AIUD_{tabela}_LOG FOR {tabela}
+ACTIVE AFTER INSERT OR UPDATE OR DELETE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''{tabela}'', :operacao,
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := TRIM({evento}),
+        operacao := CASE WHEN INSERTING THEN 'INSERT' WHEN UPDATING THEN 'UPDATE' ELSE 'DELETE' END,
+        id_registro := {registro},
+        id_usuario := {usuario},
+        id_conta := {conta},
+        valor := {valor},
+        resultado := TRIM({resultado}),
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := CASE WHEN INSERTING THEN NULL ELSE {snapshot(tabela, 'OLD', campos_schema)} END,
+        depois := CASE WHEN DELETING THEN NULL ELSE {snapshot(tabela, 'NEW', campos_schema)} END,
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+'''
+
+
 def main():
-    # A 011 já foi publicada: preserva seu histórico e gera apenas a redução.
-    sql = ["/* Publicar a auditoria HTTP antes de retirar as triggers auxiliares. */",
-           'SET BAIL ON;', 'SET AUTODDL OFF;']
-    for tabela in CAMPOS:
-        if tabela not in TABELAS_PRINCIPAIS:
-            for sigla in ('AI', 'AU', 'AD'):
-                sql.append(f'DROP TRIGGER TG_{sigla}_{tabela}_LOG;')
-    sql.append('COMMIT;')
-    caminho = ROOT / 'migrations/012_log_tabelas_principais.sql'
+    schema = json.loads(SCHEMA.read_text(encoding='utf-8'))
+    campos = {(r[0], r[1]): r for r in schema['fields']}
+    sql = ['/* Uma trigger de LOG por tabela. Publicar o Python antes da troca. */',
+           'SET BAIL ON;', 'SET AUTODDL OFF;', 'SET TERM ^;']
+    for tabela in TABELAS_PRINCIPAIS:
+        sql.append(gerar_trigger_unica(tabela, campos))
+        nome = f'TG_AIUD_{tabela}_LOG'
+        sql.append(f'GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER {nome}^')
+        sql.append(f'GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER {nome}^')
+        if tabela == 'COMPRA':
+            sql.append(f'GRANT SELECT ON CARTAO TO TRIGGER {nome}^')
+    for tabela in TABELAS_PRINCIPAIS:
+        for sigla in ('AI', 'AU', 'AD'):
+            sql.append(f'DROP TRIGGER TG_{sigla}_{tabela}_LOG^')
+    sql.extend(['SET TERM ;^', 'COMMIT;'])
+    caminho = ROOT / 'migrations/013_log_uma_trigger_por_tabela.sql'
     caminho.write_text('\n'.join(sql) + '\n', encoding='utf-8')
-    print(f'{len(TABELAS_PRINCIPAIS) * 3} triggers de log mantidas: {caminho}')
+    print(f'{len(TABELAS_PRINCIPAIS)} triggers de log: {caminho}')
 
 
 if __name__ == '__main__':

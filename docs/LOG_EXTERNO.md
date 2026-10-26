@@ -1,8 +1,9 @@
 # Log direto no Firebird separado
 
-As triggers usam `TG_AI_<TABELA>_LOG`, `TG_AU_<TABELA>_LOG` e
-`TG_AD_<TABELA>_LOG`, conforme inclusão, alteração e exclusão.
-São **33 triggers nas 11 tabelas principais**: USUARIO, CONTA, MOVIMENTACAO,
+Cada tabela principal tem uma trigger `TG_AIUD_<TABELA>_LOG`, com
+`AFTER INSERT OR UPDATE OR DELETE`. A significa AFTER; I, U e D indicam as três
+operações. `INSERTING`, `UPDATING` e `DELETING` identificam o evento em execução.
+São **11 triggers nas 11 tabelas principais**: USUARIO, CONTA, MOVIMENTACAO,
 COBRANCA, CARTAO, CHAVE_PIX, COMPRA, FATURA, AGENDAMENTO_FINANCEIRO,
 RECORRENCIA_FINANCEIRA e ESTORNO_FINANCEIRO. Cada uma lê a configuração e executa
 um `INSERT` parametrizado em `AUDITORIA_EVENTO` com `EXECUTE STATEMENT ... ON
@@ -23,8 +24,8 @@ chaves Pix. Os IDs das mensagens permitem relacionar o log ao histórico já sal
 O aplicador preenche os valores usando as variáveis `ARKHE_AUDIT_DB_*` já
 configuradas, por parâmetros. Não publicar os valores dessa tabela nem conceder
 SELECT a usuários de negócio. As próprias triggers recebem SELECT e USAGE na
-sequência, sem abrir acesso direto às credenciais. Isso atende também conexões do
-SQL direto pelo DBeaver nas tabelas principais, sem depender de contexto de conexão configurado pelo backend.
+sequência, sem abrir acesso direto às credenciais. Isso atende também SQL
+direto pelo DBeaver nas tabelas principais, sem depender do contexto definido pelo backend.
 `ARKHE_AUDIT_DATA_SOURCE` permite usar um endereço específico acessível a partir
 do servidor Firebird; na ausência dele, usa host/porta/nome das variáveis atuais.
 
@@ -78,7 +79,8 @@ aleatórios com prefixo `arkhe-log-teste-`; nunca usa `DB_NAME` para criar dados
 A 011 permanece imutável como histórico. A 012 retira somente as 72 triggers de
 log das tabelas auxiliares. Não apaga tabelas, registros, conversas ou logs;
 não troca credenciais, destino, sequência nem as duas regras financeiras.
-Em instalações novas, o aplicador executa 011 e 012 antes de confirmar a troca.
+Essa foi a redução intermediária. Instalações novas criam diretamente as 11
+triggers unificadas, sem criar as versões anteriores.
 
 Publicar primeiro o Python atualizado. Executar
 `python scripts/restringir_log_principal.py` para comparar nomes, tipos,
@@ -100,3 +102,22 @@ As integrações usam as chamadas normais da API. A auditoria registra o recurso
 o método, o resultado HTTP e a conta/integração identificada pela autenticação
 existente. O fluxo da IA mantém os eventos semânticos da aplicação e as mudanças
 nas tabelas principais continuam registradas pelas triggers.
+
+## Uma trigger por tabela (013)
+
+A migração `013_log_uma_trigger_por_tabela.sql` substitui as 33 triggers separadas
+por 11 triggers unificadas. Cada uma lê a configuração uma vez e usa um único
+`EXECUTE STATEMENT ... ON EXTERNAL DATA SOURCE`; os parâmetros selecionam o evento,
+OLD/NEW, resultado e snapshots correspondentes. O log continua indicando INSERT,
+UPDATE ou DELETE e gravando os dados anteriores e novos quando aplicável.
+As duas regras financeiras seguem separadas, nas posições existentes.
+
+Publicar primeiro `auditoria.py`, compatível com ambas as versões. Executar
+`python scripts/unificar_log.py` para conferir o catálogo e depois
+`python scripts/unificar_log.py --apply`. O aplicador faz backup dos dois bancos,
+salva `rollback-unificacao.sql`, reconfere as fontes e troca todas as triggers
+num único commit. Credenciais, sequência, destino e histórico são preservados.
+Uma segunda aplicação somente confirma que já está atualizado.
+
+A sintaxe dos três eventos e suas variáveis de contexto está documentada em
+[Firebird 4, CREATE TRIGGER](https://www.firebirdsql.org/file/documentation/chunk/en/refdocs/fblangref40/fblangref40-ddl-trigger.html).

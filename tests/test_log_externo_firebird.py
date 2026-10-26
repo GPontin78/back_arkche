@@ -150,42 +150,82 @@ class LogExternoFirebird(unittest.TestCase):
     def test_migracao_instala_todas_as_triggers_sem_procedure(self):
         self.assertEqual(self.sql("SELECT COUNT(*) FROM RDB$TRIGGERS WHERE RDB$TRIGGER_NAME STARTING WITH 'ARKHE_AUD_'")[0][0], 0)
         self.assertEqual(self.sql("SELECT COUNT(*) FROM RDB$PROCEDURES WHERE RDB$PROCEDURE_NAME='ARKHE_AUDIT_ENQUEUE'")[0][0], 0)
-        self.assertEqual(self.sql("SELECT COUNT(*) FROM RDB$TRIGGERS WHERE COALESCE(RDB$SYSTEM_FLAG,0)=0")[0][0], 35)
+        self.assertEqual(self.sql("SELECT COUNT(*) FROM RDB$TRIGGERS WHERE COALESCE(RDB$SYSTEM_FLAG,0)=0")[0][0], 13)
+        self.assertEqual(self.sql("SELECT RDB$TRIGGER_TYPE,COUNT(*) FROM RDB$TRIGGERS WHERE RDB$TRIGGER_NAME STARTING WITH 'TG_AIUD_' GROUP BY 1"),[(114,11)])
         self.assertEqual(self.sql("SELECT COUNT(*) FROM AUDITORIA_EVENTO WHERE EVENTO='HISTORICO'", banco=self.audit)[0][0], 1)
 
-    def test_reducao_idempotente_recusa_trigger_modificada(self):
-        from scripts.restringir_log_principal import aplicar, conferir
-        self.assertEqual(len(conferir(self.con)), 35)
+    def _logs_separados(self):
+        from scripts.gerar_migracao_log import TABELAS_PRINCIPAIS, gerar_trigger
+        campos = {(r[0],r[1]):r for r in self.schema['fields']}
+        for tabela in TABELAS_PRINCIPAIS:
+            self.sql(f'DROP TRIGGER TG_AIUD_{tabela}_LOG')
+            for sigla,operacao in (('AI','INSERT'),('AU','UPDATE'),('AD','DELETE')):
+                self.sql(gerar_trigger(tabela,operacao,campos).strip().removesuffix('^'))
+                nome = f'TG_{sigla}_{tabela}_LOG'
+                self.sql(f'GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER {nome}')
+                self.sql(f'GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER {nome}')
+                if tabela == 'COMPRA':
+                    self.sql(f'GRANT SELECT ON CARTAO TO TRIGGER {nome}')
+        self.con.commit()
 
+    def test_unificacao_idempotente_recusa_trigger_modificada(self):
+        from scripts.unificar_log import aplicar, conferir
+        self.assertEqual(len(conferir(self.con)),13)
         self.assertFalse(aplicar(self.con))
-        self.sql('ALTER TRIGGER TG_AI_USUARIO_LOG INACTIVE')
+        self.sql('ALTER TRIGGER TG_AIUD_USUARIO_LOG INACTIVE')
         with self.assertRaisesRegex(RuntimeError, 'mudou'):
             aplicar(self.con)
         self.con.rollback()
-        self.assertEqual(len(conferir(self.con)), 35)
+        self.assertEqual(len(conferir(self.con)),13)
+
+    def test_unificacao_das_33_e_rollback(self):
+        from scripts.aplicar_log_externo import comandos_sql
+        from scripts.unificar_log import aplicar, conferir, salvar_rollback
+        self._logs_separados()
+        try:
+            atuais = conferir(self.con)
+            self.assertEqual(len(atuais),35)
+            with tempfile.TemporaryDirectory(prefix='arkhe-log-teste-unificar-') as pasta:
+                salvar_rollback(Path(pasta),atuais)
+                self.assertTrue(aplicar(self.con))
+                self.assertEqual(len(conferir(self.con)),13)
+                for comando in comandos_sql((Path(pasta)/'rollback-unificacao.sql').read_text(encoding='utf-8')):
+                    self.sql(comando)
+                self.con.commit()
+                self.assertEqual(len(conferir(self.con)),35)
+        finally:
+            self.con.rollback()
+            aplicar(self.con)
+        self.assertEqual(self.sql("SELECT COUNT(*) FROM AUDITORIA_EVENTO WHERE EVENTO='HISTORICO'",banco=self.audit)[0][0],1)
 
     def test_reducao_da_instalacao_011_e_rollback(self):
-        from scripts.aplicar_log_externo import comandos_sql
-        from scripts.gerar_migracao_log import CAMPOS, TABELAS_PRINCIPAIS, gerar_trigger
-        from scripts.restringir_log_principal import aplicar, conferir, salvar_rollback
-        campos = {(r[0],r[1]):r for r in self.schema['fields']}
-        for tabela in CAMPOS:
-            if tabela not in TABELAS_PRINCIPAIS:
-                for operacao in ('INSERT','UPDATE','DELETE'):
-                    self.sql(gerar_trigger(tabela,operacao,campos).strip().removesuffix('^'))
-        self.con.commit()
-        atuais = conferir(self.con)
-        self.assertEqual(len(atuais),107)
-        with tempfile.TemporaryDirectory(prefix='arkhe-log-teste-rollback-') as pasta:
-            salvar_rollback(Path(pasta),atuais)
-            self.assertTrue(aplicar(self.con))
-            self.assertEqual(len(conferir(self.con)),35)
-            for comando in comandos_sql((Path(pasta)/'rollback-reducao.sql').read_text(encoding='utf-8')):
-                self.sql(comando)
+        self._logs_separados()
+        try:
+            from scripts.aplicar_log_externo import comandos_sql
+            from scripts.gerar_migracao_log import CAMPOS, TABELAS_PRINCIPAIS, gerar_trigger
+            from scripts.restringir_log_principal import aplicar, conferir, salvar_rollback
+            campos = {(r[0],r[1]):r for r in self.schema['fields']}
+            for tabela in CAMPOS:
+                if tabela not in TABELAS_PRINCIPAIS:
+                    for operacao in ('INSERT','UPDATE','DELETE'):
+                        self.sql(gerar_trigger(tabela,operacao,campos).strip().removesuffix('^'))
             self.con.commit()
-            self.assertEqual(len(conferir(self.con)),107)
-            self.assertTrue(aplicar(self.con))
-        self.assertEqual(self.sql("SELECT COUNT(*) FROM AUDITORIA_EVENTO WHERE EVENTO='HISTORICO'",banco=self.audit)[0][0],1)
+            atuais = conferir(self.con)
+            self.assertEqual(len(atuais),107)
+            with tempfile.TemporaryDirectory(prefix='arkhe-log-teste-rollback-') as pasta:
+                salvar_rollback(Path(pasta),atuais)
+                self.assertTrue(aplicar(self.con))
+                self.assertEqual(len(conferir(self.con)),35)
+                for comando in comandos_sql((Path(pasta)/'rollback-reducao.sql').read_text(encoding='utf-8')):
+                    self.sql(comando)
+                self.con.commit()
+                self.assertEqual(len(conferir(self.con)),107)
+                self.assertTrue(aplicar(self.con))
+            self.assertEqual(self.sql("SELECT COUNT(*) FROM AUDITORIA_EVENTO WHERE EVENTO='HISTORICO'",banco=self.audit)[0][0],1)
+        finally:
+            from scripts.unificar_log import aplicar as unificar
+            self.con.rollback()
+            unificar(self.con)
 
     def test_http_sistema_api_recusas_e_urls_sem_segredos(self):
         app = Flask('teste_cobertura_http_log')
@@ -305,6 +345,20 @@ class LogExternoFirebird(unittest.TestCase):
         self.assertEqual([(r[0], int(r[1])) for r in parcelas], [(1,30), (2,30), (3,30)])
         self.assertEqual([r[2] for r in parcelas], [datetime.date(2026,10,26),datetime.date(2026,11,26),datetime.date(2026,12,26)])
         self.assertEqual(len(self.eventos('COMPRA',4002)),1)
+
+    def test_trigger_unica_preserva_eventos_e_campos_nulos(self):
+        self.sql('INSERT INTO CARTAO (ID_CARTAO,ID_CONTA,STATUS,LIMITE) VALUES (5001,9,0,100)')
+        self.con.commit()
+        self.sql('UPDATE CARTAO SET STATUS=1,LIMITE=NULL WHERE ID_CARTAO=5001')
+        self.con.commit()
+        self.sql('DELETE FROM CARTAO WHERE ID_CARTAO=5001')
+        self.con.commit()
+        eventos = self.sql("SELECT EVENTO,RESULTADO,DADOS_ANTERIORES,DADOS_NOVOS FROM AUDITORIA_EVENTO WHERE TABELA_ORIGEM='CARTAO' AND ID_REGISTRO=5001 ORDER BY ID_AUDITORIA",banco=self.audit)
+        self.assertEqual([(r[0],r[1]) for r in eventos], [('CARTAO_CRIADO','CRIADO'),('CARTAO_STATUS_ALTERADO','BLOQUEADO'),('CARTAO','EXCLUIDO')])
+        self.assertIsNone(eventos[0][2])
+        self.assertEqual(json.loads(eventos[1][2])['limite'],100)
+        self.assertIsNone(json.loads(eventos[1][3])['limite'])
+        self.assertIsNone(eventos[2][3])
 
     def test_todas_as_tabelas_tem_log_de_insert_update_delete_com_json_valido(self):
         from scripts.gerar_migracao_log import CAMPOS, TABELAS_PRINCIPAIS

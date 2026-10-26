@@ -117,12 +117,18 @@ def aplicar_ddl(conexao, destino, usuario, senha, origem):
         cursor.execute('INSERT INTO CONFIGURACAO_LOG VALUES (1, ?, ?, ?, ?)',
             (destino, usuario, senha, origem + '-log-v2'))
         for comando in comandos[3:]:
-            cursor.execute(comando)
-        for comando in comandos_sql((ROOT / 'migrations/012_log_tabelas_principais.sql').read_text(encoding='utf-8')):
-            cursor.execute(comando)
+            if comando.startswith(('DROP TRIGGER ARKHE_AUD_',
+                    'CREATE OR ALTER TRIGGER TG_AI_COMPRA FOR ',
+                    'CREATE OR ALTER TRIGGER TG_AI_CONTA_LIMITE_CTRL FOR ',
+                    'DROP PROCEDURE ARKHE_AUDIT_ENQUEUE')):
+                cursor.execute(comando)
+        # Instala diretamente uma por tabela, sem criar as versões intermediárias.
+        for comando in comandos_sql((ROOT / 'migrations/013_log_uma_trigger_por_tabela.sql').read_text(encoding='utf-8')):
+            if not comando.startswith('DROP TRIGGER '):
+                cursor.execute(comando)
         testar_eds(cursor)
         cursor.execute("SELECT COUNT(*) FROM RDB$TRIGGERS WHERE COALESCE(RDB$SYSTEM_FLAG,0)=0")
-        if cursor.fetchone() != (35,):
+        if cursor.fetchone() != (13,):
             raise RuntimeError('Quantidade inesperada de triggers. Migração revertida.')
         conexao.commit()
     except Exception:
@@ -140,10 +146,9 @@ def aplicar_ddl(conexao, destino, usuario, senha, origem):
 def salvar_rollback(pasta, triggers):
     texto = ['/* Restaurar primeiro o backend anterior. Não remove logs históricos. */',
              'SET BAIL ON;', 'SET AUTODDL OFF;', 'SET TERM ^;']
-    from scripts.gerar_migracao_log import CAMPOS
-    for tabela in CAMPOS:
-        for sigla in ('AI','AU','AD'):
-            texto.append(f'DROP TRIGGER TG_{sigla}_{tabela}_LOG^')
+    from scripts.gerar_migracao_log import TABELAS_PRINCIPAIS
+    for tabela in TABELAS_PRINCIPAIS:
+        texto.append(f'DROP TRIGGER TG_AIUD_{tabela}_LOG^')
     antigo = (ROOT / 'migrations/007_auditoria_outbox_triggers.sql').read_text(encoding='utf-8')
     procedure = antigo.split('CREATE OR ALTER PROCEDURE ',1)[1].split('END^',1)[0]
     texto.append('CREATE OR ALTER PROCEDURE ' + procedure + 'END^')
@@ -197,10 +202,10 @@ def main():
         conferir_principal(conexao, esperado)
         aplicar_ddl(conexao, destino, usuario_audit, senha_audit, origem)
         (pasta / 'resultado.json').write_text(json.dumps({
-            'triggers_log':33, 'triggers_financeiras':2, 'backups':backups,
+            'triggers_log':11, 'triggers_financeiras':2, 'backups':backups,
             'historico_antes':total_antes, 'pendentes_antigos':pendentes,
         }, indent=2), encoding='utf-8')
-        print('Aplicado: 33 triggers de LOG e 2 regras financeiras preservadas; EDS validado por leitura.')
+        print('Aplicado: 11 triggers de LOG e 2 regras financeiras preservadas; EDS validado por leitura.')
         print('Rollback do DDL:', pasta / 'rollback-triggers.sql')
     finally:
         conexao.close()
