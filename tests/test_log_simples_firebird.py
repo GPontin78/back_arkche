@@ -110,6 +110,9 @@ class LogSimplesFirebird(unittest.TestCase):
         self.audit.rollback()
         linhas = self.sql("SELECT USUARIO,TABELA,ACAO,VALOR_NOVO FROM LOG WHERE USUARIO='INTEGRACAO_API:10004'",banco=self.audit)
         self.assertEqual({r[1] for r in linhas},{'API','MOVIMENTACAO'})
+        registro_api = next(r for r in linhas if r[1]=='API')
+        self.assertIn('METODO=GET; STATUS_HTTP=200',registro_api[3])
+        self.assertFalse(registro_api[3].startswith('{'))
         self.assertNotIn('segredo-nao-copiar',str(linhas))
         self.assertNotIn('segredo=nao-copiar',str(linhas))
 
@@ -145,6 +148,8 @@ class LogSimplesFirebird(unittest.TestCase):
         linhas = self.sql("SELECT USUARIO,ACAO,VALOR_NOVO FROM LOG WHERE TABELA='IA'",banco=self.audit)
         self.assertTrue(any(r[1]=='MAURO_CONSULTA / SUCESSO' for r in linhas))
         self.assertTrue(any(r[1]=='MAURO_CONSULTA / FALHA' for r in linhas))
+        self.assertTrue(any('INTENCAO=SALDO' in r[2] for r in linhas))
+        self.assertTrue(all(not r[2].startswith('{') for r in linhas))
         self.assertNotIn('saldo privado',str(linhas))
 
     def test_leitura_dos_oito_campos_e_acesso_ao_historico(self):

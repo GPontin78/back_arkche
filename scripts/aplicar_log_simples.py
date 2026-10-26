@@ -11,10 +11,20 @@ sys.path.insert(0,str(ROOT))
 import config
 from scripts.aplicar_log_externo import backup, comandos_sql, conectar, testar_eds
 from scripts.gerar_log_simples import gerar_trigger
+from scripts.gerar_log_texto import gerar_trigger as gerar_trigger_texto
 from scripts.gerar_migracao_log import SCHEMA, TABELAS_PRINCIPAIS, texto_sql
 from scripts.unificar_log import conferir as conferir_anterior
 
 CAMPOS_LOG = ['ID_LOG','DATA_HORA','USUARIO','TABELA','ID_REGISTRO','ACAO','VALOR_ANTERIOR','VALOR_NOVO']
+
+
+def fonte_texto(tabela):
+    return 'AS\n'+gerar_trigger_texto(tabela).split('\nAS\n',1)[1].strip().removesuffix('^')
+
+
+def texto_ativo(triggers):
+    usuario = next(r for r in triggers if r[0]=='TG_AIUD_USUARIO_LOG')
+    return re.sub(r'\s+',' ',usuario[5]).strip()==re.sub(r'\s+',' ',fonte_texto('USUARIO')).strip()
 
 
 def conferir(conexao):
@@ -40,10 +50,17 @@ def conferir(conexao):
         atuais = cursor.fetchall()
         if {r[0] for r in atuais} != set(esperadas):
             raise RuntimeError('Catálogo de triggers diferente do esperado')
+        versao_json = versao_texto = True
         for nome,*dados in atuais:
             esperado = esperadas[nome]
-            if tuple(dados[:4]) != esperado[:4] or re.sub(r'\s+',' ',dados[4]).strip() != re.sub(r'\s+',' ',esperado[4]).strip():
+            if tuple(dados[:4]) != esperado[:4]:
                 raise RuntimeError(f'Trigger {nome} mudou desde o estudo')
+            corpo = re.sub(r'\s+',' ',dados[4]).strip()
+            versao_json = versao_json and corpo == re.sub(r'\s+',' ',esperado[4]).strip()
+            novo = fonte_texto(dados[0]) if nome.endswith('_LOG') else esperado[4]
+            versao_texto = versao_texto and corpo == re.sub(r'\s+',' ',novo).strip()
+        if not versao_json and not versao_texto:
+            raise RuntimeError('As fontes das triggers mudaram desde o estudo')
         return atuais,origem
     finally:
         cursor.close()
@@ -104,9 +121,32 @@ def salvar_rollback(pasta,triggers,origem):
     (pasta/'rollback-log-simples.sql').write_text('\n'.join(sql),encoding='utf-8')
 
 
+def aplicar_texto(conexao,arquivo):
+    atuais,origem = conferir(conexao)
+    if not origem.endswith('-simples') or not conferir_log(arquivo):
+        raise RuntimeError('Aplicar a LOG de oito campos antes das triggers em texto')
+    if texto_ativo(atuais):
+        conexao.rollback()
+        return False
+    cursor = conexao.cursor()
+    try:
+        for sql in comandos_sql((ROOT/'migrations/015_log_texto_simples.sql').read_text(encoding='utf-8')):
+            cursor.execute(sql)
+        conferir(conexao)
+        testar_eds(cursor)
+        conexao.commit()
+        return True
+    except Exception:
+        conexao.rollback()
+        raise
+    finally:
+        cursor.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--apply',action='store_true')
+    parser.add_argument('--texto',action='store_true',help='Usa resumos em texto nas 11 triggers, sem JSON')
     args = parser.parse_args()
     conexao = conectar(config.DB_HOST,config.DB_PORT,config.DB_NAME,config.DB_USER,config.DB_PASSWORD)
     arquivo = None
@@ -129,17 +169,21 @@ def main():
         cursor.close()
         arquivo.rollback()
         print(f'Conferido: {len(triggers)} triggers e {historicos} logs antigos preservados.',flush=True)
-        if not args.apply or origem.endswith('-simples'):
-            print('LOG simples já ativa.' if origem.endswith('-simples') else 'Somente leitura.',flush=True)
+        atualizado = origem.endswith('-simples') and (not args.texto or texto_ativo(triggers))
+        if not args.apply or atualizado:
+            print('Versão solicitada já ativa.' if atualizado else 'Somente leitura.',flush=True)
             return
         sufixo = datetime.now().strftime('%Y%m%d-%H%M%S')
-        pasta = ROOT/'.runtime'/('log-simples-'+sufixo)
+        pasta = ROOT/'.runtime'/(('log-texto-' if args.texto else 'log-simples-')+sufixo)
         pasta.mkdir(parents=True,exist_ok=False)
         salvar_rollback(pasta,triggers,origem)
         backups = [backup(config.DB_HOST,config.DB_PORT,config.DB_NAME,config.DB_USER,config.DB_PASSWORD,sufixo),backup(host,int(porta),nome,usuario,senha,sufixo)]
         print('Backups concluídos:',*backups,sep='\n',flush=True)
-        aplicar(conexao,arquivo)
-        (pasta/'resultado.json').write_text(json.dumps({'campos':CAMPOS_LOG,'historico_antes':historicos,'backups':backups},indent=2),encoding='utf-8')
+        if args.texto:
+            aplicar_texto(conexao,arquivo)
+        else:
+            aplicar(conexao,arquivo)
+        (pasta/'resultado.json').write_text(json.dumps({'campos':CAMPOS_LOG,'historico_antes':historicos,'backups':backups,'texto':args.texto},indent=2),encoding='utf-8')
         print('Aplicado: LOG com 8 campos; 11 triggers de LOG e 2 financeiras preservadas.',flush=True)
         print('Rollback:',pasta/'rollback-log-simples.sql',flush=True)
     finally:
