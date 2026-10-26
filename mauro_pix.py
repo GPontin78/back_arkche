@@ -371,7 +371,8 @@ def _obter_por_id(cursor, id_proposta, id_conversa, contexto, bloquear=True):
     return _proposta(cursor, id_proposta, id_conversa, contexto, bloquear)
 
 
-def _auditar(proposta, contexto, evento, resultado, *, motivo=None, valor=None, id_movimentacao=None):
+def _auditar(proposta, contexto, evento, resultado, *, motivo=None, valor=None,
+             id_movimentacao=None, cursor=None):
     return registrar_evento_flask(
         evento=evento, resultado=resultado, motivo=motivo,
         id_usuario=contexto['id_usuario'], id_conta=contexto['id_conta'],
@@ -379,6 +380,7 @@ def _auditar(proposta, contexto, evento, resultado, *, motivo=None, valor=None, 
         operacao='EXECUTE' if evento == 'MAURO_PIX_EXECUTADO' else 'UPDATE',
         origem=request.path if request else '/api/v1/assistente/pix',
         dados={'proposta_id': int(proposta), 'movimentacao_id': id_movimentacao},
+        cursor=cursor, obrigatorio=True,
     )
 
 
@@ -567,11 +569,11 @@ def cancelar_proposta(id_conversa, id_proposta, contexto_fn, conversa_fn):
                           MOTIVO_STATUS = ? WHERE ID_PROPOSTA = ? AND STATUS IN ('COLETANDO', 'PREPARADA')''',
                 (status_final, data_atual(), 'Cancelada pelo cliente antes da autorização.' if status_final == 'CANCELADA' else 'Proposta expirada antes do cancelamento.', int(id_proposta)),
             )
-        con.commit()
         if status_final == 'CANCELADA':
-            _auditar(id_proposta, contexto, 'MAURO_PIX_PROPOSTA_CANCELADA', 'CANCELADA', valor=row[8])
+            _auditar(id_proposta, contexto, 'MAURO_PIX_PROPOSTA_CANCELADA', 'CANCELADA', valor=row[8], cursor=cursor)
         elif status_final == 'EXPIRADA':
-            _auditar(id_proposta, contexto, 'MAURO_PIX_PROPOSTA_EXPIRADA', 'EXPIRADA', valor=row[8])
+            _auditar(id_proposta, contexto, 'MAURO_PIX_PROPOSTA_EXPIRADA', 'EXPIRADA', valor=row[8], cursor=cursor)
+        con.commit()
         cursor.execute('SELECT * FROM MAURO_PIX_PROPOSTA WHERE ID_PROPOSTA = ?', (int(id_proposta),))
         mensagem = 'Proposta cancelada. Nenhum Pix foi enviado.' if status_final == 'CANCELADA' else 'A proposta já não está ativa.'
         return jsonify({'mensagem': mensagem, 'proposta_pix': _card(cursor.fetchone())}), 200
@@ -654,8 +656,8 @@ def confirmar_proposta(id_conversa, id_proposta, contexto_fn, conversa_fn):
         agora = data_atual()
         if decisao == 'EXPIRADA':
             _atualizar_expiracao(cursor, id_proposta)
+            _auditar(id_proposta, contexto, 'MAURO_PIX_PROPOSTA_EXPIRADA', 'EXPIRADA', valor=row[8], cursor=cursor)
             con.commit()
-            _auditar(id_proposta, contexto, 'MAURO_PIX_PROPOSTA_EXPIRADA', 'EXPIRADA', valor=row[8])
             cursor.execute('SELECT * FROM MAURO_PIX_PROPOSTA WHERE ID_PROPOSTA = ?', (int(id_proposta),))
             return jsonify({'mensagem': 'Esta proposta expirou. Prepare um novo Pix para continuar.', 'proposta_pix': _card(cursor.fetchone())}), 410
 
@@ -666,8 +668,8 @@ def confirmar_proposta(id_conversa, id_proposta, contexto_fn, conversa_fn):
                           MOTIVO_STATUS = 'O acesso à conta de origem foi revogado.'
                    WHERE ID_PROPOSTA = ? AND STATUS = 'PREPARADA' ''', (int(id_proposta),),
             )
+            _auditar(id_proposta, contexto, 'MAURO_PIX_RECUSADO', 'RECUSADO', motivo='Acesso à conta de origem revogado.', valor=row[8], cursor=cursor)
             con.commit()
-            _auditar(id_proposta, contexto, 'MAURO_PIX_RECUSADO', 'RECUSADO', motivo='Acesso à conta de origem revogado.', valor=row[8])
             return jsonify({'mensagem': 'Seu acesso à conta de origem não está mais ativo. O Pix foi recusado.', 'proposta_pix': {'id': int(id_proposta), 'status': 'RECUSADA'}}), 403
         if not _chave_ainda_vinculada(cursor, row):
             cursor.execute(
@@ -675,8 +677,8 @@ def confirmar_proposta(id_conversa, id_proposta, contexto_fn, conversa_fn):
                           MOTIVO_STATUS = 'A chave Pix não está mais vinculada ao destinatário conferido.'
                    WHERE ID_PROPOSTA = ? AND STATUS = 'PREPARADA' ''', (int(id_proposta),),
             )
+            _auditar(id_proposta, contexto, 'MAURO_PIX_RECUSADO', 'RECUSADO', motivo='A chave Pix mudou após a conferência.', valor=row[8], cursor=cursor)
             con.commit()
-            _auditar(id_proposta, contexto, 'MAURO_PIX_RECUSADO', 'RECUSADO', motivo='A chave Pix mudou após a conferência.', valor=row[8])
             return jsonify({'mensagem': 'A chave Pix mudou ou deixou de estar vinculada ao destinatário conferido. Prepare uma nova proposta.', 'proposta_pix': {'id': int(id_proposta), 'status': 'RECUSADA'}}), 409
 
         cursor.execute('SELECT ID_USUARIO FROM USUARIO WHERE ID_USUARIO = ? WITH LOCK', (contexto['id_usuario'],))
@@ -702,9 +704,9 @@ def confirmar_proposta(id_conversa, id_proposta, contexto_fn, conversa_fn):
             (contexto['id_usuario'], contexto['id_conta'], int(id_proposta), 'VALIDO' if pin_pessoal else 'RECUSADO', agora),
         )
         if not pin_pessoal:
-            con.commit()
             motivo_pin = 'PIN inválido.' if not verificacao.get('valido') else 'É necessário um PIN pessoal permanente.'
-            _auditar(id_proposta, contexto, 'MAURO_PIX_CONFIRMACAO_RECUSADA', 'RECUSADO', motivo=motivo_pin, valor=row[8])
+            _auditar(id_proposta, contexto, 'MAURO_PIX_CONFIRMACAO_RECUSADA', 'RECUSADO', motivo=motivo_pin, valor=row[8], cursor=cursor)
+            con.commit()
             if verificacao.get('valido'):
                 return jsonify({'mensagem': 'Para autorizar Pix pelo MAURO, configure e use seu PIN pessoal permanente. A proposta continua pendente.'}), 403
             return jsonify({'mensagem': 'PIN incorreto. A proposta continua pendente; confira os dados e tente novamente.'}), 401
@@ -720,8 +722,8 @@ def confirmar_proposta(id_conversa, id_proposta, contexto_fn, conversa_fn):
                    WHERE ID_PROPOSTA = ? AND STATUS = 'PREPARADA' ''',
                 (erro_operacao.mensagem[:500], int(id_proposta)),
             )
+            _auditar(id_proposta, contexto, 'MAURO_PIX_RECUSADO', 'RECUSADO', motivo=erro_operacao.mensagem, valor=row[8], cursor=cursor)
             con.commit()
-            _auditar(id_proposta, contexto, 'MAURO_PIX_RECUSADO', 'RECUSADO', motivo=erro_operacao.mensagem, valor=row[8])
             cursor.execute('SELECT * FROM MAURO_PIX_PROPOSTA WHERE ID_PROPOSTA = ?', (int(id_proposta),))
             return jsonify({'mensagem': f'O Pix não foi realizado: {erro_operacao.mensagem}', 'proposta_pix': _card(cursor.fetchone())}), erro_operacao.status
 
@@ -734,10 +736,10 @@ def confirmar_proposta(id_conversa, id_proposta, contexto_fn, conversa_fn):
         )
         if not cursor.fetchone():
             raise RuntimeError('Proposta alterada durante a confirmação')
+        _auditar(id_proposta, contexto, 'MAURO_PIX_CONFIRMADO', 'AUTORIZADO', valor=row[8], cursor=cursor)
+        _auditar(id_proposta, contexto, 'MAURO_PIX_EXECUTADO', 'SUCESSO', valor=row[8], id_movimentacao=operacao['id_movimentacao'], cursor=cursor)
         con.commit()
         eventos_publicar = operacao.get('eventos') or []
-        _auditar(id_proposta, contexto, 'MAURO_PIX_CONFIRMADO', 'AUTORIZADO', valor=row[8])
-        _auditar(id_proposta, contexto, 'MAURO_PIX_EXECUTADO', 'SUCESSO', valor=row[8], id_movimentacao=operacao['id_movimentacao'])
         cursor.execute('SELECT * FROM MAURO_PIX_PROPOSTA WHERE ID_PROPOSTA = ?', (int(id_proposta),))
         card = _card(cursor.fetchone())
         tentar_publicar_eventos(eventos_publicar)

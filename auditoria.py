@@ -1,4 +1,4 @@
-"""Auditoria bancária: outbox no Firebird principal, arquivo independente e Redis ao vivo."""
+"""Log direto no Firebird separado; o worker termina a entrega da outbox antiga."""
 from __future__ import annotations
 
 import hashlib
@@ -98,11 +98,88 @@ def _origem_id():
     return os.getenv('ARKHE_AUDIT_SOURCE_ID') or ('arkhe-' + hashlib.sha256(base.encode('utf-8')).hexdigest()[:24])
 
 
+def _inserir_evento(cursor, evento, resultado, motivo, id_usuario, id_conta,
+                    valor, id_registro, operacao, origem, dados):
+    # CREATE/EXECUTE são ações do assistente, e não operações DML do Firebird.
+    operacao = {'CREATE': 'INSERT', 'EXECUTE': 'UPDATE'}.get(operacao, operacao)
+    if operacao not in ('INSERT', 'UPDATE', 'DELETE', 'READ', 'DENY'):
+        raise ValueError('Operação de log inválida')
+    snapshot = json.dumps(dados or {}, ensure_ascii=False, separators=(',', ':'), default=str)
+    if len(snapshot) > 4000:
+        raise ValueError('Dados do log excedem 4000 caracteres')
+    parametros = (
+        str(evento)[:48], operacao, id_registro, id_usuario, id_conta, valor,
+        str(resultado)[:24], str(motivo)[:500] if motivo else None,
+        str(origem or '/flask')[:160], snapshot,
+    )
+    cursor.execute("SELECT 1 FROM RDB$TRIGGERS WHERE RDB$TRIGGER_NAME = 'TG_AI_MOVIMENTACAO_LOG'")
+    if cursor.fetchone():
+        cursor.execute('''EXECUTE BLOCK (
+            P_EVENTO VARCHAR(48) = ?, P_OPERACAO VARCHAR(12) = ?,
+            P_ID_REGISTRO BIGINT = ?, P_ID_USUARIO INTEGER = ?, P_ID_CONTA INTEGER = ?,
+            P_VALOR DECIMAL(18,2) = ?, P_RESULTADO VARCHAR(24) = ?,
+            P_MOTIVO VARCHAR(500) = ?, P_ORIGEM VARCHAR(160) = ?, P_DADOS VARCHAR(4000) = ?
+        ) AS
+        DECLARE VARIABLE V_DESTINO VARCHAR(512);
+        DECLARE VARIABLE V_USUARIO VARCHAR(63);
+        DECLARE VARIABLE V_SENHA VARCHAR(255);
+        DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+        BEGIN
+            SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+            FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+            INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+            IF (V_DESTINO IS NULL) THEN
+                EXCEPTION EX_LOG_CONFIGURACAO;
+
+            EXECUTE STATEMENT (
+                'INSERT INTO AUDITORIA_EVENTO (
+                    ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+                    ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO, MOTIVO,
+                    ORIGEM, DADOS_NOVOS, CRIADO_EM
+                ) VALUES (
+                    :origem_id, :id_evento, :evento, ''FLASK'', :operacao,
+                    :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+                    :motivo, :origem, :dados, :criado_em
+                )'
+            ) (
+                origem_id := :V_ORIGEM_ID,
+                id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+                evento := :P_EVENTO, operacao := :P_OPERACAO,
+                id_registro := :P_ID_REGISTRO, id_usuario := :P_ID_USUARIO,
+                id_conta := :P_ID_CONTA, valor := :P_VALOR, resultado := :P_RESULTADO,
+                motivo := :P_MOTIVO, origem := :P_ORIGEM, dados := :P_DADOS,
+                criado_em := CURRENT_TIMESTAMP
+            )
+            ON EXTERNAL DATA SOURCE :V_DESTINO
+            AS USER :V_USUARIO
+            PASSWORD :V_SENHA
+            WITH COMMON TRANSACTION;
+        END''', parametros)
+        return True
+
+    # Compatibilidade durante a publicação: antes da migração 011, usa o log atual.
+    cursor.execute("SELECT 1 FROM RDB$RELATIONS WHERE RDB$RELATION_NAME = 'AUDITORIA_EVENTO_OUTBOX'")
+    if not cursor.fetchone():
+        return False
+    cursor.execute('''INSERT INTO AUDITORIA_EVENTO_OUTBOX
+        (EVENTO, TABELA_ORIGEM, OPERACAO, ID_REGISTRO, ID_USUARIO, ID_CONTA,
+         VALOR, RESULTADO, MOTIVO, ORIGEM, DADOS_NOVOS)
+        VALUES (?, 'FLASK', ?, ?, ?, ?, ?, ?, ?, ?, ?)''', parametros)
+    return True
+
+
 def registrar_evento_flask(*, evento, resultado, motivo=None, id_usuario=None,
                            id_conta=None, valor=None, id_registro=None,
-                           operacao='DENY', origem=None, dados=None):
-    """Grava eventos Flask no mesmo outbox durável usado pelo worker de auditoria."""
+                           operacao='DENY', origem=None, dados=None, cursor=None,
+                           obrigatorio=True):
+    """Com cursor, o log participa do commit/rollback da própria operação."""
     global _ULTIMO_AVISO_OUTBOX_HTTP
+    if cursor is not None:
+        if not _inserir_evento(cursor, evento, resultado, motivo, id_usuario, id_conta,
+                              valor, id_registro, operacao, origem, dados):
+            raise RuntimeError('Estrutura de log não instalada')
+        return True
+
     conexao = cursor = None
     try:
         conexao = fdb.connect(
@@ -111,27 +188,15 @@ def registrar_evento_flask(*, evento, resultado, motivo=None, id_usuario=None,
             password=current_app.config['DB_PASSWORD'], charset='UTF8',
         )
         cursor = conexao.cursor()
-        cursor.execute(
-            "SELECT COUNT(*) FROM RDB$RELATIONS WHERE UPPER(TRIM(RDB$RELATION_NAME)) = 'AUDITORIA_EVENTO_OUTBOX' AND RDB$VIEW_BLR IS NULL"
-        )
-        if int(cursor.fetchone()[0] or 0) == 0:
+        if not _inserir_evento(cursor, evento, resultado, motivo, id_usuario, id_conta,
+                              valor, id_registro, operacao, origem, dados):
             agora = time.monotonic()
             if agora - _ULTIMO_AVISO_OUTBOX_HTTP >= 60:
                 current_app.logger.warning('Outbox de auditoria ainda não está instalado; eventos Flask serão retomados após a migração.')
                 _ULTIMO_AVISO_OUTBOX_HTTP = agora
+            if obrigatorio:
+                raise RuntimeError('Estrutura de log não instalada')
             return False
-        snapshot = json.dumps(dados or {}, ensure_ascii=False, separators=(',', ':'), default=str)
-        if len(snapshot) > 4000:
-            snapshot = '{"detalhes":"omitidos por limite de tamanho"}'
-        cursor.execute(
-            '''INSERT INTO AUDITORIA_EVENTO_OUTBOX
-               (EVENTO, TABELA_ORIGEM, OPERACAO, ID_REGISTRO, ID_USUARIO, ID_CONTA,
-                VALOR, RESULTADO, MOTIVO, ORIGEM, DADOS_NOVOS)
-               VALUES (?, 'FLASK', ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-            (str(evento)[:48], str(operacao)[:12], id_registro, id_usuario, id_conta,
-             valor, str(resultado)[:24], str(motivo)[:500] if motivo else None,
-             str(origem or '/flask')[:160], snapshot),
-        )
         conexao.commit()
         return True
     except Exception:
@@ -141,9 +206,11 @@ def registrar_evento_flask(*, evento, resultado, motivo=None, id_usuario=None,
             except Exception:
                 pass
         try:
-            current_app.logger.exception('Não foi possível persistir evento Flask no outbox de auditoria')
+            current_app.logger.exception('Não foi possível persistir o evento no LOG')
         except RuntimeError:
             logging.getLogger('arkhe.auditoria').exception('Falha ao persistir evento Flask')
+        if obrigatorio:
+            raise
         return False
     finally:
         if cursor:
@@ -165,13 +232,11 @@ def _preparar_contexto_trigger():
     """Vincula ator e rota à conexão desta requisição; USER_SESSION sobrevive a commits."""
     try:
         id_usuario = descobre_id_usuario()
-        if not id_usuario:
-            return
         cursor = con.cursor()
         try:
             cursor.execute(
                 "SELECT RDB$SET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO', ?) FROM RDB$DATABASE",
-                (str(id_usuario),),
+                (str(id_usuario) if id_usuario else None,),
             )
             cursor.fetchone()
             cursor.execute(
@@ -192,10 +257,19 @@ def _preparar_contexto_trigger():
 
 def _registrar_resposta_relevante(response):
     caminho = request.path or ''
+    assistente = caminho.startswith('/api/v1/assistente/')
+    consulta_assistente = assistente and request.method == 'GET'
     login = caminho in ('/login', '/login_usuario')
     escrita_recusada = request.method in ('POST', 'PUT', 'PATCH', 'DELETE') and response.status_code >= 400
     login_recusado = login and response.status_code >= 400
-    if not login and not escrita_recusada:
+    if not login and not escrita_recusada and not consulta_assistente:
+        if request.method in ('POST', 'PUT', 'PATCH', 'DELETE') and response.status_code < 400:
+            try:
+                cliente = _redis()
+                cliente.publish(CANAL_AUDITORIA, json.dumps({'origem': caminho}))
+                cliente.close()
+            except Exception:
+                pass  # O feed também se atualiza a cada 30 segundos.
         return response
     try:
         id_usuario = descobre_id_usuario()
@@ -210,7 +284,11 @@ def _registrar_resposta_relevante(response):
                 finally:
                     cursor.close()
         id_conta = descobre_id_conta()
-        if login:
+        if assistente:
+            evento = 'MAURO_REQUISICAO'
+            resultado = 'SUCESSO' if response.status_code < 400 else 'FALHA' if response.status_code >= 500 else 'RECUSADO'
+            motivo = f'Requisição do assistente (HTTP {response.status_code})'
+        elif login:
             cookie_autenticacao = any(cookie.startswith('access_token=') for cookie in response.headers.getlist('Set-Cookie'))
             evento = ('TENTATIVA_LOGIN_RECUSADA' if login_recusado else
                       'LOGIN_REALIZADO' if cookie_autenticacao else 'LOGIN_DESAFIO_INICIADO')
@@ -224,11 +302,14 @@ def _registrar_resposta_relevante(response):
         registrar_evento_flask(
             evento=evento, resultado=resultado, motivo=motivo,
             id_usuario=id_usuario, id_conta=id_conta,
-            operacao='DENY', origem=caminho,
-            dados={'metodo': request.method, 'status_http': response.status_code},
+            operacao='READ' if consulta_assistente or (login and response.status_code < 400) else 'DENY', origem=caminho,
+            dados={'metodo': request.method, 'status_http': response.status_code,
+                   **(request.view_args or {})},
         )
     except Exception:
         current_app.logger.exception('Falha ao registrar evento HTTP recusado')
+        if assistente or login:
+            return current_app.make_response((jsonify({'mensagem': 'Não foi possível registrar o log da operação.'}), 503))
     return response
 
 
@@ -332,12 +413,12 @@ def listar_eventos_admin():
         conexao = _conectar_banco_auditoria()
         cursor = conexao.cursor()
         cursor.execute(
-            f'''SELECT FIRST {limite} ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM,
+            f'''SELECT FIRST {limite} ID_AUDITORIA, EVENTO, TABELA_ORIGEM,
                        OPERACAO, ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR,
                        RESULTADO, MOTIVO, ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
                 FROM AUDITORIA_EVENTO
                 {('WHERE ' + ' AND '.join(where)) if where else ''}
-                ORDER BY CRIADO_EM DESC, ID_EVENTO_ORIGEM DESC''',
+                ORDER BY CRIADO_EM DESC, ID_AUDITORIA DESC''',
             tuple(params),
         )
         eventos = [_linha_para_json(row) for row in cursor.fetchall()]
@@ -363,10 +444,10 @@ def detalhe_evento_admin(id_evento):
         conexao = _conectar_banco_auditoria()
         cursor = conexao.cursor()
         cursor.execute(
-            '''SELECT ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            '''SELECT ID_AUDITORIA, EVENTO, TABELA_ORIGEM, OPERACAO,
                       ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
                       MOTIVO, ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
-               FROM AUDITORIA_EVENTO WHERE ID_EVENTO_ORIGEM = ?''',
+               FROM AUDITORIA_EVENTO WHERE ID_AUDITORIA = ?''',
             (int(id_evento),),
         )
         row = cursor.fetchone()

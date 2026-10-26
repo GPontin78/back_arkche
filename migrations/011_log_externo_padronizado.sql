@@ -1,0 +1,5889 @@
+/* Log direto no Firebird separado. Publicar o backend ANTES deste DDL.
+   Executar com backup verificado. Não altera nem apaga registros existentes.
+   A transação comum acompanha commit/rollback; EDS não oferece commit em duas fases.
+   As filas antigas permanecem disponíveis para o worker terminar a entrega.
+*/
+SET BAIL ON;
+SET AUTODDL OFF;
+CREATE SEQUENCE GEN_LOG_EVENTO;
+CREATE EXCEPTION EX_LOG_CONFIGURACAO 'Configure o destino do LOG nesta conexao antes de alterar dados.';
+CREATE TABLE CONFIGURACAO_LOG (
+    ID_CONFIGURACAO SMALLINT NOT NULL PRIMARY KEY CHECK (ID_CONFIGURACAO = 1),
+    DATA_SOURCE VARCHAR(512) NOT NULL,
+    USUARIO VARCHAR(63) NOT NULL,
+    SENHA VARCHAR(255) NOT NULL,
+    ORIGEM_ID VARCHAR(80) NOT NULL
+);
+/* A configuração é inserida por parâmetros pelo aplicador, antes do COMMIT.
+   Não conceder SELECT nesta tabela aos usuários de negócio. */
+SET TERM ^;
+
+CREATE OR ALTER TRIGGER TG_AI_ACESSO_CONTA_LOG FOR ACESSO_CONTA
+ACTIVE AFTER INSERT POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''ACESSO_CONTA'', ''INSERT'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'ACESSO_CONTA',
+        id_registro := NEW.ID_ACESSO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA,
+        valor := NULL,
+        resultado := 'REGISTRADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := NULL,
+        depois := '{"id_acesso":' || COALESCE(CAST(NEW.ID_ACESSO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(NEW.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(NEW.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE(CAST(NEW.STATUS AS VARCHAR(80)), 'null') ||
+                    ',"id_concedido_por":' || COALESCE(CAST(NEW.ID_CONCEDIDO_POR AS VARCHAR(80)), 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AI_ACESSO_CONTA_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AI_ACESSO_CONTA_LOG^
+
+CREATE OR ALTER TRIGGER TG_AU_ACESSO_CONTA_LOG FOR ACESSO_CONTA
+ACTIVE AFTER UPDATE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''ACESSO_CONTA'', ''UPDATE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'ACESSO_CONTA',
+        id_registro := NEW.ID_ACESSO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA,
+        valor := NULL,
+        resultado := 'ATUALIZADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_acesso":' || COALESCE(CAST(OLD.ID_ACESSO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(OLD.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(OLD.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE(CAST(OLD.STATUS AS VARCHAR(80)), 'null') ||
+                    ',"id_concedido_por":' || COALESCE(CAST(OLD.ID_CONCEDIDO_POR AS VARCHAR(80)), 'null') || '}',
+        depois := '{"id_acesso":' || COALESCE(CAST(NEW.ID_ACESSO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(NEW.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(NEW.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE(CAST(NEW.STATUS AS VARCHAR(80)), 'null') ||
+                    ',"id_concedido_por":' || COALESCE(CAST(NEW.ID_CONCEDIDO_POR AS VARCHAR(80)), 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AU_ACESSO_CONTA_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AU_ACESSO_CONTA_LOG^
+
+CREATE OR ALTER TRIGGER TG_AD_ACESSO_CONTA_LOG FOR ACESSO_CONTA
+ACTIVE AFTER DELETE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''ACESSO_CONTA'', ''DELETE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'ACESSO_CONTA',
+        id_registro := OLD.ID_ACESSO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := OLD.ID_CONTA,
+        valor := NULL,
+        resultado := 'EXCLUIDO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_acesso":' || COALESCE(CAST(OLD.ID_ACESSO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(OLD.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(OLD.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE(CAST(OLD.STATUS AS VARCHAR(80)), 'null') ||
+                    ',"id_concedido_por":' || COALESCE(CAST(OLD.ID_CONCEDIDO_POR AS VARCHAR(80)), 'null') || '}',
+        depois := NULL,
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AD_ACESSO_CONTA_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AD_ACESSO_CONTA_LOG^
+
+CREATE OR ALTER TRIGGER TG_AI_AGENDAMENTO_EXECUCAO_LOG FOR AGENDAMENTO_EXECUCAO
+ACTIVE AFTER INSERT POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''AGENDAMENTO_EXECUCAO'', ''INSERT'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'AGENDAMENTO_EXECUCAO',
+        id_registro := NEW.ID_AGENDAMENTO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NULL,
+        valor := NULL,
+        resultado := 'REGISTRADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := NULL,
+        depois := '{"id_agendamento":' || COALESCE(CAST(NEW.ID_AGENDAMENTO AS VARCHAR(80)), 'null') ||
+                    ',"id_movimentacao":' || COALESCE(CAST(NEW.ID_MOVIMENTACAO AS VARCHAR(80)), 'null') ||
+                    ',"executado_em":' || COALESCE('"' || CAST(NEW.EXECUTADO_EM AS VARCHAR(80)) || '"', 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AI_AGENDAMENTO_EXECUCAO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AI_AGENDAMENTO_EXECUCAO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AU_AGENDAMENTO_EXECUCAO_LOG FOR AGENDAMENTO_EXECUCAO
+ACTIVE AFTER UPDATE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''AGENDAMENTO_EXECUCAO'', ''UPDATE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'AGENDAMENTO_EXECUCAO',
+        id_registro := NEW.ID_AGENDAMENTO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NULL,
+        valor := NULL,
+        resultado := 'ATUALIZADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_agendamento":' || COALESCE(CAST(OLD.ID_AGENDAMENTO AS VARCHAR(80)), 'null') ||
+                    ',"id_movimentacao":' || COALESCE(CAST(OLD.ID_MOVIMENTACAO AS VARCHAR(80)), 'null') ||
+                    ',"executado_em":' || COALESCE('"' || CAST(OLD.EXECUTADO_EM AS VARCHAR(80)) || '"', 'null') || '}',
+        depois := '{"id_agendamento":' || COALESCE(CAST(NEW.ID_AGENDAMENTO AS VARCHAR(80)), 'null') ||
+                    ',"id_movimentacao":' || COALESCE(CAST(NEW.ID_MOVIMENTACAO AS VARCHAR(80)), 'null') ||
+                    ',"executado_em":' || COALESCE('"' || CAST(NEW.EXECUTADO_EM AS VARCHAR(80)) || '"', 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AU_AGENDAMENTO_EXECUCAO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AU_AGENDAMENTO_EXECUCAO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AD_AGENDAMENTO_EXECUCAO_LOG FOR AGENDAMENTO_EXECUCAO
+ACTIVE AFTER DELETE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''AGENDAMENTO_EXECUCAO'', ''DELETE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'AGENDAMENTO_EXECUCAO',
+        id_registro := OLD.ID_AGENDAMENTO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NULL,
+        valor := NULL,
+        resultado := 'EXCLUIDO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_agendamento":' || COALESCE(CAST(OLD.ID_AGENDAMENTO AS VARCHAR(80)), 'null') ||
+                    ',"id_movimentacao":' || COALESCE(CAST(OLD.ID_MOVIMENTACAO AS VARCHAR(80)), 'null') ||
+                    ',"executado_em":' || COALESCE('"' || CAST(OLD.EXECUTADO_EM AS VARCHAR(80)) || '"', 'null') || '}',
+        depois := NULL,
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AD_AGENDAMENTO_EXECUCAO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AD_AGENDAMENTO_EXECUCAO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AI_AGENDAMENTO_FINANCEIRO_LOG FOR AGENDAMENTO_FINANCEIRO
+ACTIVE AFTER INSERT POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''AGENDAMENTO_FINANCEIRO'', ''INSERT'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'AGENDAMENTO_FINANCEIRO',
+        id_registro := NEW.ID_AGENDAMENTO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA,
+        valor := NEW.VALOR,
+        resultado := 'REGISTRADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := NULL,
+        depois := '{"id_agendamento":' || COALESCE(CAST(NEW.ID_AGENDAMENTO AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(NEW.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(NEW.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_destino":' || COALESCE(CAST(NEW.ID_CONTA_DESTINO AS VARCHAR(80)), 'null') ||
+                    ',"id_cobranca":' || COALESCE(CAST(NEW.ID_COBRANCA AS VARCHAR(80)), 'null') ||
+                    ',"valor":' || COALESCE(CAST(NEW.VALOR AS VARCHAR(80)), 'null') ||
+                    ',"data_agendada":' || COALESCE('"' || CAST(NEW.DATA_AGENDADA AS VARCHAR(80)) || '"', 'null') ||
+                    ',"status":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.STATUS AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"tentativas":' || COALESCE(CAST(NEW.TENTATIVAS AS VARCHAR(80)), 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AI_AGENDAMENTO_FINANCEIRO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AI_AGENDAMENTO_FINANCEIRO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AU_AGENDAMENTO_FINANCEIRO_LOG FOR AGENDAMENTO_FINANCEIRO
+ACTIVE AFTER UPDATE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''AGENDAMENTO_FINANCEIRO'', ''UPDATE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'AGENDAMENTO_FINANCEIRO',
+        id_registro := NEW.ID_AGENDAMENTO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA,
+        valor := NEW.VALOR,
+        resultado := 'ATUALIZADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_agendamento":' || COALESCE(CAST(OLD.ID_AGENDAMENTO AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(OLD.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(OLD.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_destino":' || COALESCE(CAST(OLD.ID_CONTA_DESTINO AS VARCHAR(80)), 'null') ||
+                    ',"id_cobranca":' || COALESCE(CAST(OLD.ID_COBRANCA AS VARCHAR(80)), 'null') ||
+                    ',"valor":' || COALESCE(CAST(OLD.VALOR AS VARCHAR(80)), 'null') ||
+                    ',"data_agendada":' || COALESCE('"' || CAST(OLD.DATA_AGENDADA AS VARCHAR(80)) || '"', 'null') ||
+                    ',"status":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.STATUS AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"tentativas":' || COALESCE(CAST(OLD.TENTATIVAS AS VARCHAR(80)), 'null') || '}',
+        depois := '{"id_agendamento":' || COALESCE(CAST(NEW.ID_AGENDAMENTO AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(NEW.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(NEW.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_destino":' || COALESCE(CAST(NEW.ID_CONTA_DESTINO AS VARCHAR(80)), 'null') ||
+                    ',"id_cobranca":' || COALESCE(CAST(NEW.ID_COBRANCA AS VARCHAR(80)), 'null') ||
+                    ',"valor":' || COALESCE(CAST(NEW.VALOR AS VARCHAR(80)), 'null') ||
+                    ',"data_agendada":' || COALESCE('"' || CAST(NEW.DATA_AGENDADA AS VARCHAR(80)) || '"', 'null') ||
+                    ',"status":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.STATUS AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"tentativas":' || COALESCE(CAST(NEW.TENTATIVAS AS VARCHAR(80)), 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AU_AGENDAMENTO_FINANCEIRO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AU_AGENDAMENTO_FINANCEIRO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AD_AGENDAMENTO_FINANCEIRO_LOG FOR AGENDAMENTO_FINANCEIRO
+ACTIVE AFTER DELETE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''AGENDAMENTO_FINANCEIRO'', ''DELETE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'AGENDAMENTO_FINANCEIRO',
+        id_registro := OLD.ID_AGENDAMENTO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := OLD.ID_CONTA,
+        valor := OLD.VALOR,
+        resultado := 'EXCLUIDO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_agendamento":' || COALESCE(CAST(OLD.ID_AGENDAMENTO AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(OLD.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(OLD.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_destino":' || COALESCE(CAST(OLD.ID_CONTA_DESTINO AS VARCHAR(80)), 'null') ||
+                    ',"id_cobranca":' || COALESCE(CAST(OLD.ID_COBRANCA AS VARCHAR(80)), 'null') ||
+                    ',"valor":' || COALESCE(CAST(OLD.VALOR AS VARCHAR(80)), 'null') ||
+                    ',"data_agendada":' || COALESCE('"' || CAST(OLD.DATA_AGENDADA AS VARCHAR(80)) || '"', 'null') ||
+                    ',"status":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.STATUS AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"tentativas":' || COALESCE(CAST(OLD.TENTATIVAS AS VARCHAR(80)), 'null') || '}',
+        depois := NULL,
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AD_AGENDAMENTO_FINANCEIRO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AD_AGENDAMENTO_FINANCEIRO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AI_AUDITORIA_LIMITE_LOG FOR AUDITORIA_LIMITE
+ACTIVE AFTER INSERT POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''AUDITORIA_LIMITE'', ''INSERT'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := CASE NEW.EVENTO WHEN 'OPERACAO_RECUSADA' THEN 'OPERACAO_RECUSADA_LIMITE' ELSE 'LIMITE_POLITICA_ALTERADA' END,
+        id_registro := NEW.ID_AUDITORIA,
+        id_usuario := COALESCE(CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER), NEW.ID_ADMINISTRADOR, NEW.ID_USUARIO),
+        id_conta := NEW.ID_CONTA,
+        valor := NEW.VALOR_SOLICITADO,
+        resultado := CASE NEW.EVENTO WHEN 'OPERACAO_RECUSADA' THEN 'RECUSADO' ELSE 'SUCESSO' END,
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := NULL,
+        depois := '{"id_auditoria":' || COALESCE(CAST(NEW.ID_AUDITORIA AS VARCHAR(80)), 'null') ||
+                    ',"evento":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.EVENTO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"id_administrador":' || COALESCE(CAST(NEW.ID_ADMINISTRADOR AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(NEW.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(NEW.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"tipo_conta":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.TIPO_CONTA AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"operacao":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.OPERACAO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"periodo":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.PERIODO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"valor_solicitado":' || COALESCE(CAST(NEW.VALOR_SOLICITADO AS VARCHAR(80)), 'null') ||
+                    ',"valor_acumulado":' || COALESCE(CAST(NEW.VALOR_ACUMULADO AS VARCHAR(80)), 'null') ||
+                    ',"limite_por_operacao":' || COALESCE(CAST(NEW.LIMITE_POR_OPERACAO AS VARCHAR(80)), 'null') ||
+                    ',"limite_acumulado":' || COALESCE(CAST(NEW.LIMITE_ACUMULADO AS VARCHAR(80)), 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AI_AUDITORIA_LIMITE_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AI_AUDITORIA_LIMITE_LOG^
+
+CREATE OR ALTER TRIGGER TG_AU_AUDITORIA_LIMITE_LOG FOR AUDITORIA_LIMITE
+ACTIVE AFTER UPDATE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''AUDITORIA_LIMITE'', ''UPDATE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'AUDITORIA_LIMITE',
+        id_registro := NEW.ID_AUDITORIA,
+        id_usuario := COALESCE(CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER), NEW.ID_ADMINISTRADOR, NEW.ID_USUARIO),
+        id_conta := NEW.ID_CONTA,
+        valor := NEW.VALOR_SOLICITADO,
+        resultado := 'ATUALIZADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_auditoria":' || COALESCE(CAST(OLD.ID_AUDITORIA AS VARCHAR(80)), 'null') ||
+                    ',"evento":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.EVENTO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"id_administrador":' || COALESCE(CAST(OLD.ID_ADMINISTRADOR AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(OLD.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(OLD.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"tipo_conta":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.TIPO_CONTA AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"operacao":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.OPERACAO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"periodo":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.PERIODO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"valor_solicitado":' || COALESCE(CAST(OLD.VALOR_SOLICITADO AS VARCHAR(80)), 'null') ||
+                    ',"valor_acumulado":' || COALESCE(CAST(OLD.VALOR_ACUMULADO AS VARCHAR(80)), 'null') ||
+                    ',"limite_por_operacao":' || COALESCE(CAST(OLD.LIMITE_POR_OPERACAO AS VARCHAR(80)), 'null') ||
+                    ',"limite_acumulado":' || COALESCE(CAST(OLD.LIMITE_ACUMULADO AS VARCHAR(80)), 'null') || '}',
+        depois := '{"id_auditoria":' || COALESCE(CAST(NEW.ID_AUDITORIA AS VARCHAR(80)), 'null') ||
+                    ',"evento":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.EVENTO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"id_administrador":' || COALESCE(CAST(NEW.ID_ADMINISTRADOR AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(NEW.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(NEW.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"tipo_conta":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.TIPO_CONTA AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"operacao":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.OPERACAO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"periodo":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.PERIODO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"valor_solicitado":' || COALESCE(CAST(NEW.VALOR_SOLICITADO AS VARCHAR(80)), 'null') ||
+                    ',"valor_acumulado":' || COALESCE(CAST(NEW.VALOR_ACUMULADO AS VARCHAR(80)), 'null') ||
+                    ',"limite_por_operacao":' || COALESCE(CAST(NEW.LIMITE_POR_OPERACAO AS VARCHAR(80)), 'null') ||
+                    ',"limite_acumulado":' || COALESCE(CAST(NEW.LIMITE_ACUMULADO AS VARCHAR(80)), 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AU_AUDITORIA_LIMITE_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AU_AUDITORIA_LIMITE_LOG^
+
+CREATE OR ALTER TRIGGER TG_AD_AUDITORIA_LIMITE_LOG FOR AUDITORIA_LIMITE
+ACTIVE AFTER DELETE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''AUDITORIA_LIMITE'', ''DELETE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'AUDITORIA_LIMITE',
+        id_registro := OLD.ID_AUDITORIA,
+        id_usuario := COALESCE(CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER), OLD.ID_ADMINISTRADOR, OLD.ID_USUARIO),
+        id_conta := OLD.ID_CONTA,
+        valor := OLD.VALOR_SOLICITADO,
+        resultado := 'EXCLUIDO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_auditoria":' || COALESCE(CAST(OLD.ID_AUDITORIA AS VARCHAR(80)), 'null') ||
+                    ',"evento":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.EVENTO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"id_administrador":' || COALESCE(CAST(OLD.ID_ADMINISTRADOR AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(OLD.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(OLD.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"tipo_conta":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.TIPO_CONTA AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"operacao":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.OPERACAO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"periodo":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.PERIODO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"valor_solicitado":' || COALESCE(CAST(OLD.VALOR_SOLICITADO AS VARCHAR(80)), 'null') ||
+                    ',"valor_acumulado":' || COALESCE(CAST(OLD.VALOR_ACUMULADO AS VARCHAR(80)), 'null') ||
+                    ',"limite_por_operacao":' || COALESCE(CAST(OLD.LIMITE_POR_OPERACAO AS VARCHAR(80)), 'null') ||
+                    ',"limite_acumulado":' || COALESCE(CAST(OLD.LIMITE_ACUMULADO AS VARCHAR(80)), 'null') || '}',
+        depois := NULL,
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AD_AUDITORIA_LIMITE_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AD_AUDITORIA_LIMITE_LOG^
+
+CREATE OR ALTER TRIGGER TG_AI_AUDITORIA_LIMITE_CARTAO_LOG FOR AUDITORIA_LIMITE_CARTAO
+ACTIVE AFTER INSERT POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''AUDITORIA_LIMITE_CARTAO'', ''INSERT'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'AUDITORIA_LIMITE_CARTAO',
+        id_registro := NEW.ID_AUDITORIA,
+        id_usuario := COALESCE(CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER), NEW.ID_ADMINISTRADOR),
+        id_conta := NEW.ID_CONTA,
+        valor := NEW.LIMITE_NOVO,
+        resultado := 'REGISTRADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := NULL,
+        depois := '{"id_auditoria":' || COALESCE(CAST(NEW.ID_AUDITORIA AS VARCHAR(80)), 'null') ||
+                    ',"id_administrador":' || COALESCE(CAST(NEW.ID_ADMINISTRADOR AS VARCHAR(80)), 'null') ||
+                    ',"id_cartao":' || COALESCE(CAST(NEW.ID_CARTAO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(NEW.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"limite_anterior":' || COALESCE(CAST(NEW.LIMITE_ANTERIOR AS VARCHAR(80)), 'null') ||
+                    ',"limite_novo":' || COALESCE(CAST(NEW.LIMITE_NOVO AS VARCHAR(80)), 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AI_AUDITORIA_LIMITE_CARTAO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AI_AUDITORIA_LIMITE_CARTAO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AU_AUDITORIA_LIMITE_CARTAO_LOG FOR AUDITORIA_LIMITE_CARTAO
+ACTIVE AFTER UPDATE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''AUDITORIA_LIMITE_CARTAO'', ''UPDATE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'AUDITORIA_LIMITE_CARTAO',
+        id_registro := NEW.ID_AUDITORIA,
+        id_usuario := COALESCE(CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER), NEW.ID_ADMINISTRADOR),
+        id_conta := NEW.ID_CONTA,
+        valor := NEW.LIMITE_NOVO,
+        resultado := 'ATUALIZADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_auditoria":' || COALESCE(CAST(OLD.ID_AUDITORIA AS VARCHAR(80)), 'null') ||
+                    ',"id_administrador":' || COALESCE(CAST(OLD.ID_ADMINISTRADOR AS VARCHAR(80)), 'null') ||
+                    ',"id_cartao":' || COALESCE(CAST(OLD.ID_CARTAO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(OLD.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"limite_anterior":' || COALESCE(CAST(OLD.LIMITE_ANTERIOR AS VARCHAR(80)), 'null') ||
+                    ',"limite_novo":' || COALESCE(CAST(OLD.LIMITE_NOVO AS VARCHAR(80)), 'null') || '}',
+        depois := '{"id_auditoria":' || COALESCE(CAST(NEW.ID_AUDITORIA AS VARCHAR(80)), 'null') ||
+                    ',"id_administrador":' || COALESCE(CAST(NEW.ID_ADMINISTRADOR AS VARCHAR(80)), 'null') ||
+                    ',"id_cartao":' || COALESCE(CAST(NEW.ID_CARTAO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(NEW.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"limite_anterior":' || COALESCE(CAST(NEW.LIMITE_ANTERIOR AS VARCHAR(80)), 'null') ||
+                    ',"limite_novo":' || COALESCE(CAST(NEW.LIMITE_NOVO AS VARCHAR(80)), 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AU_AUDITORIA_LIMITE_CARTAO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AU_AUDITORIA_LIMITE_CARTAO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AD_AUDITORIA_LIMITE_CARTAO_LOG FOR AUDITORIA_LIMITE_CARTAO
+ACTIVE AFTER DELETE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''AUDITORIA_LIMITE_CARTAO'', ''DELETE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'AUDITORIA_LIMITE_CARTAO',
+        id_registro := OLD.ID_AUDITORIA,
+        id_usuario := COALESCE(CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER), OLD.ID_ADMINISTRADOR),
+        id_conta := OLD.ID_CONTA,
+        valor := OLD.LIMITE_NOVO,
+        resultado := 'EXCLUIDO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_auditoria":' || COALESCE(CAST(OLD.ID_AUDITORIA AS VARCHAR(80)), 'null') ||
+                    ',"id_administrador":' || COALESCE(CAST(OLD.ID_ADMINISTRADOR AS VARCHAR(80)), 'null') ||
+                    ',"id_cartao":' || COALESCE(CAST(OLD.ID_CARTAO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(OLD.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"limite_anterior":' || COALESCE(CAST(OLD.LIMITE_ANTERIOR AS VARCHAR(80)), 'null') ||
+                    ',"limite_novo":' || COALESCE(CAST(OLD.LIMITE_NOVO AS VARCHAR(80)), 'null') || '}',
+        depois := NULL,
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AD_AUDITORIA_LIMITE_CARTAO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AD_AUDITORIA_LIMITE_CARTAO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AI_CARTAO_LOG FOR CARTAO
+ACTIVE AFTER INSERT POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''CARTAO'', ''INSERT'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'CARTAO_CRIADO',
+        id_registro := NEW.ID_CARTAO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA,
+        valor := NULL,
+        resultado := 'CRIADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := NULL,
+        depois := '{"id_cartao":' || COALESCE(CAST(NEW.ID_CARTAO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(NEW.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE(CAST(NEW.STATUS AS VARCHAR(80)), 'null') ||
+                    ',"limite":' || COALESCE(CAST(NEW.LIMITE AS VARCHAR(80)), 'null') ||
+                    ',"tentativas_pin":' || COALESCE(CAST(NEW.TENTATIVAS_PIN AS VARCHAR(80)), 'null') ||
+                    ',"data_bloqueio":' || COALESCE('"' || CAST(NEW.DATA_BLOQUEIO AS VARCHAR(80)) || '"', 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AI_CARTAO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AI_CARTAO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AU_CARTAO_LOG FOR CARTAO
+ACTIVE AFTER UPDATE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''CARTAO'', ''UPDATE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := CASE WHEN OLD.STATUS IS DISTINCT FROM NEW.STATUS THEN 'CARTAO_STATUS_ALTERADO' WHEN OLD.LIMITE IS DISTINCT FROM NEW.LIMITE THEN 'CARTAO_LIMITE_ALTERADO' ELSE 'CARTAO_ALTERADO' END,
+        id_registro := NEW.ID_CARTAO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA,
+        valor := NULL,
+        resultado := CASE WHEN NEW.STATUS = 1 THEN 'BLOQUEADO' ELSE 'ATUALIZADO' END,
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_cartao":' || COALESCE(CAST(OLD.ID_CARTAO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(OLD.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE(CAST(OLD.STATUS AS VARCHAR(80)), 'null') ||
+                    ',"limite":' || COALESCE(CAST(OLD.LIMITE AS VARCHAR(80)), 'null') ||
+                    ',"tentativas_pin":' || COALESCE(CAST(OLD.TENTATIVAS_PIN AS VARCHAR(80)), 'null') ||
+                    ',"data_bloqueio":' || COALESCE('"' || CAST(OLD.DATA_BLOQUEIO AS VARCHAR(80)) || '"', 'null') || '}',
+        depois := '{"id_cartao":' || COALESCE(CAST(NEW.ID_CARTAO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(NEW.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE(CAST(NEW.STATUS AS VARCHAR(80)), 'null') ||
+                    ',"limite":' || COALESCE(CAST(NEW.LIMITE AS VARCHAR(80)), 'null') ||
+                    ',"tentativas_pin":' || COALESCE(CAST(NEW.TENTATIVAS_PIN AS VARCHAR(80)), 'null') ||
+                    ',"data_bloqueio":' || COALESCE('"' || CAST(NEW.DATA_BLOQUEIO AS VARCHAR(80)) || '"', 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AU_CARTAO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AU_CARTAO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AD_CARTAO_LOG FOR CARTAO
+ACTIVE AFTER DELETE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''CARTAO'', ''DELETE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'CARTAO',
+        id_registro := OLD.ID_CARTAO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := OLD.ID_CONTA,
+        valor := NULL,
+        resultado := 'EXCLUIDO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_cartao":' || COALESCE(CAST(OLD.ID_CARTAO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(OLD.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE(CAST(OLD.STATUS AS VARCHAR(80)), 'null') ||
+                    ',"limite":' || COALESCE(CAST(OLD.LIMITE AS VARCHAR(80)), 'null') ||
+                    ',"tentativas_pin":' || COALESCE(CAST(OLD.TENTATIVAS_PIN AS VARCHAR(80)), 'null') ||
+                    ',"data_bloqueio":' || COALESCE('"' || CAST(OLD.DATA_BLOQUEIO AS VARCHAR(80)) || '"', 'null') || '}',
+        depois := NULL,
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AD_CARTAO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AD_CARTAO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AI_CHAVE_PIX_LOG FOR CHAVE_PIX
+ACTIVE AFTER INSERT POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''CHAVE_PIX'', ''INSERT'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'CHAVE_PIX',
+        id_registro := NEW.ID_CHAVE_PIX,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA,
+        valor := NULL,
+        resultado := 'REGISTRADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := NULL,
+        depois := '{"id_chave_pix":' || COALESCE(CAST(NEW.ID_CHAVE_PIX AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(NEW.ID_CONTA AS VARCHAR(80)), 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AI_CHAVE_PIX_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AI_CHAVE_PIX_LOG^
+
+CREATE OR ALTER TRIGGER TG_AU_CHAVE_PIX_LOG FOR CHAVE_PIX
+ACTIVE AFTER UPDATE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''CHAVE_PIX'', ''UPDATE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'CHAVE_PIX',
+        id_registro := NEW.ID_CHAVE_PIX,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA,
+        valor := NULL,
+        resultado := 'ATUALIZADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_chave_pix":' || COALESCE(CAST(OLD.ID_CHAVE_PIX AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(OLD.ID_CONTA AS VARCHAR(80)), 'null') || '}',
+        depois := '{"id_chave_pix":' || COALESCE(CAST(NEW.ID_CHAVE_PIX AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(NEW.ID_CONTA AS VARCHAR(80)), 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AU_CHAVE_PIX_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AU_CHAVE_PIX_LOG^
+
+CREATE OR ALTER TRIGGER TG_AD_CHAVE_PIX_LOG FOR CHAVE_PIX
+ACTIVE AFTER DELETE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''CHAVE_PIX'', ''DELETE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'CHAVE_PIX',
+        id_registro := OLD.ID_CHAVE_PIX,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := OLD.ID_CONTA,
+        valor := NULL,
+        resultado := 'EXCLUIDO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_chave_pix":' || COALESCE(CAST(OLD.ID_CHAVE_PIX AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(OLD.ID_CONTA AS VARCHAR(80)), 'null') || '}',
+        depois := NULL,
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AD_CHAVE_PIX_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AD_CHAVE_PIX_LOG^
+
+CREATE OR ALTER TRIGGER TG_AI_COBRANCA_LOG FOR COBRANCA
+ACTIVE AFTER INSERT POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''COBRANCA'', ''INSERT'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'COBRANCA',
+        id_registro := NEW.ID_COBRANCA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := COALESCE(NEW.ID_PAGADOR, NEW.ID_RECEBEDOR),
+        valor := NEW.VALOR,
+        resultado := CASE NEW.STATUS WHEN 1 THEN 'CONCLUIDO' WHEN 2 THEN 'CANCELADO' ELSE 'PENDENTE' END,
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := NULL,
+        depois := '{"id_cobranca":' || COALESCE(CAST(NEW.ID_COBRANCA AS VARCHAR(80)), 'null') ||
+                    ',"id_pagador":' || COALESCE(CAST(NEW.ID_PAGADOR AS VARCHAR(80)), 'null') ||
+                    ',"id_recebedor":' || COALESCE(CAST(NEW.ID_RECEBEDOR AS VARCHAR(80)), 'null') ||
+                    ',"valor":' || COALESCE(CAST(NEW.VALOR AS VARCHAR(80)), 'null') ||
+                    ',"data_vencimento":' || COALESCE('"' || CAST(NEW.DATA_VENCIMENTO AS VARCHAR(80)) || '"', 'null') ||
+                    ',"status":' || COALESCE(CAST(NEW.STATUS AS VARCHAR(80)), 'null') ||
+                    ',"tipo_cobranca":' || COALESCE(CAST(NEW.TIPO_COBRANCA AS VARCHAR(80)), 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AI_COBRANCA_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AI_COBRANCA_LOG^
+
+CREATE OR ALTER TRIGGER TG_AU_COBRANCA_LOG FOR COBRANCA
+ACTIVE AFTER UPDATE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''COBRANCA'', ''UPDATE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'COBRANCA',
+        id_registro := NEW.ID_COBRANCA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := COALESCE(NEW.ID_PAGADOR, NEW.ID_RECEBEDOR),
+        valor := NEW.VALOR,
+        resultado := CASE NEW.STATUS WHEN 1 THEN 'CONCLUIDO' WHEN 2 THEN 'CANCELADO' ELSE 'PENDENTE' END,
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_cobranca":' || COALESCE(CAST(OLD.ID_COBRANCA AS VARCHAR(80)), 'null') ||
+                    ',"id_pagador":' || COALESCE(CAST(OLD.ID_PAGADOR AS VARCHAR(80)), 'null') ||
+                    ',"id_recebedor":' || COALESCE(CAST(OLD.ID_RECEBEDOR AS VARCHAR(80)), 'null') ||
+                    ',"valor":' || COALESCE(CAST(OLD.VALOR AS VARCHAR(80)), 'null') ||
+                    ',"data_vencimento":' || COALESCE('"' || CAST(OLD.DATA_VENCIMENTO AS VARCHAR(80)) || '"', 'null') ||
+                    ',"status":' || COALESCE(CAST(OLD.STATUS AS VARCHAR(80)), 'null') ||
+                    ',"tipo_cobranca":' || COALESCE(CAST(OLD.TIPO_COBRANCA AS VARCHAR(80)), 'null') || '}',
+        depois := '{"id_cobranca":' || COALESCE(CAST(NEW.ID_COBRANCA AS VARCHAR(80)), 'null') ||
+                    ',"id_pagador":' || COALESCE(CAST(NEW.ID_PAGADOR AS VARCHAR(80)), 'null') ||
+                    ',"id_recebedor":' || COALESCE(CAST(NEW.ID_RECEBEDOR AS VARCHAR(80)), 'null') ||
+                    ',"valor":' || COALESCE(CAST(NEW.VALOR AS VARCHAR(80)), 'null') ||
+                    ',"data_vencimento":' || COALESCE('"' || CAST(NEW.DATA_VENCIMENTO AS VARCHAR(80)) || '"', 'null') ||
+                    ',"status":' || COALESCE(CAST(NEW.STATUS AS VARCHAR(80)), 'null') ||
+                    ',"tipo_cobranca":' || COALESCE(CAST(NEW.TIPO_COBRANCA AS VARCHAR(80)), 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AU_COBRANCA_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AU_COBRANCA_LOG^
+
+CREATE OR ALTER TRIGGER TG_AD_COBRANCA_LOG FOR COBRANCA
+ACTIVE AFTER DELETE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''COBRANCA'', ''DELETE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'COBRANCA',
+        id_registro := OLD.ID_COBRANCA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := OLD.ID_PAGADOR,
+        valor := OLD.VALOR,
+        resultado := 'EXCLUIDO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_cobranca":' || COALESCE(CAST(OLD.ID_COBRANCA AS VARCHAR(80)), 'null') ||
+                    ',"id_pagador":' || COALESCE(CAST(OLD.ID_PAGADOR AS VARCHAR(80)), 'null') ||
+                    ',"id_recebedor":' || COALESCE(CAST(OLD.ID_RECEBEDOR AS VARCHAR(80)), 'null') ||
+                    ',"valor":' || COALESCE(CAST(OLD.VALOR AS VARCHAR(80)), 'null') ||
+                    ',"data_vencimento":' || COALESCE('"' || CAST(OLD.DATA_VENCIMENTO AS VARCHAR(80)) || '"', 'null') ||
+                    ',"status":' || COALESCE(CAST(OLD.STATUS AS VARCHAR(80)), 'null') ||
+                    ',"tipo_cobranca":' || COALESCE(CAST(OLD.TIPO_COBRANCA AS VARCHAR(80)), 'null') || '}',
+        depois := NULL,
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AD_COBRANCA_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AD_COBRANCA_LOG^
+
+CREATE OR ALTER TRIGGER TG_AI_COMPRA_LOG FOR COMPRA
+ACTIVE AFTER INSERT POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''COMPRA'', ''INSERT'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'COMPRA',
+        id_registro := NEW.ID_COMPRA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := (SELECT C.ID_CONTA FROM CARTAO C WHERE C.ID_CARTAO = NEW.ID_CARTAO),
+        valor := NEW.VALOR_COMPRA,
+        resultado := 'REGISTRADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := NULL,
+        depois := '{"id_compra":' || COALESCE(CAST(NEW.ID_COMPRA AS VARCHAR(80)), 'null') ||
+                    ',"id_cartao":' || COALESCE(CAST(NEW.ID_CARTAO AS VARCHAR(80)), 'null') ||
+                    ',"valor_compra":' || COALESCE(CAST(NEW.VALOR_COMPRA AS VARCHAR(80)), 'null') ||
+                    ',"tipo":' || COALESCE(CAST(NEW.TIPO AS VARCHAR(80)), 'null') ||
+                    ',"valor_parcela":' || COALESCE(CAST(NEW.VALOR_PARCELA AS VARCHAR(80)), 'null') ||
+                    ',"qtd_parcela":' || COALESCE(CAST(NEW.QTD_PARCELA AS VARCHAR(80)), 'null') ||
+                    ',"data_compra":' || COALESCE('"' || CAST(NEW.DATA_COMPRA AS VARCHAR(80)) || '"', 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AI_COMPRA_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AI_COMPRA_LOG^
+
+GRANT SELECT ON CARTAO TO TRIGGER TG_AI_COMPRA_LOG^
+
+CREATE OR ALTER TRIGGER TG_AU_COMPRA_LOG FOR COMPRA
+ACTIVE AFTER UPDATE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''COMPRA'', ''UPDATE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'COMPRA',
+        id_registro := NEW.ID_COMPRA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := (SELECT C.ID_CONTA FROM CARTAO C WHERE C.ID_CARTAO = NEW.ID_CARTAO),
+        valor := NEW.VALOR_COMPRA,
+        resultado := 'ATUALIZADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_compra":' || COALESCE(CAST(OLD.ID_COMPRA AS VARCHAR(80)), 'null') ||
+                    ',"id_cartao":' || COALESCE(CAST(OLD.ID_CARTAO AS VARCHAR(80)), 'null') ||
+                    ',"valor_compra":' || COALESCE(CAST(OLD.VALOR_COMPRA AS VARCHAR(80)), 'null') ||
+                    ',"tipo":' || COALESCE(CAST(OLD.TIPO AS VARCHAR(80)), 'null') ||
+                    ',"valor_parcela":' || COALESCE(CAST(OLD.VALOR_PARCELA AS VARCHAR(80)), 'null') ||
+                    ',"qtd_parcela":' || COALESCE(CAST(OLD.QTD_PARCELA AS VARCHAR(80)), 'null') ||
+                    ',"data_compra":' || COALESCE('"' || CAST(OLD.DATA_COMPRA AS VARCHAR(80)) || '"', 'null') || '}',
+        depois := '{"id_compra":' || COALESCE(CAST(NEW.ID_COMPRA AS VARCHAR(80)), 'null') ||
+                    ',"id_cartao":' || COALESCE(CAST(NEW.ID_CARTAO AS VARCHAR(80)), 'null') ||
+                    ',"valor_compra":' || COALESCE(CAST(NEW.VALOR_COMPRA AS VARCHAR(80)), 'null') ||
+                    ',"tipo":' || COALESCE(CAST(NEW.TIPO AS VARCHAR(80)), 'null') ||
+                    ',"valor_parcela":' || COALESCE(CAST(NEW.VALOR_PARCELA AS VARCHAR(80)), 'null') ||
+                    ',"qtd_parcela":' || COALESCE(CAST(NEW.QTD_PARCELA AS VARCHAR(80)), 'null') ||
+                    ',"data_compra":' || COALESCE('"' || CAST(NEW.DATA_COMPRA AS VARCHAR(80)) || '"', 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AU_COMPRA_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AU_COMPRA_LOG^
+
+GRANT SELECT ON CARTAO TO TRIGGER TG_AU_COMPRA_LOG^
+
+CREATE OR ALTER TRIGGER TG_AD_COMPRA_LOG FOR COMPRA
+ACTIVE AFTER DELETE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''COMPRA'', ''DELETE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'COMPRA',
+        id_registro := OLD.ID_COMPRA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := (SELECT C.ID_CONTA FROM CARTAO C WHERE C.ID_CARTAO = OLD.ID_CARTAO),
+        valor := OLD.VALOR_COMPRA,
+        resultado := 'EXCLUIDO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_compra":' || COALESCE(CAST(OLD.ID_COMPRA AS VARCHAR(80)), 'null') ||
+                    ',"id_cartao":' || COALESCE(CAST(OLD.ID_CARTAO AS VARCHAR(80)), 'null') ||
+                    ',"valor_compra":' || COALESCE(CAST(OLD.VALOR_COMPRA AS VARCHAR(80)), 'null') ||
+                    ',"tipo":' || COALESCE(CAST(OLD.TIPO AS VARCHAR(80)), 'null') ||
+                    ',"valor_parcela":' || COALESCE(CAST(OLD.VALOR_PARCELA AS VARCHAR(80)), 'null') ||
+                    ',"qtd_parcela":' || COALESCE(CAST(OLD.QTD_PARCELA AS VARCHAR(80)), 'null') ||
+                    ',"data_compra":' || COALESCE('"' || CAST(OLD.DATA_COMPRA AS VARCHAR(80)) || '"', 'null') || '}',
+        depois := NULL,
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AD_COMPRA_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AD_COMPRA_LOG^
+
+GRANT SELECT ON CARTAO TO TRIGGER TG_AD_COMPRA_LOG^
+
+CREATE OR ALTER TRIGGER TG_AI_CONTA_LOG FOR CONTA
+ACTIVE AFTER INSERT POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''CONTA'', ''INSERT'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'CONTA',
+        id_registro := NEW.ID_CONTA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA,
+        valor := NULL,
+        resultado := 'REGISTRADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := NULL,
+        depois := '{"id_conta":' || COALESCE(CAST(NEW.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(NEW.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"tipo_conta":' || COALESCE(CAST(NEW.TIPO_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"whatsapp_autorizado":' || COALESCE(CAST(NEW.WHATSAPP_AUTORIZADO AS VARCHAR(80)), 'null') ||
+                    ',"whatsapp_nivel":' || COALESCE(CAST(NEW.WHATSAPP_NIVEL AS VARCHAR(80)), 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AI_CONTA_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AI_CONTA_LOG^
+
+CREATE OR ALTER TRIGGER TG_AU_CONTA_LOG FOR CONTA
+ACTIVE AFTER UPDATE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''CONTA'', ''UPDATE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'CONTA',
+        id_registro := NEW.ID_CONTA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA,
+        valor := NULL,
+        resultado := 'ATUALIZADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_conta":' || COALESCE(CAST(OLD.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(OLD.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"tipo_conta":' || COALESCE(CAST(OLD.TIPO_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"whatsapp_autorizado":' || COALESCE(CAST(OLD.WHATSAPP_AUTORIZADO AS VARCHAR(80)), 'null') ||
+                    ',"whatsapp_nivel":' || COALESCE(CAST(OLD.WHATSAPP_NIVEL AS VARCHAR(80)), 'null') || '}',
+        depois := '{"id_conta":' || COALESCE(CAST(NEW.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(NEW.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"tipo_conta":' || COALESCE(CAST(NEW.TIPO_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"whatsapp_autorizado":' || COALESCE(CAST(NEW.WHATSAPP_AUTORIZADO AS VARCHAR(80)), 'null') ||
+                    ',"whatsapp_nivel":' || COALESCE(CAST(NEW.WHATSAPP_NIVEL AS VARCHAR(80)), 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AU_CONTA_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AU_CONTA_LOG^
+
+CREATE OR ALTER TRIGGER TG_AD_CONTA_LOG FOR CONTA
+ACTIVE AFTER DELETE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''CONTA'', ''DELETE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'CONTA',
+        id_registro := OLD.ID_CONTA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := OLD.ID_CONTA,
+        valor := NULL,
+        resultado := 'EXCLUIDO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_conta":' || COALESCE(CAST(OLD.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(OLD.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"tipo_conta":' || COALESCE(CAST(OLD.TIPO_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"whatsapp_autorizado":' || COALESCE(CAST(OLD.WHATSAPP_AUTORIZADO AS VARCHAR(80)), 'null') ||
+                    ',"whatsapp_nivel":' || COALESCE(CAST(OLD.WHATSAPP_NIVEL AS VARCHAR(80)), 'null') || '}',
+        depois := NULL,
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AD_CONTA_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AD_CONTA_LOG^
+
+CREATE OR ALTER TRIGGER TG_AI_ESTORNO_FINANCEIRO_LOG FOR ESTORNO_FINANCEIRO
+ACTIVE AFTER INSERT POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''ESTORNO_FINANCEIRO'', ''INSERT'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := NEW.TIPO_OPERACAO,
+        id_registro := NEW.ID_ESTORNO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA_SOLICITANTE,
+        valor := NEW.VALOR,
+        resultado := NEW.STATUS,
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := NULL,
+        depois := '{"id_estorno":' || COALESCE(CAST(NEW.ID_ESTORNO AS VARCHAR(80)), 'null') ||
+                    ',"id_cobranca":' || COALESCE(CAST(NEW.ID_COBRANCA AS VARCHAR(80)), 'null') ||
+                    ',"id_movimentacao_original":' || COALESCE(CAST(NEW.ID_MOVIMENTACAO_ORIGINAL AS VARCHAR(80)), 'null') ||
+                    ',"id_movimentacao_reversa":' || COALESCE(CAST(NEW.ID_MOVIMENTACAO_REVERSA AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_solicitante":' || COALESCE(CAST(NEW.ID_CONTA_SOLICITANTE AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario_responsavel":' || COALESCE(CAST(NEW.ID_USUARIO_RESPONSAVEL AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_pagador":' || COALESCE(CAST(NEW.ID_CONTA_PAGADOR AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_recebedor":' || COALESCE(CAST(NEW.ID_CONTA_RECEBEDOR AS VARCHAR(80)), 'null') ||
+                    ',"valor":' || COALESCE(CAST(NEW.VALOR AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.STATUS AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AI_ESTORNO_FINANCEIRO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AI_ESTORNO_FINANCEIRO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AU_ESTORNO_FINANCEIRO_LOG FOR ESTORNO_FINANCEIRO
+ACTIVE AFTER UPDATE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''ESTORNO_FINANCEIRO'', ''UPDATE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := NEW.TIPO_OPERACAO,
+        id_registro := NEW.ID_ESTORNO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA_SOLICITANTE,
+        valor := NEW.VALOR,
+        resultado := NEW.STATUS,
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_estorno":' || COALESCE(CAST(OLD.ID_ESTORNO AS VARCHAR(80)), 'null') ||
+                    ',"id_cobranca":' || COALESCE(CAST(OLD.ID_COBRANCA AS VARCHAR(80)), 'null') ||
+                    ',"id_movimentacao_original":' || COALESCE(CAST(OLD.ID_MOVIMENTACAO_ORIGINAL AS VARCHAR(80)), 'null') ||
+                    ',"id_movimentacao_reversa":' || COALESCE(CAST(OLD.ID_MOVIMENTACAO_REVERSA AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_solicitante":' || COALESCE(CAST(OLD.ID_CONTA_SOLICITANTE AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario_responsavel":' || COALESCE(CAST(OLD.ID_USUARIO_RESPONSAVEL AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_pagador":' || COALESCE(CAST(OLD.ID_CONTA_PAGADOR AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_recebedor":' || COALESCE(CAST(OLD.ID_CONTA_RECEBEDOR AS VARCHAR(80)), 'null') ||
+                    ',"valor":' || COALESCE(CAST(OLD.VALOR AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.STATUS AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') || '}',
+        depois := '{"id_estorno":' || COALESCE(CAST(NEW.ID_ESTORNO AS VARCHAR(80)), 'null') ||
+                    ',"id_cobranca":' || COALESCE(CAST(NEW.ID_COBRANCA AS VARCHAR(80)), 'null') ||
+                    ',"id_movimentacao_original":' || COALESCE(CAST(NEW.ID_MOVIMENTACAO_ORIGINAL AS VARCHAR(80)), 'null') ||
+                    ',"id_movimentacao_reversa":' || COALESCE(CAST(NEW.ID_MOVIMENTACAO_REVERSA AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_solicitante":' || COALESCE(CAST(NEW.ID_CONTA_SOLICITANTE AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario_responsavel":' || COALESCE(CAST(NEW.ID_USUARIO_RESPONSAVEL AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_pagador":' || COALESCE(CAST(NEW.ID_CONTA_PAGADOR AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_recebedor":' || COALESCE(CAST(NEW.ID_CONTA_RECEBEDOR AS VARCHAR(80)), 'null') ||
+                    ',"valor":' || COALESCE(CAST(NEW.VALOR AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.STATUS AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AU_ESTORNO_FINANCEIRO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AU_ESTORNO_FINANCEIRO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AD_ESTORNO_FINANCEIRO_LOG FOR ESTORNO_FINANCEIRO
+ACTIVE AFTER DELETE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''ESTORNO_FINANCEIRO'', ''DELETE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := OLD.TIPO_OPERACAO,
+        id_registro := OLD.ID_ESTORNO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := OLD.ID_CONTA_SOLICITANTE,
+        valor := OLD.VALOR,
+        resultado := 'EXCLUIDO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_estorno":' || COALESCE(CAST(OLD.ID_ESTORNO AS VARCHAR(80)), 'null') ||
+                    ',"id_cobranca":' || COALESCE(CAST(OLD.ID_COBRANCA AS VARCHAR(80)), 'null') ||
+                    ',"id_movimentacao_original":' || COALESCE(CAST(OLD.ID_MOVIMENTACAO_ORIGINAL AS VARCHAR(80)), 'null') ||
+                    ',"id_movimentacao_reversa":' || COALESCE(CAST(OLD.ID_MOVIMENTACAO_REVERSA AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_solicitante":' || COALESCE(CAST(OLD.ID_CONTA_SOLICITANTE AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario_responsavel":' || COALESCE(CAST(OLD.ID_USUARIO_RESPONSAVEL AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_pagador":' || COALESCE(CAST(OLD.ID_CONTA_PAGADOR AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_recebedor":' || COALESCE(CAST(OLD.ID_CONTA_RECEBEDOR AS VARCHAR(80)), 'null') ||
+                    ',"valor":' || COALESCE(CAST(OLD.VALOR AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.STATUS AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') || '}',
+        depois := NULL,
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AD_ESTORNO_FINANCEIRO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AD_ESTORNO_FINANCEIRO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AI_FATURA_LOG FOR FATURA
+ACTIVE AFTER INSERT POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''FATURA'', ''INSERT'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'FATURA',
+        id_registro := NEW.ID_FATURA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA,
+        valor := NEW.VALOR_TOTAL,
+        resultado := 'REGISTRADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := NULL,
+        depois := '{"id_fatura":' || COALESCE(CAST(NEW.ID_FATURA AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(NEW.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"valor_total":' || COALESCE(CAST(NEW.VALOR_TOTAL AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE(CAST(NEW.STATUS AS VARCHAR(80)), 'null') ||
+                    ',"data_fechamento":' || COALESCE('"' || CAST(NEW.DATA_FECHAMENTO AS VARCHAR(80)) || '"', 'null') ||
+                    ',"data_vencimento":' || COALESCE('"' || CAST(NEW.DATA_VENCIMENTO AS VARCHAR(80)) || '"', 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AI_FATURA_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AI_FATURA_LOG^
+
+CREATE OR ALTER TRIGGER TG_AU_FATURA_LOG FOR FATURA
+ACTIVE AFTER UPDATE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''FATURA'', ''UPDATE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'FATURA',
+        id_registro := NEW.ID_FATURA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA,
+        valor := NEW.VALOR_TOTAL,
+        resultado := 'ATUALIZADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_fatura":' || COALESCE(CAST(OLD.ID_FATURA AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(OLD.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"valor_total":' || COALESCE(CAST(OLD.VALOR_TOTAL AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE(CAST(OLD.STATUS AS VARCHAR(80)), 'null') ||
+                    ',"data_fechamento":' || COALESCE('"' || CAST(OLD.DATA_FECHAMENTO AS VARCHAR(80)) || '"', 'null') ||
+                    ',"data_vencimento":' || COALESCE('"' || CAST(OLD.DATA_VENCIMENTO AS VARCHAR(80)) || '"', 'null') || '}',
+        depois := '{"id_fatura":' || COALESCE(CAST(NEW.ID_FATURA AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(NEW.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"valor_total":' || COALESCE(CAST(NEW.VALOR_TOTAL AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE(CAST(NEW.STATUS AS VARCHAR(80)), 'null') ||
+                    ',"data_fechamento":' || COALESCE('"' || CAST(NEW.DATA_FECHAMENTO AS VARCHAR(80)) || '"', 'null') ||
+                    ',"data_vencimento":' || COALESCE('"' || CAST(NEW.DATA_VENCIMENTO AS VARCHAR(80)) || '"', 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AU_FATURA_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AU_FATURA_LOG^
+
+CREATE OR ALTER TRIGGER TG_AD_FATURA_LOG FOR FATURA
+ACTIVE AFTER DELETE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''FATURA'', ''DELETE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'FATURA',
+        id_registro := OLD.ID_FATURA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := OLD.ID_CONTA,
+        valor := OLD.VALOR_TOTAL,
+        resultado := 'EXCLUIDO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_fatura":' || COALESCE(CAST(OLD.ID_FATURA AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(OLD.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"valor_total":' || COALESCE(CAST(OLD.VALOR_TOTAL AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE(CAST(OLD.STATUS AS VARCHAR(80)), 'null') ||
+                    ',"data_fechamento":' || COALESCE('"' || CAST(OLD.DATA_FECHAMENTO AS VARCHAR(80)) || '"', 'null') ||
+                    ',"data_vencimento":' || COALESCE('"' || CAST(OLD.DATA_VENCIMENTO AS VARCHAR(80)) || '"', 'null') || '}',
+        depois := NULL,
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AD_FATURA_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AD_FATURA_LOG^
+
+CREATE OR ALTER TRIGGER TG_AI_FATURA_COMPRA_LOG FOR FATURA_COMPRA
+ACTIVE AFTER INSERT POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''FATURA_COMPRA'', ''INSERT'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'FATURA_COMPRA',
+        id_registro := NEW.ID_FATURA_COMPRA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := (SELECT C.ID_CONTA FROM CARTAO C JOIN COMPRA CP ON CP.ID_CARTAO = C.ID_CARTAO WHERE CP.ID_COMPRA = NEW.ID_COMPRA),
+        valor := NEW.VALOR_PARCELA,
+        resultado := 'REGISTRADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := NULL,
+        depois := '{"id_fatura_compra":' || COALESCE(CAST(NEW.ID_FATURA_COMPRA AS VARCHAR(80)), 'null') ||
+                    ',"id_compra":' || COALESCE(CAST(NEW.ID_COMPRA AS VARCHAR(80)), 'null') ||
+                    ',"id_fatura":' || COALESCE(CAST(NEW.ID_FATURA AS VARCHAR(80)), 'null') ||
+                    ',"numero_parcela":' || COALESCE(CAST(NEW.NUMERO_PARCELA AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE(CAST(NEW.STATUS AS VARCHAR(80)), 'null') ||
+                    ',"valor_parcela":' || COALESCE(CAST(NEW.VALOR_PARCELA AS VARCHAR(80)), 'null') ||
+                    ',"data_parcela":' || COALESCE('"' || CAST(NEW.DATA_PARCELA AS VARCHAR(80)) || '"', 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AI_FATURA_COMPRA_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AI_FATURA_COMPRA_LOG^
+
+GRANT SELECT ON CARTAO TO TRIGGER TG_AI_FATURA_COMPRA_LOG^
+
+GRANT SELECT ON COMPRA TO TRIGGER TG_AI_FATURA_COMPRA_LOG^
+
+CREATE OR ALTER TRIGGER TG_AU_FATURA_COMPRA_LOG FOR FATURA_COMPRA
+ACTIVE AFTER UPDATE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''FATURA_COMPRA'', ''UPDATE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'FATURA_COMPRA',
+        id_registro := NEW.ID_FATURA_COMPRA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := (SELECT C.ID_CONTA FROM CARTAO C JOIN COMPRA CP ON CP.ID_CARTAO = C.ID_CARTAO WHERE CP.ID_COMPRA = NEW.ID_COMPRA),
+        valor := NEW.VALOR_PARCELA,
+        resultado := 'ATUALIZADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_fatura_compra":' || COALESCE(CAST(OLD.ID_FATURA_COMPRA AS VARCHAR(80)), 'null') ||
+                    ',"id_compra":' || COALESCE(CAST(OLD.ID_COMPRA AS VARCHAR(80)), 'null') ||
+                    ',"id_fatura":' || COALESCE(CAST(OLD.ID_FATURA AS VARCHAR(80)), 'null') ||
+                    ',"numero_parcela":' || COALESCE(CAST(OLD.NUMERO_PARCELA AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE(CAST(OLD.STATUS AS VARCHAR(80)), 'null') ||
+                    ',"valor_parcela":' || COALESCE(CAST(OLD.VALOR_PARCELA AS VARCHAR(80)), 'null') ||
+                    ',"data_parcela":' || COALESCE('"' || CAST(OLD.DATA_PARCELA AS VARCHAR(80)) || '"', 'null') || '}',
+        depois := '{"id_fatura_compra":' || COALESCE(CAST(NEW.ID_FATURA_COMPRA AS VARCHAR(80)), 'null') ||
+                    ',"id_compra":' || COALESCE(CAST(NEW.ID_COMPRA AS VARCHAR(80)), 'null') ||
+                    ',"id_fatura":' || COALESCE(CAST(NEW.ID_FATURA AS VARCHAR(80)), 'null') ||
+                    ',"numero_parcela":' || COALESCE(CAST(NEW.NUMERO_PARCELA AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE(CAST(NEW.STATUS AS VARCHAR(80)), 'null') ||
+                    ',"valor_parcela":' || COALESCE(CAST(NEW.VALOR_PARCELA AS VARCHAR(80)), 'null') ||
+                    ',"data_parcela":' || COALESCE('"' || CAST(NEW.DATA_PARCELA AS VARCHAR(80)) || '"', 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AU_FATURA_COMPRA_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AU_FATURA_COMPRA_LOG^
+
+GRANT SELECT ON CARTAO TO TRIGGER TG_AU_FATURA_COMPRA_LOG^
+
+GRANT SELECT ON COMPRA TO TRIGGER TG_AU_FATURA_COMPRA_LOG^
+
+CREATE OR ALTER TRIGGER TG_AD_FATURA_COMPRA_LOG FOR FATURA_COMPRA
+ACTIVE AFTER DELETE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''FATURA_COMPRA'', ''DELETE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'FATURA_COMPRA',
+        id_registro := OLD.ID_FATURA_COMPRA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := (SELECT C.ID_CONTA FROM CARTAO C JOIN COMPRA CP ON CP.ID_CARTAO = C.ID_CARTAO WHERE CP.ID_COMPRA = OLD.ID_COMPRA),
+        valor := OLD.VALOR_PARCELA,
+        resultado := 'EXCLUIDO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_fatura_compra":' || COALESCE(CAST(OLD.ID_FATURA_COMPRA AS VARCHAR(80)), 'null') ||
+                    ',"id_compra":' || COALESCE(CAST(OLD.ID_COMPRA AS VARCHAR(80)), 'null') ||
+                    ',"id_fatura":' || COALESCE(CAST(OLD.ID_FATURA AS VARCHAR(80)), 'null') ||
+                    ',"numero_parcela":' || COALESCE(CAST(OLD.NUMERO_PARCELA AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE(CAST(OLD.STATUS AS VARCHAR(80)), 'null') ||
+                    ',"valor_parcela":' || COALESCE(CAST(OLD.VALOR_PARCELA AS VARCHAR(80)), 'null') ||
+                    ',"data_parcela":' || COALESCE('"' || CAST(OLD.DATA_PARCELA AS VARCHAR(80)) || '"', 'null') || '}',
+        depois := NULL,
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AD_FATURA_COMPRA_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AD_FATURA_COMPRA_LOG^
+
+GRANT SELECT ON CARTAO TO TRIGGER TG_AD_FATURA_COMPRA_LOG^
+
+GRANT SELECT ON COMPRA TO TRIGGER TG_AD_FATURA_COMPRA_LOG^
+
+CREATE OR ALTER TRIGGER TG_AI_FAVORITO_PIX_LOG FOR FAVORITO_PIX
+ACTIVE AFTER INSERT POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''FAVORITO_PIX'', ''INSERT'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'FAVORITO_PIX',
+        id_registro := NEW.ID_FAVORITO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA,
+        valor := NULL,
+        resultado := 'REGISTRADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := NULL,
+        depois := '{"id_favorito":' || COALESCE(CAST(NEW.ID_FAVORITO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(NEW.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(NEW.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_destino":' || COALESCE(CAST(NEW.ID_CONTA_DESTINO AS VARCHAR(80)), 'null') ||
+                    ',"ativo":' || COALESCE(CAST(NEW.ATIVO AS VARCHAR(80)), 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AI_FAVORITO_PIX_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AI_FAVORITO_PIX_LOG^
+
+CREATE OR ALTER TRIGGER TG_AU_FAVORITO_PIX_LOG FOR FAVORITO_PIX
+ACTIVE AFTER UPDATE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''FAVORITO_PIX'', ''UPDATE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'FAVORITO_PIX',
+        id_registro := NEW.ID_FAVORITO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA,
+        valor := NULL,
+        resultado := 'ATUALIZADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_favorito":' || COALESCE(CAST(OLD.ID_FAVORITO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(OLD.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(OLD.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_destino":' || COALESCE(CAST(OLD.ID_CONTA_DESTINO AS VARCHAR(80)), 'null') ||
+                    ',"ativo":' || COALESCE(CAST(OLD.ATIVO AS VARCHAR(80)), 'null') || '}',
+        depois := '{"id_favorito":' || COALESCE(CAST(NEW.ID_FAVORITO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(NEW.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(NEW.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_destino":' || COALESCE(CAST(NEW.ID_CONTA_DESTINO AS VARCHAR(80)), 'null') ||
+                    ',"ativo":' || COALESCE(CAST(NEW.ATIVO AS VARCHAR(80)), 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AU_FAVORITO_PIX_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AU_FAVORITO_PIX_LOG^
+
+CREATE OR ALTER TRIGGER TG_AD_FAVORITO_PIX_LOG FOR FAVORITO_PIX
+ACTIVE AFTER DELETE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''FAVORITO_PIX'', ''DELETE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'FAVORITO_PIX',
+        id_registro := OLD.ID_FAVORITO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := OLD.ID_CONTA,
+        valor := NULL,
+        resultado := 'EXCLUIDO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_favorito":' || COALESCE(CAST(OLD.ID_FAVORITO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(OLD.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(OLD.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_destino":' || COALESCE(CAST(OLD.ID_CONTA_DESTINO AS VARCHAR(80)), 'null') ||
+                    ',"ativo":' || COALESCE(CAST(OLD.ATIVO AS VARCHAR(80)), 'null') || '}',
+        depois := NULL,
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AD_FAVORITO_PIX_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AD_FAVORITO_PIX_LOG^
+
+CREATE OR ALTER TRIGGER TG_AI_FOLHA_ITEM_LOG FOR FOLHA_ITEM
+ACTIVE AFTER INSERT POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''FOLHA_ITEM'', ''INSERT'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'FOLHA_ITEM',
+        id_registro := NEW.ID_FOLHA_ITEM,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NULL,
+        valor := NEW.VALOR,
+        resultado := 'REGISTRADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := NULL,
+        depois := '{"id_folha_item":' || COALESCE(CAST(NEW.ID_FOLHA_ITEM AS VARCHAR(80)), 'null') ||
+                    ',"id_folha":' || COALESCE(CAST(NEW.ID_FOLHA AS VARCHAR(80)), 'null') ||
+                    ',"id_funcionario":' || COALESCE(CAST(NEW.ID_FUNCIONARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_destino":' || COALESCE(CAST(NEW.ID_CONTA_DESTINO AS VARCHAR(80)), 'null') ||
+                    ',"id_movimentacao":' || COALESCE(CAST(NEW.ID_MOVIMENTACAO AS VARCHAR(80)), 'null') ||
+                    ',"valor":' || COALESCE(CAST(NEW.VALOR AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE(CAST(NEW.STATUS AS VARCHAR(80)), 'null') ||
+                    ',"data_pagamento":' || COALESCE('"' || CAST(NEW.DATA_PAGAMENTO AS VARCHAR(80)) || '"', 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AI_FOLHA_ITEM_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AI_FOLHA_ITEM_LOG^
+
+CREATE OR ALTER TRIGGER TG_AU_FOLHA_ITEM_LOG FOR FOLHA_ITEM
+ACTIVE AFTER UPDATE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''FOLHA_ITEM'', ''UPDATE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'FOLHA_ITEM',
+        id_registro := NEW.ID_FOLHA_ITEM,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NULL,
+        valor := NEW.VALOR,
+        resultado := 'ATUALIZADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_folha_item":' || COALESCE(CAST(OLD.ID_FOLHA_ITEM AS VARCHAR(80)), 'null') ||
+                    ',"id_folha":' || COALESCE(CAST(OLD.ID_FOLHA AS VARCHAR(80)), 'null') ||
+                    ',"id_funcionario":' || COALESCE(CAST(OLD.ID_FUNCIONARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_destino":' || COALESCE(CAST(OLD.ID_CONTA_DESTINO AS VARCHAR(80)), 'null') ||
+                    ',"id_movimentacao":' || COALESCE(CAST(OLD.ID_MOVIMENTACAO AS VARCHAR(80)), 'null') ||
+                    ',"valor":' || COALESCE(CAST(OLD.VALOR AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE(CAST(OLD.STATUS AS VARCHAR(80)), 'null') ||
+                    ',"data_pagamento":' || COALESCE('"' || CAST(OLD.DATA_PAGAMENTO AS VARCHAR(80)) || '"', 'null') || '}',
+        depois := '{"id_folha_item":' || COALESCE(CAST(NEW.ID_FOLHA_ITEM AS VARCHAR(80)), 'null') ||
+                    ',"id_folha":' || COALESCE(CAST(NEW.ID_FOLHA AS VARCHAR(80)), 'null') ||
+                    ',"id_funcionario":' || COALESCE(CAST(NEW.ID_FUNCIONARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_destino":' || COALESCE(CAST(NEW.ID_CONTA_DESTINO AS VARCHAR(80)), 'null') ||
+                    ',"id_movimentacao":' || COALESCE(CAST(NEW.ID_MOVIMENTACAO AS VARCHAR(80)), 'null') ||
+                    ',"valor":' || COALESCE(CAST(NEW.VALOR AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE(CAST(NEW.STATUS AS VARCHAR(80)), 'null') ||
+                    ',"data_pagamento":' || COALESCE('"' || CAST(NEW.DATA_PAGAMENTO AS VARCHAR(80)) || '"', 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AU_FOLHA_ITEM_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AU_FOLHA_ITEM_LOG^
+
+CREATE OR ALTER TRIGGER TG_AD_FOLHA_ITEM_LOG FOR FOLHA_ITEM
+ACTIVE AFTER DELETE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''FOLHA_ITEM'', ''DELETE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'FOLHA_ITEM',
+        id_registro := OLD.ID_FOLHA_ITEM,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NULL,
+        valor := OLD.VALOR,
+        resultado := 'EXCLUIDO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_folha_item":' || COALESCE(CAST(OLD.ID_FOLHA_ITEM AS VARCHAR(80)), 'null') ||
+                    ',"id_folha":' || COALESCE(CAST(OLD.ID_FOLHA AS VARCHAR(80)), 'null') ||
+                    ',"id_funcionario":' || COALESCE(CAST(OLD.ID_FUNCIONARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_destino":' || COALESCE(CAST(OLD.ID_CONTA_DESTINO AS VARCHAR(80)), 'null') ||
+                    ',"id_movimentacao":' || COALESCE(CAST(OLD.ID_MOVIMENTACAO AS VARCHAR(80)), 'null') ||
+                    ',"valor":' || COALESCE(CAST(OLD.VALOR AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE(CAST(OLD.STATUS AS VARCHAR(80)), 'null') ||
+                    ',"data_pagamento":' || COALESCE('"' || CAST(OLD.DATA_PAGAMENTO AS VARCHAR(80)) || '"', 'null') || '}',
+        depois := NULL,
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AD_FOLHA_ITEM_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AD_FOLHA_ITEM_LOG^
+
+CREATE OR ALTER TRIGGER TG_AI_FOLHA_PAGAMENTO_LOG FOR FOLHA_PAGAMENTO
+ACTIVE AFTER INSERT POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''FOLHA_PAGAMENTO'', ''INSERT'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'FOLHA_PAGAMENTO',
+        id_registro := NEW.ID_FOLHA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA_EMPRESA,
+        valor := NULL,
+        resultado := 'REGISTRADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := NULL,
+        depois := '{"id_folha":' || COALESCE(CAST(NEW.ID_FOLHA AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_empresa":' || COALESCE(CAST(NEW.ID_CONTA_EMPRESA AS VARCHAR(80)), 'null') ||
+                    ',"competencia_mes":' || COALESCE(CAST(NEW.COMPETENCIA_MES AS VARCHAR(80)), 'null') ||
+                    ',"competencia_ano":' || COALESCE(CAST(NEW.COMPETENCIA_ANO AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE(CAST(NEW.STATUS AS VARCHAR(80)), 'null') ||
+                    ',"data_criacao":' || COALESCE('"' || CAST(NEW.DATA_CRIACAO AS VARCHAR(80)) || '"', 'null') ||
+                    ',"data_pagamento":' || COALESCE('"' || CAST(NEW.DATA_PAGAMENTO AS VARCHAR(80)) || '"', 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AI_FOLHA_PAGAMENTO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AI_FOLHA_PAGAMENTO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AU_FOLHA_PAGAMENTO_LOG FOR FOLHA_PAGAMENTO
+ACTIVE AFTER UPDATE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''FOLHA_PAGAMENTO'', ''UPDATE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'FOLHA_PAGAMENTO',
+        id_registro := NEW.ID_FOLHA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA_EMPRESA,
+        valor := NULL,
+        resultado := 'ATUALIZADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_folha":' || COALESCE(CAST(OLD.ID_FOLHA AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_empresa":' || COALESCE(CAST(OLD.ID_CONTA_EMPRESA AS VARCHAR(80)), 'null') ||
+                    ',"competencia_mes":' || COALESCE(CAST(OLD.COMPETENCIA_MES AS VARCHAR(80)), 'null') ||
+                    ',"competencia_ano":' || COALESCE(CAST(OLD.COMPETENCIA_ANO AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE(CAST(OLD.STATUS AS VARCHAR(80)), 'null') ||
+                    ',"data_criacao":' || COALESCE('"' || CAST(OLD.DATA_CRIACAO AS VARCHAR(80)) || '"', 'null') ||
+                    ',"data_pagamento":' || COALESCE('"' || CAST(OLD.DATA_PAGAMENTO AS VARCHAR(80)) || '"', 'null') || '}',
+        depois := '{"id_folha":' || COALESCE(CAST(NEW.ID_FOLHA AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_empresa":' || COALESCE(CAST(NEW.ID_CONTA_EMPRESA AS VARCHAR(80)), 'null') ||
+                    ',"competencia_mes":' || COALESCE(CAST(NEW.COMPETENCIA_MES AS VARCHAR(80)), 'null') ||
+                    ',"competencia_ano":' || COALESCE(CAST(NEW.COMPETENCIA_ANO AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE(CAST(NEW.STATUS AS VARCHAR(80)), 'null') ||
+                    ',"data_criacao":' || COALESCE('"' || CAST(NEW.DATA_CRIACAO AS VARCHAR(80)) || '"', 'null') ||
+                    ',"data_pagamento":' || COALESCE('"' || CAST(NEW.DATA_PAGAMENTO AS VARCHAR(80)) || '"', 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AU_FOLHA_PAGAMENTO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AU_FOLHA_PAGAMENTO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AD_FOLHA_PAGAMENTO_LOG FOR FOLHA_PAGAMENTO
+ACTIVE AFTER DELETE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''FOLHA_PAGAMENTO'', ''DELETE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'FOLHA_PAGAMENTO',
+        id_registro := OLD.ID_FOLHA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := OLD.ID_CONTA_EMPRESA,
+        valor := NULL,
+        resultado := 'EXCLUIDO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_folha":' || COALESCE(CAST(OLD.ID_FOLHA AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_empresa":' || COALESCE(CAST(OLD.ID_CONTA_EMPRESA AS VARCHAR(80)), 'null') ||
+                    ',"competencia_mes":' || COALESCE(CAST(OLD.COMPETENCIA_MES AS VARCHAR(80)), 'null') ||
+                    ',"competencia_ano":' || COALESCE(CAST(OLD.COMPETENCIA_ANO AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE(CAST(OLD.STATUS AS VARCHAR(80)), 'null') ||
+                    ',"data_criacao":' || COALESCE('"' || CAST(OLD.DATA_CRIACAO AS VARCHAR(80)) || '"', 'null') ||
+                    ',"data_pagamento":' || COALESCE('"' || CAST(OLD.DATA_PAGAMENTO AS VARCHAR(80)) || '"', 'null') || '}',
+        depois := NULL,
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AD_FOLHA_PAGAMENTO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AD_FOLHA_PAGAMENTO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AI_FUNCIONARIO_LOG FOR FUNCIONARIO
+ACTIVE AFTER INSERT POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''FUNCIONARIO'', ''INSERT'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'FUNCIONARIO',
+        id_registro := NEW.ID_FUNCIONARIO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA_EMPRESA,
+        valor := NEW.SALARIO,
+        resultado := 'REGISTRADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := NULL,
+        depois := '{"id_funcionario":' || COALESCE(CAST(NEW.ID_FUNCIONARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_empresa":' || COALESCE(CAST(NEW.ID_CONTA_EMPRESA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(NEW.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"salario":' || COALESCE(CAST(NEW.SALARIO AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE(CAST(NEW.STATUS AS VARCHAR(80)), 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AI_FUNCIONARIO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AI_FUNCIONARIO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AU_FUNCIONARIO_LOG FOR FUNCIONARIO
+ACTIVE AFTER UPDATE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''FUNCIONARIO'', ''UPDATE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'FUNCIONARIO',
+        id_registro := NEW.ID_FUNCIONARIO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA_EMPRESA,
+        valor := NEW.SALARIO,
+        resultado := 'ATUALIZADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_funcionario":' || COALESCE(CAST(OLD.ID_FUNCIONARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_empresa":' || COALESCE(CAST(OLD.ID_CONTA_EMPRESA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(OLD.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"salario":' || COALESCE(CAST(OLD.SALARIO AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE(CAST(OLD.STATUS AS VARCHAR(80)), 'null') || '}',
+        depois := '{"id_funcionario":' || COALESCE(CAST(NEW.ID_FUNCIONARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_empresa":' || COALESCE(CAST(NEW.ID_CONTA_EMPRESA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(NEW.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"salario":' || COALESCE(CAST(NEW.SALARIO AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE(CAST(NEW.STATUS AS VARCHAR(80)), 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AU_FUNCIONARIO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AU_FUNCIONARIO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AD_FUNCIONARIO_LOG FOR FUNCIONARIO
+ACTIVE AFTER DELETE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''FUNCIONARIO'', ''DELETE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'FUNCIONARIO',
+        id_registro := OLD.ID_FUNCIONARIO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := OLD.ID_CONTA_EMPRESA,
+        valor := OLD.SALARIO,
+        resultado := 'EXCLUIDO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_funcionario":' || COALESCE(CAST(OLD.ID_FUNCIONARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_empresa":' || COALESCE(CAST(OLD.ID_CONTA_EMPRESA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(OLD.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"salario":' || COALESCE(CAST(OLD.SALARIO AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE(CAST(OLD.STATUS AS VARCHAR(80)), 'null') || '}',
+        depois := NULL,
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AD_FUNCIONARIO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AD_FUNCIONARIO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AI_INTEGRACAO_API_LOG FOR INTEGRACAO_API
+ACTIVE AFTER INSERT POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''INTEGRACAO_API'', ''INSERT'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'INTEGRACAO_API',
+        id_registro := NEW.ID_INTEGRACAO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA,
+        valor := NULL,
+        resultado := 'REGISTRADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := NULL,
+        depois := '{"id_integracao":' || COALESCE(CAST(NEW.ID_INTEGRACAO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(NEW.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"ativo":' || COALESCE(CAST(NEW.ATIVO AS VARCHAR(80)), 'null') ||
+                    ',"ultimo_uso":' || COALESCE('"' || CAST(NEW.ULTIMO_USO AS VARCHAR(80)) || '"', 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AI_INTEGRACAO_API_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AI_INTEGRACAO_API_LOG^
+
+CREATE OR ALTER TRIGGER TG_AU_INTEGRACAO_API_LOG FOR INTEGRACAO_API
+ACTIVE AFTER UPDATE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''INTEGRACAO_API'', ''UPDATE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'INTEGRACAO_API',
+        id_registro := NEW.ID_INTEGRACAO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA,
+        valor := NULL,
+        resultado := 'ATUALIZADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_integracao":' || COALESCE(CAST(OLD.ID_INTEGRACAO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(OLD.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"ativo":' || COALESCE(CAST(OLD.ATIVO AS VARCHAR(80)), 'null') ||
+                    ',"ultimo_uso":' || COALESCE('"' || CAST(OLD.ULTIMO_USO AS VARCHAR(80)) || '"', 'null') || '}',
+        depois := '{"id_integracao":' || COALESCE(CAST(NEW.ID_INTEGRACAO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(NEW.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"ativo":' || COALESCE(CAST(NEW.ATIVO AS VARCHAR(80)), 'null') ||
+                    ',"ultimo_uso":' || COALESCE('"' || CAST(NEW.ULTIMO_USO AS VARCHAR(80)) || '"', 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AU_INTEGRACAO_API_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AU_INTEGRACAO_API_LOG^
+
+CREATE OR ALTER TRIGGER TG_AD_INTEGRACAO_API_LOG FOR INTEGRACAO_API
+ACTIVE AFTER DELETE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''INTEGRACAO_API'', ''DELETE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'INTEGRACAO_API',
+        id_registro := OLD.ID_INTEGRACAO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := OLD.ID_CONTA,
+        valor := NULL,
+        resultado := 'EXCLUIDO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_integracao":' || COALESCE(CAST(OLD.ID_INTEGRACAO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(OLD.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"ativo":' || COALESCE(CAST(OLD.ATIVO AS VARCHAR(80)), 'null') ||
+                    ',"ultimo_uso":' || COALESCE('"' || CAST(OLD.ULTIMO_USO AS VARCHAR(80)) || '"', 'null') || '}',
+        depois := NULL,
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AD_INTEGRACAO_API_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AD_INTEGRACAO_API_LOG^
+
+CREATE OR ALTER TRIGGER TG_AI_LIMITE_CONTA_OPERACAO_LOG FOR LIMITE_CONTA_OPERACAO
+ACTIVE AFTER INSERT POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''LIMITE_CONTA_OPERACAO'', ''INSERT'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'LIMITE_CONTA_OPERACAO',
+        id_registro := NEW.ID_CONTA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA,
+        valor := NULL,
+        resultado := 'REGISTRADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := NULL,
+        depois := '{"id_conta":' || COALESCE(CAST(NEW.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"operacao":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.OPERACAO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"periodo":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.PERIODO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"limite_por_operacao":' || COALESCE(CAST(NEW.LIMITE_POR_OPERACAO AS VARCHAR(80)), 'null') ||
+                    ',"limite_por_operacao_favorito":' || COALESCE(CAST(NEW.LIMITE_POR_OPERACAO_FAVORITO AS VARCHAR(80)), 'null') ||
+                    ',"atualizado_por":' || COALESCE(CAST(NEW.ATUALIZADO_POR AS VARCHAR(80)), 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AI_LIMITE_CONTA_OPERACAO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AI_LIMITE_CONTA_OPERACAO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AU_LIMITE_CONTA_OPERACAO_LOG FOR LIMITE_CONTA_OPERACAO
+ACTIVE AFTER UPDATE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''LIMITE_CONTA_OPERACAO'', ''UPDATE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'LIMITE_CONTA_OPERACAO',
+        id_registro := NEW.ID_CONTA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA,
+        valor := NULL,
+        resultado := 'ATUALIZADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_conta":' || COALESCE(CAST(OLD.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"operacao":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.OPERACAO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"periodo":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.PERIODO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"limite_por_operacao":' || COALESCE(CAST(OLD.LIMITE_POR_OPERACAO AS VARCHAR(80)), 'null') ||
+                    ',"limite_por_operacao_favorito":' || COALESCE(CAST(OLD.LIMITE_POR_OPERACAO_FAVORITO AS VARCHAR(80)), 'null') ||
+                    ',"atualizado_por":' || COALESCE(CAST(OLD.ATUALIZADO_POR AS VARCHAR(80)), 'null') || '}',
+        depois := '{"id_conta":' || COALESCE(CAST(NEW.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"operacao":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.OPERACAO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"periodo":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.PERIODO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"limite_por_operacao":' || COALESCE(CAST(NEW.LIMITE_POR_OPERACAO AS VARCHAR(80)), 'null') ||
+                    ',"limite_por_operacao_favorito":' || COALESCE(CAST(NEW.LIMITE_POR_OPERACAO_FAVORITO AS VARCHAR(80)), 'null') ||
+                    ',"atualizado_por":' || COALESCE(CAST(NEW.ATUALIZADO_POR AS VARCHAR(80)), 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AU_LIMITE_CONTA_OPERACAO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AU_LIMITE_CONTA_OPERACAO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AD_LIMITE_CONTA_OPERACAO_LOG FOR LIMITE_CONTA_OPERACAO
+ACTIVE AFTER DELETE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''LIMITE_CONTA_OPERACAO'', ''DELETE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'LIMITE_CONTA_OPERACAO',
+        id_registro := OLD.ID_CONTA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := OLD.ID_CONTA,
+        valor := NULL,
+        resultado := 'EXCLUIDO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_conta":' || COALESCE(CAST(OLD.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"operacao":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.OPERACAO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"periodo":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.PERIODO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"limite_por_operacao":' || COALESCE(CAST(OLD.LIMITE_POR_OPERACAO AS VARCHAR(80)), 'null') ||
+                    ',"limite_por_operacao_favorito":' || COALESCE(CAST(OLD.LIMITE_POR_OPERACAO_FAVORITO AS VARCHAR(80)), 'null') ||
+                    ',"atualizado_por":' || COALESCE(CAST(OLD.ATUALIZADO_POR AS VARCHAR(80)), 'null') || '}',
+        depois := NULL,
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AD_LIMITE_CONTA_OPERACAO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AD_LIMITE_CONTA_OPERACAO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AI_LIMITE_CONTA_PERIODO_LOG FOR LIMITE_CONTA_PERIODO
+ACTIVE AFTER INSERT POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''LIMITE_CONTA_PERIODO'', ''INSERT'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'LIMITE_CONTA_PERIODO',
+        id_registro := NEW.ID_CONTA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA,
+        valor := NULL,
+        resultado := 'REGISTRADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := NULL,
+        depois := '{"id_conta":' || COALESCE(CAST(NEW.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"periodo":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.PERIODO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"limite_acumulado":' || COALESCE(CAST(NEW.LIMITE_ACUMULADO AS VARCHAR(80)), 'null') ||
+                    ',"atualizado_por":' || COALESCE(CAST(NEW.ATUALIZADO_POR AS VARCHAR(80)), 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AI_LIMITE_CONTA_PERIODO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AI_LIMITE_CONTA_PERIODO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AU_LIMITE_CONTA_PERIODO_LOG FOR LIMITE_CONTA_PERIODO
+ACTIVE AFTER UPDATE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''LIMITE_CONTA_PERIODO'', ''UPDATE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'LIMITE_CONTA_PERIODO',
+        id_registro := NEW.ID_CONTA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA,
+        valor := NULL,
+        resultado := 'ATUALIZADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_conta":' || COALESCE(CAST(OLD.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"periodo":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.PERIODO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"limite_acumulado":' || COALESCE(CAST(OLD.LIMITE_ACUMULADO AS VARCHAR(80)), 'null') ||
+                    ',"atualizado_por":' || COALESCE(CAST(OLD.ATUALIZADO_POR AS VARCHAR(80)), 'null') || '}',
+        depois := '{"id_conta":' || COALESCE(CAST(NEW.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"periodo":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.PERIODO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"limite_acumulado":' || COALESCE(CAST(NEW.LIMITE_ACUMULADO AS VARCHAR(80)), 'null') ||
+                    ',"atualizado_por":' || COALESCE(CAST(NEW.ATUALIZADO_POR AS VARCHAR(80)), 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AU_LIMITE_CONTA_PERIODO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AU_LIMITE_CONTA_PERIODO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AD_LIMITE_CONTA_PERIODO_LOG FOR LIMITE_CONTA_PERIODO
+ACTIVE AFTER DELETE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''LIMITE_CONTA_PERIODO'', ''DELETE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'LIMITE_CONTA_PERIODO',
+        id_registro := OLD.ID_CONTA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := OLD.ID_CONTA,
+        valor := NULL,
+        resultado := 'EXCLUIDO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_conta":' || COALESCE(CAST(OLD.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"periodo":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.PERIODO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"limite_acumulado":' || COALESCE(CAST(OLD.LIMITE_ACUMULADO AS VARCHAR(80)), 'null') ||
+                    ',"atualizado_por":' || COALESCE(CAST(OLD.ATUALIZADO_POR AS VARCHAR(80)), 'null') || '}',
+        depois := NULL,
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AD_LIMITE_CONTA_PERIODO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AD_LIMITE_CONTA_PERIODO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AI_MAURO_CONVERSA_LOG FOR MAURO_CONVERSA
+ACTIVE AFTER INSERT POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''MAURO_CONVERSA'', ''INSERT'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'MAURO_CONVERSA',
+        id_registro := NEW.ID_CONVERSA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA,
+        valor := NULL,
+        resultado := 'REGISTRADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := NULL,
+        depois := '{"id_conversa":' || COALESCE(CAST(NEW.ID_CONVERSA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(NEW.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(NEW.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"criada_em":' || COALESCE('"' || CAST(NEW.CRIADA_EM AS VARCHAR(80)) || '"', 'null') ||
+                    ',"atualizada_em":' || COALESCE('"' || CAST(NEW.ATUALIZADA_EM AS VARCHAR(80)) || '"', 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AI_MAURO_CONVERSA_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AI_MAURO_CONVERSA_LOG^
+
+CREATE OR ALTER TRIGGER TG_AU_MAURO_CONVERSA_LOG FOR MAURO_CONVERSA
+ACTIVE AFTER UPDATE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''MAURO_CONVERSA'', ''UPDATE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'MAURO_CONVERSA',
+        id_registro := NEW.ID_CONVERSA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA,
+        valor := NULL,
+        resultado := 'ATUALIZADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_conversa":' || COALESCE(CAST(OLD.ID_CONVERSA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(OLD.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(OLD.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"criada_em":' || COALESCE('"' || CAST(OLD.CRIADA_EM AS VARCHAR(80)) || '"', 'null') ||
+                    ',"atualizada_em":' || COALESCE('"' || CAST(OLD.ATUALIZADA_EM AS VARCHAR(80)) || '"', 'null') || '}',
+        depois := '{"id_conversa":' || COALESCE(CAST(NEW.ID_CONVERSA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(NEW.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(NEW.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"criada_em":' || COALESCE('"' || CAST(NEW.CRIADA_EM AS VARCHAR(80)) || '"', 'null') ||
+                    ',"atualizada_em":' || COALESCE('"' || CAST(NEW.ATUALIZADA_EM AS VARCHAR(80)) || '"', 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AU_MAURO_CONVERSA_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AU_MAURO_CONVERSA_LOG^
+
+CREATE OR ALTER TRIGGER TG_AD_MAURO_CONVERSA_LOG FOR MAURO_CONVERSA
+ACTIVE AFTER DELETE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''MAURO_CONVERSA'', ''DELETE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'MAURO_CONVERSA',
+        id_registro := OLD.ID_CONVERSA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := OLD.ID_CONTA,
+        valor := NULL,
+        resultado := 'EXCLUIDO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_conversa":' || COALESCE(CAST(OLD.ID_CONVERSA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(OLD.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(OLD.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"criada_em":' || COALESCE('"' || CAST(OLD.CRIADA_EM AS VARCHAR(80)) || '"', 'null') ||
+                    ',"atualizada_em":' || COALESCE('"' || CAST(OLD.ATUALIZADA_EM AS VARCHAR(80)) || '"', 'null') || '}',
+        depois := NULL,
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AD_MAURO_CONVERSA_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AD_MAURO_CONVERSA_LOG^
+
+CREATE OR ALTER TRIGGER TG_AI_MAURO_MENSAGEM_LOG FOR MAURO_MENSAGEM
+ACTIVE AFTER INSERT POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''MAURO_MENSAGEM'', ''INSERT'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'MAURO_MENSAGEM',
+        id_registro := NEW.ID_MENSAGEM,
+        id_usuario := COALESCE(CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER), (SELECT C.ID_USUARIO FROM MAURO_CONVERSA C WHERE C.ID_CONVERSA = NEW.ID_CONVERSA)),
+        id_conta := (SELECT C.ID_CONTA FROM MAURO_CONVERSA C WHERE C.ID_CONVERSA = NEW.ID_CONVERSA),
+        valor := NULL,
+        resultado := 'REGISTRADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := NULL,
+        depois := '{"id_mensagem":' || COALESCE(CAST(NEW.ID_MENSAGEM AS VARCHAR(80)), 'null') ||
+                    ',"id_conversa":' || COALESCE(CAST(NEW.ID_CONVERSA AS VARCHAR(80)), 'null') ||
+                    ',"papel":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.PAPEL AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"criada_em":' || COALESCE('"' || CAST(NEW.CRIADA_EM AS VARCHAR(80)) || '"', 'null') ||
+                    ',"caracteres":' || CAST(CHAR_LENGTH(NEW.CONTEUDO) AS VARCHAR(12)) || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AI_MAURO_MENSAGEM_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AI_MAURO_MENSAGEM_LOG^
+
+GRANT SELECT ON MAURO_CONVERSA TO TRIGGER TG_AI_MAURO_MENSAGEM_LOG^
+
+CREATE OR ALTER TRIGGER TG_AU_MAURO_MENSAGEM_LOG FOR MAURO_MENSAGEM
+ACTIVE AFTER UPDATE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''MAURO_MENSAGEM'', ''UPDATE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'MAURO_MENSAGEM',
+        id_registro := NEW.ID_MENSAGEM,
+        id_usuario := COALESCE(CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER), (SELECT C.ID_USUARIO FROM MAURO_CONVERSA C WHERE C.ID_CONVERSA = NEW.ID_CONVERSA)),
+        id_conta := (SELECT C.ID_CONTA FROM MAURO_CONVERSA C WHERE C.ID_CONVERSA = NEW.ID_CONVERSA),
+        valor := NULL,
+        resultado := 'ATUALIZADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_mensagem":' || COALESCE(CAST(OLD.ID_MENSAGEM AS VARCHAR(80)), 'null') ||
+                    ',"id_conversa":' || COALESCE(CAST(OLD.ID_CONVERSA AS VARCHAR(80)), 'null') ||
+                    ',"papel":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.PAPEL AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"criada_em":' || COALESCE('"' || CAST(OLD.CRIADA_EM AS VARCHAR(80)) || '"', 'null') ||
+                    ',"caracteres":' || CAST(CHAR_LENGTH(OLD.CONTEUDO) AS VARCHAR(12)) || '}',
+        depois := '{"id_mensagem":' || COALESCE(CAST(NEW.ID_MENSAGEM AS VARCHAR(80)), 'null') ||
+                    ',"id_conversa":' || COALESCE(CAST(NEW.ID_CONVERSA AS VARCHAR(80)), 'null') ||
+                    ',"papel":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.PAPEL AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"criada_em":' || COALESCE('"' || CAST(NEW.CRIADA_EM AS VARCHAR(80)) || '"', 'null') ||
+                    ',"caracteres":' || CAST(CHAR_LENGTH(NEW.CONTEUDO) AS VARCHAR(12)) || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AU_MAURO_MENSAGEM_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AU_MAURO_MENSAGEM_LOG^
+
+GRANT SELECT ON MAURO_CONVERSA TO TRIGGER TG_AU_MAURO_MENSAGEM_LOG^
+
+CREATE OR ALTER TRIGGER TG_AD_MAURO_MENSAGEM_LOG FOR MAURO_MENSAGEM
+ACTIVE AFTER DELETE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''MAURO_MENSAGEM'', ''DELETE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'MAURO_MENSAGEM',
+        id_registro := OLD.ID_MENSAGEM,
+        id_usuario := COALESCE(CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER), (SELECT C.ID_USUARIO FROM MAURO_CONVERSA C WHERE C.ID_CONVERSA = OLD.ID_CONVERSA)),
+        id_conta := (SELECT C.ID_CONTA FROM MAURO_CONVERSA C WHERE C.ID_CONVERSA = OLD.ID_CONVERSA),
+        valor := NULL,
+        resultado := 'EXCLUIDO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_mensagem":' || COALESCE(CAST(OLD.ID_MENSAGEM AS VARCHAR(80)), 'null') ||
+                    ',"id_conversa":' || COALESCE(CAST(OLD.ID_CONVERSA AS VARCHAR(80)), 'null') ||
+                    ',"papel":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.PAPEL AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"criada_em":' || COALESCE('"' || CAST(OLD.CRIADA_EM AS VARCHAR(80)) || '"', 'null') ||
+                    ',"caracteres":' || CAST(CHAR_LENGTH(OLD.CONTEUDO) AS VARCHAR(12)) || '}',
+        depois := NULL,
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AD_MAURO_MENSAGEM_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AD_MAURO_MENSAGEM_LOG^
+
+GRANT SELECT ON MAURO_CONVERSA TO TRIGGER TG_AD_MAURO_MENSAGEM_LOG^
+
+CREATE OR ALTER TRIGGER TG_AI_MAURO_PIX_PIN_TENTATIVA_LOG FOR MAURO_PIX_PIN_TENTATIVA
+ACTIVE AFTER INSERT POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''MAURO_PIX_PIN_TENTATIVA'', ''INSERT'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'MAURO_PIX_PIN_TENTATIVA',
+        id_registro := NEW.ID_TENTATIVA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA,
+        valor := NULL,
+        resultado := 'REGISTRADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := NULL,
+        depois := '{"id_tentativa":' || COALESCE(CAST(NEW.ID_TENTATIVA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(NEW.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(NEW.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"id_proposta":' || COALESCE(CAST(NEW.ID_PROPOSTA AS VARCHAR(80)), 'null') ||
+                    ',"resultado":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.RESULTADO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"tentativa_em":' || COALESCE('"' || CAST(NEW.TENTATIVA_EM AS VARCHAR(80)) || '"', 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AI_MAURO_PIX_PIN_TENTATIVA_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AI_MAURO_PIX_PIN_TENTATIVA_LOG^
+
+CREATE OR ALTER TRIGGER TG_AU_MAURO_PIX_PIN_TENTATIVA_LOG FOR MAURO_PIX_PIN_TENTATIVA
+ACTIVE AFTER UPDATE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''MAURO_PIX_PIN_TENTATIVA'', ''UPDATE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'MAURO_PIX_PIN_TENTATIVA',
+        id_registro := NEW.ID_TENTATIVA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA,
+        valor := NULL,
+        resultado := 'ATUALIZADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_tentativa":' || COALESCE(CAST(OLD.ID_TENTATIVA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(OLD.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(OLD.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"id_proposta":' || COALESCE(CAST(OLD.ID_PROPOSTA AS VARCHAR(80)), 'null') ||
+                    ',"resultado":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.RESULTADO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"tentativa_em":' || COALESCE('"' || CAST(OLD.TENTATIVA_EM AS VARCHAR(80)) || '"', 'null') || '}',
+        depois := '{"id_tentativa":' || COALESCE(CAST(NEW.ID_TENTATIVA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(NEW.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(NEW.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"id_proposta":' || COALESCE(CAST(NEW.ID_PROPOSTA AS VARCHAR(80)), 'null') ||
+                    ',"resultado":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.RESULTADO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"tentativa_em":' || COALESCE('"' || CAST(NEW.TENTATIVA_EM AS VARCHAR(80)) || '"', 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AU_MAURO_PIX_PIN_TENTATIVA_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AU_MAURO_PIX_PIN_TENTATIVA_LOG^
+
+CREATE OR ALTER TRIGGER TG_AD_MAURO_PIX_PIN_TENTATIVA_LOG FOR MAURO_PIX_PIN_TENTATIVA
+ACTIVE AFTER DELETE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''MAURO_PIX_PIN_TENTATIVA'', ''DELETE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'MAURO_PIX_PIN_TENTATIVA',
+        id_registro := OLD.ID_TENTATIVA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := OLD.ID_CONTA,
+        valor := NULL,
+        resultado := 'EXCLUIDO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_tentativa":' || COALESCE(CAST(OLD.ID_TENTATIVA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(OLD.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(OLD.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"id_proposta":' || COALESCE(CAST(OLD.ID_PROPOSTA AS VARCHAR(80)), 'null') ||
+                    ',"resultado":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.RESULTADO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"tentativa_em":' || COALESCE('"' || CAST(OLD.TENTATIVA_EM AS VARCHAR(80)) || '"', 'null') || '}',
+        depois := NULL,
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AD_MAURO_PIX_PIN_TENTATIVA_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AD_MAURO_PIX_PIN_TENTATIVA_LOG^
+
+CREATE OR ALTER TRIGGER TG_AI_MAURO_PIX_PROPOSTA_LOG FOR MAURO_PIX_PROPOSTA
+ACTIVE AFTER INSERT POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''MAURO_PIX_PROPOSTA'', ''INSERT'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'MAURO_PIX_PROPOSTA',
+        id_registro := NEW.ID_PROPOSTA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA_ORIGEM,
+        valor := NEW.VALOR,
+        resultado := 'REGISTRADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := NULL,
+        depois := '{"id_proposta":' || COALESCE(CAST(NEW.ID_PROPOSTA AS VARCHAR(80)), 'null') ||
+                    ',"id_conversa":' || COALESCE(CAST(NEW.ID_CONVERSA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(NEW.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_origem":' || COALESCE(CAST(NEW.ID_CONTA_ORIGEM AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_destino":' || COALESCE(CAST(NEW.ID_CONTA_DESTINO AS VARCHAR(80)), 'null') ||
+                    ',"valor":' || COALESCE(CAST(NEW.VALOR AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.STATUS AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"expira_em":' || COALESCE('"' || CAST(NEW.EXPIRA_EM AS VARCHAR(80)) || '"', 'null') ||
+                    ',"id_movimentacao":' || COALESCE(CAST(NEW.ID_MOVIMENTACAO AS VARCHAR(80)), 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AI_MAURO_PIX_PROPOSTA_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AI_MAURO_PIX_PROPOSTA_LOG^
+
+CREATE OR ALTER TRIGGER TG_AU_MAURO_PIX_PROPOSTA_LOG FOR MAURO_PIX_PROPOSTA
+ACTIVE AFTER UPDATE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''MAURO_PIX_PROPOSTA'', ''UPDATE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'MAURO_PIX_PROPOSTA',
+        id_registro := NEW.ID_PROPOSTA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA_ORIGEM,
+        valor := NEW.VALOR,
+        resultado := 'ATUALIZADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_proposta":' || COALESCE(CAST(OLD.ID_PROPOSTA AS VARCHAR(80)), 'null') ||
+                    ',"id_conversa":' || COALESCE(CAST(OLD.ID_CONVERSA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(OLD.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_origem":' || COALESCE(CAST(OLD.ID_CONTA_ORIGEM AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_destino":' || COALESCE(CAST(OLD.ID_CONTA_DESTINO AS VARCHAR(80)), 'null') ||
+                    ',"valor":' || COALESCE(CAST(OLD.VALOR AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.STATUS AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"expira_em":' || COALESCE('"' || CAST(OLD.EXPIRA_EM AS VARCHAR(80)) || '"', 'null') ||
+                    ',"id_movimentacao":' || COALESCE(CAST(OLD.ID_MOVIMENTACAO AS VARCHAR(80)), 'null') || '}',
+        depois := '{"id_proposta":' || COALESCE(CAST(NEW.ID_PROPOSTA AS VARCHAR(80)), 'null') ||
+                    ',"id_conversa":' || COALESCE(CAST(NEW.ID_CONVERSA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(NEW.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_origem":' || COALESCE(CAST(NEW.ID_CONTA_ORIGEM AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_destino":' || COALESCE(CAST(NEW.ID_CONTA_DESTINO AS VARCHAR(80)), 'null') ||
+                    ',"valor":' || COALESCE(CAST(NEW.VALOR AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.STATUS AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"expira_em":' || COALESCE('"' || CAST(NEW.EXPIRA_EM AS VARCHAR(80)) || '"', 'null') ||
+                    ',"id_movimentacao":' || COALESCE(CAST(NEW.ID_MOVIMENTACAO AS VARCHAR(80)), 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AU_MAURO_PIX_PROPOSTA_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AU_MAURO_PIX_PROPOSTA_LOG^
+
+CREATE OR ALTER TRIGGER TG_AD_MAURO_PIX_PROPOSTA_LOG FOR MAURO_PIX_PROPOSTA
+ACTIVE AFTER DELETE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''MAURO_PIX_PROPOSTA'', ''DELETE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'MAURO_PIX_PROPOSTA',
+        id_registro := OLD.ID_PROPOSTA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := OLD.ID_CONTA_ORIGEM,
+        valor := OLD.VALOR,
+        resultado := 'EXCLUIDO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_proposta":' || COALESCE(CAST(OLD.ID_PROPOSTA AS VARCHAR(80)), 'null') ||
+                    ',"id_conversa":' || COALESCE(CAST(OLD.ID_CONVERSA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(OLD.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_origem":' || COALESCE(CAST(OLD.ID_CONTA_ORIGEM AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_destino":' || COALESCE(CAST(OLD.ID_CONTA_DESTINO AS VARCHAR(80)), 'null') ||
+                    ',"valor":' || COALESCE(CAST(OLD.VALOR AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.STATUS AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"expira_em":' || COALESCE('"' || CAST(OLD.EXPIRA_EM AS VARCHAR(80)) || '"', 'null') ||
+                    ',"id_movimentacao":' || COALESCE(CAST(OLD.ID_MOVIMENTACAO AS VARCHAR(80)), 'null') || '}',
+        depois := NULL,
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AD_MAURO_PIX_PROPOSTA_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AD_MAURO_PIX_PROPOSTA_LOG^
+
+CREATE OR ALTER TRIGGER TG_AI_MOVIMENTACAO_LOG FOR MOVIMENTACAO
+ACTIVE AFTER INSERT POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''MOVIMENTACAO'', ''INSERT'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'MOVIMENTACAO',
+        id_registro := NEW.ID_MOVIMENTACAO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_PAGADOR,
+        valor := NEW.VALOR,
+        resultado := 'CONCLUIDO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := NULL,
+        depois := '{"id_movimentacao":' || COALESCE(CAST(NEW.ID_MOVIMENTACAO AS VARCHAR(80)), 'null') ||
+                    ',"id_pagador":' || COALESCE(CAST(NEW.ID_PAGADOR AS VARCHAR(80)), 'null') ||
+                    ',"id_recebedor":' || COALESCE(CAST(NEW.ID_RECEBEDOR AS VARCHAR(80)), 'null') ||
+                    ',"valor":' || COALESCE(CAST(NEW.VALOR AS VARCHAR(80)), 'null') ||
+                    ',"data_movimentacao":' || COALESCE('"' || CAST(NEW.DATA_MOVIMENTACAO AS VARCHAR(80)) || '"', 'null') ||
+                    ',"id_cobranca":' || COALESCE(CAST(NEW.ID_COBRANCA AS VARCHAR(80)), 'null') ||
+                    ',"id_compra":' || COALESCE(CAST(NEW.ID_COMPRA AS VARCHAR(80)), 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AI_MOVIMENTACAO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AI_MOVIMENTACAO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AU_MOVIMENTACAO_LOG FOR MOVIMENTACAO
+ACTIVE AFTER UPDATE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''MOVIMENTACAO'', ''UPDATE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'MOVIMENTACAO',
+        id_registro := NEW.ID_MOVIMENTACAO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_PAGADOR,
+        valor := NEW.VALOR,
+        resultado := 'ATUALIZADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_movimentacao":' || COALESCE(CAST(OLD.ID_MOVIMENTACAO AS VARCHAR(80)), 'null') ||
+                    ',"id_pagador":' || COALESCE(CAST(OLD.ID_PAGADOR AS VARCHAR(80)), 'null') ||
+                    ',"id_recebedor":' || COALESCE(CAST(OLD.ID_RECEBEDOR AS VARCHAR(80)), 'null') ||
+                    ',"valor":' || COALESCE(CAST(OLD.VALOR AS VARCHAR(80)), 'null') ||
+                    ',"data_movimentacao":' || COALESCE('"' || CAST(OLD.DATA_MOVIMENTACAO AS VARCHAR(80)) || '"', 'null') ||
+                    ',"id_cobranca":' || COALESCE(CAST(OLD.ID_COBRANCA AS VARCHAR(80)), 'null') ||
+                    ',"id_compra":' || COALESCE(CAST(OLD.ID_COMPRA AS VARCHAR(80)), 'null') || '}',
+        depois := '{"id_movimentacao":' || COALESCE(CAST(NEW.ID_MOVIMENTACAO AS VARCHAR(80)), 'null') ||
+                    ',"id_pagador":' || COALESCE(CAST(NEW.ID_PAGADOR AS VARCHAR(80)), 'null') ||
+                    ',"id_recebedor":' || COALESCE(CAST(NEW.ID_RECEBEDOR AS VARCHAR(80)), 'null') ||
+                    ',"valor":' || COALESCE(CAST(NEW.VALOR AS VARCHAR(80)), 'null') ||
+                    ',"data_movimentacao":' || COALESCE('"' || CAST(NEW.DATA_MOVIMENTACAO AS VARCHAR(80)) || '"', 'null') ||
+                    ',"id_cobranca":' || COALESCE(CAST(NEW.ID_COBRANCA AS VARCHAR(80)), 'null') ||
+                    ',"id_compra":' || COALESCE(CAST(NEW.ID_COMPRA AS VARCHAR(80)), 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AU_MOVIMENTACAO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AU_MOVIMENTACAO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AD_MOVIMENTACAO_LOG FOR MOVIMENTACAO
+ACTIVE AFTER DELETE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''MOVIMENTACAO'', ''DELETE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'MOVIMENTACAO',
+        id_registro := OLD.ID_MOVIMENTACAO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := OLD.ID_PAGADOR,
+        valor := OLD.VALOR,
+        resultado := 'EXCLUIDO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_movimentacao":' || COALESCE(CAST(OLD.ID_MOVIMENTACAO AS VARCHAR(80)), 'null') ||
+                    ',"id_pagador":' || COALESCE(CAST(OLD.ID_PAGADOR AS VARCHAR(80)), 'null') ||
+                    ',"id_recebedor":' || COALESCE(CAST(OLD.ID_RECEBEDOR AS VARCHAR(80)), 'null') ||
+                    ',"valor":' || COALESCE(CAST(OLD.VALOR AS VARCHAR(80)), 'null') ||
+                    ',"data_movimentacao":' || COALESCE('"' || CAST(OLD.DATA_MOVIMENTACAO AS VARCHAR(80)) || '"', 'null') ||
+                    ',"id_cobranca":' || COALESCE(CAST(OLD.ID_COBRANCA AS VARCHAR(80)), 'null') ||
+                    ',"id_compra":' || COALESCE(CAST(OLD.ID_COMPRA AS VARCHAR(80)), 'null') || '}',
+        depois := NULL,
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AD_MOVIMENTACAO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AD_MOVIMENTACAO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AI_NOTIFICACAO_LOG FOR NOTIFICACAO
+ACTIVE AFTER INSERT POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''NOTIFICACAO'', ''INSERT'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'NOTIFICACAO',
+        id_registro := NEW.ID_NOTIFICACAO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA,
+        valor := NULL,
+        resultado := 'REGISTRADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := NULL,
+        depois := '{"id_notificacao":' || COALESCE(CAST(NEW.ID_NOTIFICACAO AS VARCHAR(80)), 'null') ||
+                    ',"id_evento":' || COALESCE(CAST(NEW.ID_EVENTO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(NEW.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario_destino":' || COALESCE(CAST(NEW.ID_USUARIO_DESTINO AS VARCHAR(80)), 'null') ||
+                    ',"categoria":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.CATEGORIA AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"criado_em":' || COALESCE('"' || CAST(NEW.CRIADO_EM AS VARCHAR(80)) || '"', 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AI_NOTIFICACAO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AI_NOTIFICACAO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AU_NOTIFICACAO_LOG FOR NOTIFICACAO
+ACTIVE AFTER UPDATE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''NOTIFICACAO'', ''UPDATE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'NOTIFICACAO',
+        id_registro := NEW.ID_NOTIFICACAO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA,
+        valor := NULL,
+        resultado := 'ATUALIZADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_notificacao":' || COALESCE(CAST(OLD.ID_NOTIFICACAO AS VARCHAR(80)), 'null') ||
+                    ',"id_evento":' || COALESCE(CAST(OLD.ID_EVENTO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(OLD.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario_destino":' || COALESCE(CAST(OLD.ID_USUARIO_DESTINO AS VARCHAR(80)), 'null') ||
+                    ',"categoria":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.CATEGORIA AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"criado_em":' || COALESCE('"' || CAST(OLD.CRIADO_EM AS VARCHAR(80)) || '"', 'null') || '}',
+        depois := '{"id_notificacao":' || COALESCE(CAST(NEW.ID_NOTIFICACAO AS VARCHAR(80)), 'null') ||
+                    ',"id_evento":' || COALESCE(CAST(NEW.ID_EVENTO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(NEW.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario_destino":' || COALESCE(CAST(NEW.ID_USUARIO_DESTINO AS VARCHAR(80)), 'null') ||
+                    ',"categoria":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.CATEGORIA AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"criado_em":' || COALESCE('"' || CAST(NEW.CRIADO_EM AS VARCHAR(80)) || '"', 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AU_NOTIFICACAO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AU_NOTIFICACAO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AD_NOTIFICACAO_LOG FOR NOTIFICACAO
+ACTIVE AFTER DELETE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''NOTIFICACAO'', ''DELETE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'NOTIFICACAO',
+        id_registro := OLD.ID_NOTIFICACAO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := OLD.ID_CONTA,
+        valor := NULL,
+        resultado := 'EXCLUIDO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_notificacao":' || COALESCE(CAST(OLD.ID_NOTIFICACAO AS VARCHAR(80)), 'null') ||
+                    ',"id_evento":' || COALESCE(CAST(OLD.ID_EVENTO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(OLD.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario_destino":' || COALESCE(CAST(OLD.ID_USUARIO_DESTINO AS VARCHAR(80)), 'null') ||
+                    ',"categoria":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.CATEGORIA AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"criado_em":' || COALESCE('"' || CAST(OLD.CRIADO_EM AS VARCHAR(80)) || '"', 'null') || '}',
+        depois := NULL,
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AD_NOTIFICACAO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AD_NOTIFICACAO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AI_NOTIFICACAO_DESTINATARIO_LOG FOR NOTIFICACAO_DESTINATARIO
+ACTIVE AFTER INSERT POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''NOTIFICACAO_DESTINATARIO'', ''INSERT'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'NOTIFICACAO_DESTINATARIO',
+        id_registro := NEW.ID_DESTINATARIO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA,
+        valor := NULL,
+        resultado := 'REGISTRADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := NULL,
+        depois := '{"id_destinatario":' || COALESCE(CAST(NEW.ID_DESTINATARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_notificacao":' || COALESCE(CAST(NEW.ID_NOTIFICACAO AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(NEW.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(NEW.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"lida_em":' || COALESCE('"' || CAST(NEW.LIDA_EM AS VARCHAR(80)) || '"', 'null') ||
+                    ',"suprimida_em":' || COALESCE('"' || CAST(NEW.SUPRIMIDA_EM AS VARCHAR(80)) || '"', 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AI_NOTIFICACAO_DESTINATARIO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AI_NOTIFICACAO_DESTINATARIO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AU_NOTIFICACAO_DESTINATARIO_LOG FOR NOTIFICACAO_DESTINATARIO
+ACTIVE AFTER UPDATE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''NOTIFICACAO_DESTINATARIO'', ''UPDATE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'NOTIFICACAO_DESTINATARIO',
+        id_registro := NEW.ID_DESTINATARIO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA,
+        valor := NULL,
+        resultado := 'ATUALIZADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_destinatario":' || COALESCE(CAST(OLD.ID_DESTINATARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_notificacao":' || COALESCE(CAST(OLD.ID_NOTIFICACAO AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(OLD.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(OLD.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"lida_em":' || COALESCE('"' || CAST(OLD.LIDA_EM AS VARCHAR(80)) || '"', 'null') ||
+                    ',"suprimida_em":' || COALESCE('"' || CAST(OLD.SUPRIMIDA_EM AS VARCHAR(80)) || '"', 'null') || '}',
+        depois := '{"id_destinatario":' || COALESCE(CAST(NEW.ID_DESTINATARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_notificacao":' || COALESCE(CAST(NEW.ID_NOTIFICACAO AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(NEW.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(NEW.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"lida_em":' || COALESCE('"' || CAST(NEW.LIDA_EM AS VARCHAR(80)) || '"', 'null') ||
+                    ',"suprimida_em":' || COALESCE('"' || CAST(NEW.SUPRIMIDA_EM AS VARCHAR(80)) || '"', 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AU_NOTIFICACAO_DESTINATARIO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AU_NOTIFICACAO_DESTINATARIO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AD_NOTIFICACAO_DESTINATARIO_LOG FOR NOTIFICACAO_DESTINATARIO
+ACTIVE AFTER DELETE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''NOTIFICACAO_DESTINATARIO'', ''DELETE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'NOTIFICACAO_DESTINATARIO',
+        id_registro := OLD.ID_DESTINATARIO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := OLD.ID_CONTA,
+        valor := NULL,
+        resultado := 'EXCLUIDO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_destinatario":' || COALESCE(CAST(OLD.ID_DESTINATARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_notificacao":' || COALESCE(CAST(OLD.ID_NOTIFICACAO AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(OLD.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(OLD.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"lida_em":' || COALESCE('"' || CAST(OLD.LIDA_EM AS VARCHAR(80)) || '"', 'null') ||
+                    ',"suprimida_em":' || COALESCE('"' || CAST(OLD.SUPRIMIDA_EM AS VARCHAR(80)) || '"', 'null') || '}',
+        depois := NULL,
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AD_NOTIFICACAO_DESTINATARIO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AD_NOTIFICACAO_DESTINATARIO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AI_POLITICA_LIMITE_OPERACAO_LOG FOR POLITICA_LIMITE_OPERACAO
+ACTIVE AFTER INSERT POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''POLITICA_LIMITE_OPERACAO'', ''INSERT'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'POLITICA_LIMITE_OPERACAO',
+        id_registro := NULL,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NULL,
+        valor := NULL,
+        resultado := 'REGISTRADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := NULL,
+        depois := '{"tipo_conta":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.TIPO_CONTA AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"operacao":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.OPERACAO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"periodo":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.PERIODO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"ativo":' || COALESCE(CAST(NEW.ATIVO AS VARCHAR(80)), 'null') ||
+                    ',"limite_por_operacao":' || COALESCE(CAST(NEW.LIMITE_POR_OPERACAO AS VARCHAR(80)), 'null') ||
+                    ',"limite_por_operacao_favorito":' || COALESCE(CAST(NEW.LIMITE_POR_OPERACAO_FAVORITO AS VARCHAR(80)), 'null') ||
+                    ',"atualizado_por":' || COALESCE(CAST(NEW.ATUALIZADO_POR AS VARCHAR(80)), 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AI_POLITICA_LIMITE_OPERACAO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AI_POLITICA_LIMITE_OPERACAO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AU_POLITICA_LIMITE_OPERACAO_LOG FOR POLITICA_LIMITE_OPERACAO
+ACTIVE AFTER UPDATE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''POLITICA_LIMITE_OPERACAO'', ''UPDATE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'POLITICA_LIMITE_OPERACAO',
+        id_registro := NULL,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NULL,
+        valor := NULL,
+        resultado := 'ATUALIZADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"tipo_conta":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.TIPO_CONTA AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"operacao":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.OPERACAO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"periodo":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.PERIODO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"ativo":' || COALESCE(CAST(OLD.ATIVO AS VARCHAR(80)), 'null') ||
+                    ',"limite_por_operacao":' || COALESCE(CAST(OLD.LIMITE_POR_OPERACAO AS VARCHAR(80)), 'null') ||
+                    ',"limite_por_operacao_favorito":' || COALESCE(CAST(OLD.LIMITE_POR_OPERACAO_FAVORITO AS VARCHAR(80)), 'null') ||
+                    ',"atualizado_por":' || COALESCE(CAST(OLD.ATUALIZADO_POR AS VARCHAR(80)), 'null') || '}',
+        depois := '{"tipo_conta":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.TIPO_CONTA AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"operacao":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.OPERACAO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"periodo":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.PERIODO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"ativo":' || COALESCE(CAST(NEW.ATIVO AS VARCHAR(80)), 'null') ||
+                    ',"limite_por_operacao":' || COALESCE(CAST(NEW.LIMITE_POR_OPERACAO AS VARCHAR(80)), 'null') ||
+                    ',"limite_por_operacao_favorito":' || COALESCE(CAST(NEW.LIMITE_POR_OPERACAO_FAVORITO AS VARCHAR(80)), 'null') ||
+                    ',"atualizado_por":' || COALESCE(CAST(NEW.ATUALIZADO_POR AS VARCHAR(80)), 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AU_POLITICA_LIMITE_OPERACAO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AU_POLITICA_LIMITE_OPERACAO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AD_POLITICA_LIMITE_OPERACAO_LOG FOR POLITICA_LIMITE_OPERACAO
+ACTIVE AFTER DELETE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''POLITICA_LIMITE_OPERACAO'', ''DELETE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'POLITICA_LIMITE_OPERACAO',
+        id_registro := NULL,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NULL,
+        valor := NULL,
+        resultado := 'EXCLUIDO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"tipo_conta":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.TIPO_CONTA AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"operacao":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.OPERACAO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"periodo":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.PERIODO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"ativo":' || COALESCE(CAST(OLD.ATIVO AS VARCHAR(80)), 'null') ||
+                    ',"limite_por_operacao":' || COALESCE(CAST(OLD.LIMITE_POR_OPERACAO AS VARCHAR(80)), 'null') ||
+                    ',"limite_por_operacao_favorito":' || COALESCE(CAST(OLD.LIMITE_POR_OPERACAO_FAVORITO AS VARCHAR(80)), 'null') ||
+                    ',"atualizado_por":' || COALESCE(CAST(OLD.ATUALIZADO_POR AS VARCHAR(80)), 'null') || '}',
+        depois := NULL,
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AD_POLITICA_LIMITE_OPERACAO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AD_POLITICA_LIMITE_OPERACAO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AI_POLITICA_LIMITE_PERIODO_LOG FOR POLITICA_LIMITE_PERIODO
+ACTIVE AFTER INSERT POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''POLITICA_LIMITE_PERIODO'', ''INSERT'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'POLITICA_LIMITE_PERIODO',
+        id_registro := NULL,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NULL,
+        valor := NULL,
+        resultado := 'REGISTRADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := NULL,
+        depois := '{"tipo_conta":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.TIPO_CONTA AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"periodo":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.PERIODO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"ativo":' || COALESCE(CAST(NEW.ATIVO AS VARCHAR(80)), 'null') ||
+                    ',"limite_acumulado":' || COALESCE(CAST(NEW.LIMITE_ACUMULADO AS VARCHAR(80)), 'null') ||
+                    ',"atualizado_por":' || COALESCE(CAST(NEW.ATUALIZADO_POR AS VARCHAR(80)), 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AI_POLITICA_LIMITE_PERIODO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AI_POLITICA_LIMITE_PERIODO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AU_POLITICA_LIMITE_PERIODO_LOG FOR POLITICA_LIMITE_PERIODO
+ACTIVE AFTER UPDATE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''POLITICA_LIMITE_PERIODO'', ''UPDATE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'POLITICA_LIMITE_PERIODO',
+        id_registro := NULL,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NULL,
+        valor := NULL,
+        resultado := 'ATUALIZADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"tipo_conta":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.TIPO_CONTA AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"periodo":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.PERIODO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"ativo":' || COALESCE(CAST(OLD.ATIVO AS VARCHAR(80)), 'null') ||
+                    ',"limite_acumulado":' || COALESCE(CAST(OLD.LIMITE_ACUMULADO AS VARCHAR(80)), 'null') ||
+                    ',"atualizado_por":' || COALESCE(CAST(OLD.ATUALIZADO_POR AS VARCHAR(80)), 'null') || '}',
+        depois := '{"tipo_conta":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.TIPO_CONTA AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"periodo":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.PERIODO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"ativo":' || COALESCE(CAST(NEW.ATIVO AS VARCHAR(80)), 'null') ||
+                    ',"limite_acumulado":' || COALESCE(CAST(NEW.LIMITE_ACUMULADO AS VARCHAR(80)), 'null') ||
+                    ',"atualizado_por":' || COALESCE(CAST(NEW.ATUALIZADO_POR AS VARCHAR(80)), 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AU_POLITICA_LIMITE_PERIODO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AU_POLITICA_LIMITE_PERIODO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AD_POLITICA_LIMITE_PERIODO_LOG FOR POLITICA_LIMITE_PERIODO
+ACTIVE AFTER DELETE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''POLITICA_LIMITE_PERIODO'', ''DELETE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'POLITICA_LIMITE_PERIODO',
+        id_registro := NULL,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NULL,
+        valor := NULL,
+        resultado := 'EXCLUIDO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"tipo_conta":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.TIPO_CONTA AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"periodo":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.PERIODO AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"ativo":' || COALESCE(CAST(OLD.ATIVO AS VARCHAR(80)), 'null') ||
+                    ',"limite_acumulado":' || COALESCE(CAST(OLD.LIMITE_ACUMULADO AS VARCHAR(80)), 'null') ||
+                    ',"atualizado_por":' || COALESCE(CAST(OLD.ATUALIZADO_POR AS VARCHAR(80)), 'null') || '}',
+        depois := NULL,
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AD_POLITICA_LIMITE_PERIODO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AD_POLITICA_LIMITE_PERIODO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AI_PREFERENCIA_NOTIFICACAO_LOG FOR PREFERENCIA_NOTIFICACAO
+ACTIVE AFTER INSERT POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''PREFERENCIA_NOTIFICACAO'', ''INSERT'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'PREFERENCIA_NOTIFICACAO',
+        id_registro := NEW.ID_USUARIO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NULL,
+        valor := NULL,
+        resultado := 'REGISTRADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := NULL,
+        depois := '{"id_usuario":' || COALESCE(CAST(NEW.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"categoria":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.CATEGORIA AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"ativo":' || COALESCE(CAST(NEW.ATIVO AS VARCHAR(80)), 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AI_PREFERENCIA_NOTIFICACAO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AI_PREFERENCIA_NOTIFICACAO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AU_PREFERENCIA_NOTIFICACAO_LOG FOR PREFERENCIA_NOTIFICACAO
+ACTIVE AFTER UPDATE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''PREFERENCIA_NOTIFICACAO'', ''UPDATE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'PREFERENCIA_NOTIFICACAO',
+        id_registro := NEW.ID_USUARIO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NULL,
+        valor := NULL,
+        resultado := 'ATUALIZADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_usuario":' || COALESCE(CAST(OLD.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"categoria":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.CATEGORIA AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"ativo":' || COALESCE(CAST(OLD.ATIVO AS VARCHAR(80)), 'null') || '}',
+        depois := '{"id_usuario":' || COALESCE(CAST(NEW.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"categoria":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.CATEGORIA AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"ativo":' || COALESCE(CAST(NEW.ATIVO AS VARCHAR(80)), 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AU_PREFERENCIA_NOTIFICACAO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AU_PREFERENCIA_NOTIFICACAO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AD_PREFERENCIA_NOTIFICACAO_LOG FOR PREFERENCIA_NOTIFICACAO
+ACTIVE AFTER DELETE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''PREFERENCIA_NOTIFICACAO'', ''DELETE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'PREFERENCIA_NOTIFICACAO',
+        id_registro := OLD.ID_USUARIO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NULL,
+        valor := NULL,
+        resultado := 'EXCLUIDO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_usuario":' || COALESCE(CAST(OLD.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"categoria":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.CATEGORIA AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"ativo":' || COALESCE(CAST(OLD.ATIVO AS VARCHAR(80)), 'null') || '}',
+        depois := NULL,
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AD_PREFERENCIA_NOTIFICACAO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AD_PREFERENCIA_NOTIFICACAO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AI_RECORRENCIA_EXECUCAO_LOG FOR RECORRENCIA_EXECUCAO
+ACTIVE AFTER INSERT POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''RECORRENCIA_EXECUCAO'', ''INSERT'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'RECORRENCIA_EXECUCAO',
+        id_registro := NEW.ID_REC_EXECUCAO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NULL,
+        valor := NULL,
+        resultado := 'REGISTRADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := NULL,
+        depois := '{"id_rec_execucao":' || COALESCE(CAST(NEW.ID_REC_EXECUCAO AS VARCHAR(80)), 'null') ||
+                    ',"id_recorrencia":' || COALESCE(CAST(NEW.ID_RECORRENCIA AS VARCHAR(80)), 'null') ||
+                    ',"numero_execucao":' || COALESCE(CAST(NEW.NUMERO_EXECUCAO AS VARCHAR(80)), 'null') ||
+                    ',"id_agendamento":' || COALESCE(CAST(NEW.ID_AGENDAMENTO AS VARCHAR(80)), 'null') ||
+                    ',"data_prevista":' || COALESCE('"' || CAST(NEW.DATA_PREVISTA AS VARCHAR(80)) || '"', 'null') ||
+                    ',"status":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.STATUS AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AI_RECORRENCIA_EXECUCAO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AI_RECORRENCIA_EXECUCAO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AU_RECORRENCIA_EXECUCAO_LOG FOR RECORRENCIA_EXECUCAO
+ACTIVE AFTER UPDATE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''RECORRENCIA_EXECUCAO'', ''UPDATE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'RECORRENCIA_EXECUCAO',
+        id_registro := NEW.ID_REC_EXECUCAO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NULL,
+        valor := NULL,
+        resultado := 'ATUALIZADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_rec_execucao":' || COALESCE(CAST(OLD.ID_REC_EXECUCAO AS VARCHAR(80)), 'null') ||
+                    ',"id_recorrencia":' || COALESCE(CAST(OLD.ID_RECORRENCIA AS VARCHAR(80)), 'null') ||
+                    ',"numero_execucao":' || COALESCE(CAST(OLD.NUMERO_EXECUCAO AS VARCHAR(80)), 'null') ||
+                    ',"id_agendamento":' || COALESCE(CAST(OLD.ID_AGENDAMENTO AS VARCHAR(80)), 'null') ||
+                    ',"data_prevista":' || COALESCE('"' || CAST(OLD.DATA_PREVISTA AS VARCHAR(80)) || '"', 'null') ||
+                    ',"status":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.STATUS AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') || '}',
+        depois := '{"id_rec_execucao":' || COALESCE(CAST(NEW.ID_REC_EXECUCAO AS VARCHAR(80)), 'null') ||
+                    ',"id_recorrencia":' || COALESCE(CAST(NEW.ID_RECORRENCIA AS VARCHAR(80)), 'null') ||
+                    ',"numero_execucao":' || COALESCE(CAST(NEW.NUMERO_EXECUCAO AS VARCHAR(80)), 'null') ||
+                    ',"id_agendamento":' || COALESCE(CAST(NEW.ID_AGENDAMENTO AS VARCHAR(80)), 'null') ||
+                    ',"data_prevista":' || COALESCE('"' || CAST(NEW.DATA_PREVISTA AS VARCHAR(80)) || '"', 'null') ||
+                    ',"status":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.STATUS AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AU_RECORRENCIA_EXECUCAO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AU_RECORRENCIA_EXECUCAO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AD_RECORRENCIA_EXECUCAO_LOG FOR RECORRENCIA_EXECUCAO
+ACTIVE AFTER DELETE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''RECORRENCIA_EXECUCAO'', ''DELETE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'RECORRENCIA_EXECUCAO',
+        id_registro := OLD.ID_REC_EXECUCAO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NULL,
+        valor := NULL,
+        resultado := 'EXCLUIDO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_rec_execucao":' || COALESCE(CAST(OLD.ID_REC_EXECUCAO AS VARCHAR(80)), 'null') ||
+                    ',"id_recorrencia":' || COALESCE(CAST(OLD.ID_RECORRENCIA AS VARCHAR(80)), 'null') ||
+                    ',"numero_execucao":' || COALESCE(CAST(OLD.NUMERO_EXECUCAO AS VARCHAR(80)), 'null') ||
+                    ',"id_agendamento":' || COALESCE(CAST(OLD.ID_AGENDAMENTO AS VARCHAR(80)), 'null') ||
+                    ',"data_prevista":' || COALESCE('"' || CAST(OLD.DATA_PREVISTA AS VARCHAR(80)) || '"', 'null') ||
+                    ',"status":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.STATUS AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') || '}',
+        depois := NULL,
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AD_RECORRENCIA_EXECUCAO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AD_RECORRENCIA_EXECUCAO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AI_RECORRENCIA_FINANCEIRA_LOG FOR RECORRENCIA_FINANCEIRA
+ACTIVE AFTER INSERT POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''RECORRENCIA_FINANCEIRA'', ''INSERT'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'RECORRENCIA_FINANCEIRA',
+        id_registro := NEW.ID_RECORRENCIA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA,
+        valor := NEW.VALOR,
+        resultado := 'REGISTRADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := NULL,
+        depois := '{"id_recorrencia":' || COALESCE(CAST(NEW.ID_RECORRENCIA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(NEW.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(NEW.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_destino":' || COALESCE(CAST(NEW.ID_CONTA_DESTINO AS VARCHAR(80)), 'null') ||
+                    ',"id_cobranca":' || COALESCE(CAST(NEW.ID_COBRANCA AS VARCHAR(80)), 'null') ||
+                    ',"valor":' || COALESCE(CAST(NEW.VALOR AS VARCHAR(80)), 'null') ||
+                    ',"frequencia":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.FREQUENCIA AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"data_inicial":' || COALESCE('"' || CAST(NEW.DATA_INICIAL AS VARCHAR(80)) || '"', 'null') ||
+                    ',"data_final":' || COALESCE('"' || CAST(NEW.DATA_FINAL AS VARCHAR(80)) || '"', 'null') ||
+                    ',"limite_execucoes":' || COALESCE(CAST(NEW.LIMITE_EXECUCOES AS VARCHAR(80)), 'null') ||
+                    ',"execucoes_criadas":' || COALESCE(CAST(NEW.EXECUCOES_CRIADAS AS VARCHAR(80)), 'null') ||
+                    ',"proxima_execucao":' || COALESCE('"' || CAST(NEW.PROXIMA_EXECUCAO AS VARCHAR(80)) || '"', 'null') ||
+                    ',"status":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.STATUS AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AI_RECORRENCIA_FINANCEIRA_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AI_RECORRENCIA_FINANCEIRA_LOG^
+
+CREATE OR ALTER TRIGGER TG_AU_RECORRENCIA_FINANCEIRA_LOG FOR RECORRENCIA_FINANCEIRA
+ACTIVE AFTER UPDATE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''RECORRENCIA_FINANCEIRA'', ''UPDATE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'RECORRENCIA_FINANCEIRA',
+        id_registro := NEW.ID_RECORRENCIA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA,
+        valor := NEW.VALOR,
+        resultado := 'ATUALIZADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_recorrencia":' || COALESCE(CAST(OLD.ID_RECORRENCIA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(OLD.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(OLD.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_destino":' || COALESCE(CAST(OLD.ID_CONTA_DESTINO AS VARCHAR(80)), 'null') ||
+                    ',"id_cobranca":' || COALESCE(CAST(OLD.ID_COBRANCA AS VARCHAR(80)), 'null') ||
+                    ',"valor":' || COALESCE(CAST(OLD.VALOR AS VARCHAR(80)), 'null') ||
+                    ',"frequencia":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.FREQUENCIA AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"data_inicial":' || COALESCE('"' || CAST(OLD.DATA_INICIAL AS VARCHAR(80)) || '"', 'null') ||
+                    ',"data_final":' || COALESCE('"' || CAST(OLD.DATA_FINAL AS VARCHAR(80)) || '"', 'null') ||
+                    ',"limite_execucoes":' || COALESCE(CAST(OLD.LIMITE_EXECUCOES AS VARCHAR(80)), 'null') ||
+                    ',"execucoes_criadas":' || COALESCE(CAST(OLD.EXECUCOES_CRIADAS AS VARCHAR(80)), 'null') ||
+                    ',"proxima_execucao":' || COALESCE('"' || CAST(OLD.PROXIMA_EXECUCAO AS VARCHAR(80)) || '"', 'null') ||
+                    ',"status":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.STATUS AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') || '}',
+        depois := '{"id_recorrencia":' || COALESCE(CAST(NEW.ID_RECORRENCIA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(NEW.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(NEW.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_destino":' || COALESCE(CAST(NEW.ID_CONTA_DESTINO AS VARCHAR(80)), 'null') ||
+                    ',"id_cobranca":' || COALESCE(CAST(NEW.ID_COBRANCA AS VARCHAR(80)), 'null') ||
+                    ',"valor":' || COALESCE(CAST(NEW.VALOR AS VARCHAR(80)), 'null') ||
+                    ',"frequencia":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.FREQUENCIA AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"data_inicial":' || COALESCE('"' || CAST(NEW.DATA_INICIAL AS VARCHAR(80)) || '"', 'null') ||
+                    ',"data_final":' || COALESCE('"' || CAST(NEW.DATA_FINAL AS VARCHAR(80)) || '"', 'null') ||
+                    ',"limite_execucoes":' || COALESCE(CAST(NEW.LIMITE_EXECUCOES AS VARCHAR(80)), 'null') ||
+                    ',"execucoes_criadas":' || COALESCE(CAST(NEW.EXECUCOES_CRIADAS AS VARCHAR(80)), 'null') ||
+                    ',"proxima_execucao":' || COALESCE('"' || CAST(NEW.PROXIMA_EXECUCAO AS VARCHAR(80)) || '"', 'null') ||
+                    ',"status":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(NEW.STATUS AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AU_RECORRENCIA_FINANCEIRA_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AU_RECORRENCIA_FINANCEIRA_LOG^
+
+CREATE OR ALTER TRIGGER TG_AD_RECORRENCIA_FINANCEIRA_LOG FOR RECORRENCIA_FINANCEIRA
+ACTIVE AFTER DELETE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''RECORRENCIA_FINANCEIRA'', ''DELETE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'RECORRENCIA_FINANCEIRA',
+        id_registro := OLD.ID_RECORRENCIA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := OLD.ID_CONTA,
+        valor := OLD.VALOR,
+        resultado := 'EXCLUIDO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_recorrencia":' || COALESCE(CAST(OLD.ID_RECORRENCIA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(OLD.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(OLD.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"id_conta_destino":' || COALESCE(CAST(OLD.ID_CONTA_DESTINO AS VARCHAR(80)), 'null') ||
+                    ',"id_cobranca":' || COALESCE(CAST(OLD.ID_COBRANCA AS VARCHAR(80)), 'null') ||
+                    ',"valor":' || COALESCE(CAST(OLD.VALOR AS VARCHAR(80)), 'null') ||
+                    ',"frequencia":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.FREQUENCIA AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') ||
+                    ',"data_inicial":' || COALESCE('"' || CAST(OLD.DATA_INICIAL AS VARCHAR(80)) || '"', 'null') ||
+                    ',"data_final":' || COALESCE('"' || CAST(OLD.DATA_FINAL AS VARCHAR(80)) || '"', 'null') ||
+                    ',"limite_execucoes":' || COALESCE(CAST(OLD.LIMITE_EXECUCOES AS VARCHAR(80)), 'null') ||
+                    ',"execucoes_criadas":' || COALESCE(CAST(OLD.EXECUCOES_CRIADAS AS VARCHAR(80)), 'null') ||
+                    ',"proxima_execucao":' || COALESCE('"' || CAST(OLD.PROXIMA_EXECUCAO AS VARCHAR(80)) || '"', 'null') ||
+                    ',"status":' || COALESCE('"' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(OLD.STATUS AS VARCHAR(80)), ASCII_CHAR(92), ASCII_CHAR(92) || ASCII_CHAR(92)), ASCII_CHAR(34), ASCII_CHAR(92) || ASCII_CHAR(34)), ASCII_CHAR(13), ASCII_CHAR(92) || 'r'), ASCII_CHAR(10), ASCII_CHAR(92) || 'n'), ASCII_CHAR(9), ASCII_CHAR(92) || 't') || '"', 'null') || '}',
+        depois := NULL,
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AD_RECORRENCIA_FINANCEIRA_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AD_RECORRENCIA_FINANCEIRA_LOG^
+
+CREATE OR ALTER TRIGGER TG_AI_RECUPERACAO_SENHA_LOG FOR RECUPERACAO_SENHA
+ACTIVE AFTER INSERT POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''RECUPERACAO_SENHA'', ''INSERT'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'RECUPERACAO_SENHA',
+        id_registro := NEW.ID_RECUPERACAO_SENHA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NULL,
+        valor := NULL,
+        resultado := 'REGISTRADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := NULL,
+        depois := '{"id_recuperacao_senha":' || COALESCE(CAST(NEW.ID_RECUPERACAO_SENHA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(NEW.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"expira_em":' || COALESCE('"' || CAST(NEW.EXPIRA_EM AS VARCHAR(80)) || '"', 'null') ||
+                    ',"utilizado_em":' || COALESCE('"' || CAST(NEW.UTILIZADO_EM AS VARCHAR(80)) || '"', 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AI_RECUPERACAO_SENHA_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AI_RECUPERACAO_SENHA_LOG^
+
+CREATE OR ALTER TRIGGER TG_AU_RECUPERACAO_SENHA_LOG FOR RECUPERACAO_SENHA
+ACTIVE AFTER UPDATE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''RECUPERACAO_SENHA'', ''UPDATE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'RECUPERACAO_SENHA',
+        id_registro := NEW.ID_RECUPERACAO_SENHA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NULL,
+        valor := NULL,
+        resultado := 'ATUALIZADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_recuperacao_senha":' || COALESCE(CAST(OLD.ID_RECUPERACAO_SENHA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(OLD.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"expira_em":' || COALESCE('"' || CAST(OLD.EXPIRA_EM AS VARCHAR(80)) || '"', 'null') ||
+                    ',"utilizado_em":' || COALESCE('"' || CAST(OLD.UTILIZADO_EM AS VARCHAR(80)) || '"', 'null') || '}',
+        depois := '{"id_recuperacao_senha":' || COALESCE(CAST(NEW.ID_RECUPERACAO_SENHA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(NEW.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"expira_em":' || COALESCE('"' || CAST(NEW.EXPIRA_EM AS VARCHAR(80)) || '"', 'null') ||
+                    ',"utilizado_em":' || COALESCE('"' || CAST(NEW.UTILIZADO_EM AS VARCHAR(80)) || '"', 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AU_RECUPERACAO_SENHA_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AU_RECUPERACAO_SENHA_LOG^
+
+CREATE OR ALTER TRIGGER TG_AD_RECUPERACAO_SENHA_LOG FOR RECUPERACAO_SENHA
+ACTIVE AFTER DELETE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''RECUPERACAO_SENHA'', ''DELETE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'RECUPERACAO_SENHA',
+        id_registro := OLD.ID_RECUPERACAO_SENHA,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NULL,
+        valor := NULL,
+        resultado := 'EXCLUIDO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_recuperacao_senha":' || COALESCE(CAST(OLD.ID_RECUPERACAO_SENHA AS VARCHAR(80)), 'null') ||
+                    ',"id_usuario":' || COALESCE(CAST(OLD.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"expira_em":' || COALESCE('"' || CAST(OLD.EXPIRA_EM AS VARCHAR(80)) || '"', 'null') ||
+                    ',"utilizado_em":' || COALESCE('"' || CAST(OLD.UTILIZADO_EM AS VARCHAR(80)) || '"', 'null') || '}',
+        depois := NULL,
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AD_RECUPERACAO_SENHA_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AD_RECUPERACAO_SENHA_LOG^
+
+CREATE OR ALTER TRIGGER TG_AI_USUARIO_LOG FOR USUARIO
+ACTIVE AFTER INSERT POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''USUARIO'', ''INSERT'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'USUARIO',
+        id_registro := NEW.ID_USUARIO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NULL,
+        valor := NULL,
+        resultado := 'REGISTRADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := NULL,
+        depois := '{"id_usuario":' || COALESCE(CAST(NEW.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"tipo":' || COALESCE(CAST(NEW.TIPO AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE(CAST(NEW.STATUS AS VARCHAR(80)), 'null') ||
+                    ',"tentativas":' || COALESCE(CAST(NEW.TENTATIVAS AS VARCHAR(80)), 'null') ||
+                    ',"primeiro_acesso":' || COALESCE(CAST(NEW.PRIMEIRO_ACESSO AS VARCHAR(80)), 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AI_USUARIO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AI_USUARIO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AU_USUARIO_LOG FOR USUARIO
+ACTIVE AFTER UPDATE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''USUARIO'', ''UPDATE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := CASE WHEN OLD.STATUS IS DISTINCT FROM NEW.STATUS THEN 'USUARIO_STATUS' ELSE 'USUARIO_ALTERADO' END,
+        id_registro := NEW.ID_USUARIO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NULL,
+        valor := NULL,
+        resultado := 'ATUALIZADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_usuario":' || COALESCE(CAST(OLD.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"tipo":' || COALESCE(CAST(OLD.TIPO AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE(CAST(OLD.STATUS AS VARCHAR(80)), 'null') ||
+                    ',"tentativas":' || COALESCE(CAST(OLD.TENTATIVAS AS VARCHAR(80)), 'null') ||
+                    ',"primeiro_acesso":' || COALESCE(CAST(OLD.PRIMEIRO_ACESSO AS VARCHAR(80)), 'null') || '}',
+        depois := '{"id_usuario":' || COALESCE(CAST(NEW.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"tipo":' || COALESCE(CAST(NEW.TIPO AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE(CAST(NEW.STATUS AS VARCHAR(80)), 'null') ||
+                    ',"tentativas":' || COALESCE(CAST(NEW.TENTATIVAS AS VARCHAR(80)), 'null') ||
+                    ',"primeiro_acesso":' || COALESCE(CAST(NEW.PRIMEIRO_ACESSO AS VARCHAR(80)), 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AU_USUARIO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AU_USUARIO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AD_USUARIO_LOG FOR USUARIO
+ACTIVE AFTER DELETE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''USUARIO'', ''DELETE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'USUARIO',
+        id_registro := OLD.ID_USUARIO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NULL,
+        valor := NULL,
+        resultado := 'EXCLUIDO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_usuario":' || COALESCE(CAST(OLD.ID_USUARIO AS VARCHAR(80)), 'null') ||
+                    ',"tipo":' || COALESCE(CAST(OLD.TIPO AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE(CAST(OLD.STATUS AS VARCHAR(80)), 'null') ||
+                    ',"tentativas":' || COALESCE(CAST(OLD.TENTATIVAS AS VARCHAR(80)), 'null') ||
+                    ',"primeiro_acesso":' || COALESCE(CAST(OLD.PRIMEIRO_ACESSO AS VARCHAR(80)), 'null') || '}',
+        depois := NULL,
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AD_USUARIO_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AD_USUARIO_LOG^
+
+CREATE OR ALTER TRIGGER TG_AI_VERIFICACAO_PIX_LOG FOR VERIFICACAO_PIX
+ACTIVE AFTER INSERT POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''VERIFICACAO_PIX'', ''INSERT'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'VERIFICACAO_PIX',
+        id_registro := NEW.ID_VERIFICACAO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA,
+        valor := NULL,
+        resultado := 'REGISTRADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := NULL,
+        depois := '{"id_verificacao":' || COALESCE(CAST(NEW.ID_VERIFICACAO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(NEW.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"tentativas":' || COALESCE(CAST(NEW.TENTATIVAS AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE(CAST(NEW.STATUS AS VARCHAR(80)), 'null') ||
+                    ',"expira_em":' || COALESCE('"' || CAST(NEW.EXPIRA_EM AS VARCHAR(80)) || '"', 'null') ||
+                    ',"confirmado_em":' || COALESCE('"' || CAST(NEW.CONFIRMADO_EM AS VARCHAR(80)) || '"', 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AI_VERIFICACAO_PIX_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AI_VERIFICACAO_PIX_LOG^
+
+CREATE OR ALTER TRIGGER TG_AU_VERIFICACAO_PIX_LOG FOR VERIFICACAO_PIX
+ACTIVE AFTER UPDATE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''VERIFICACAO_PIX'', ''UPDATE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'VERIFICACAO_PIX',
+        id_registro := NEW.ID_VERIFICACAO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := NEW.ID_CONTA,
+        valor := NULL,
+        resultado := 'ATUALIZADO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_verificacao":' || COALESCE(CAST(OLD.ID_VERIFICACAO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(OLD.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"tentativas":' || COALESCE(CAST(OLD.TENTATIVAS AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE(CAST(OLD.STATUS AS VARCHAR(80)), 'null') ||
+                    ',"expira_em":' || COALESCE('"' || CAST(OLD.EXPIRA_EM AS VARCHAR(80)) || '"', 'null') ||
+                    ',"confirmado_em":' || COALESCE('"' || CAST(OLD.CONFIRMADO_EM AS VARCHAR(80)) || '"', 'null') || '}',
+        depois := '{"id_verificacao":' || COALESCE(CAST(NEW.ID_VERIFICACAO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(NEW.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"tentativas":' || COALESCE(CAST(NEW.TENTATIVAS AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE(CAST(NEW.STATUS AS VARCHAR(80)), 'null') ||
+                    ',"expira_em":' || COALESCE('"' || CAST(NEW.EXPIRA_EM AS VARCHAR(80)) || '"', 'null') ||
+                    ',"confirmado_em":' || COALESCE('"' || CAST(NEW.CONFIRMADO_EM AS VARCHAR(80)) || '"', 'null') || '}',
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AU_VERIFICACAO_PIX_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AU_VERIFICACAO_PIX_LOG^
+
+CREATE OR ALTER TRIGGER TG_AD_VERIFICACAO_PIX_LOG FOR VERIFICACAO_PIX
+ACTIVE AFTER DELETE POSITION 32000
+AS
+DECLARE VARIABLE V_DESTINO VARCHAR(512);
+DECLARE VARIABLE V_USUARIO VARCHAR(63);
+DECLARE VARIABLE V_SENHA VARCHAR(255);
+DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
+BEGIN
+    SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
+    FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+    INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
+    IF (V_DESTINO IS NULL) THEN
+        EXCEPTION EX_LOG_CONFIGURACAO;
+
+    EXECUTE STATEMENT (
+        'INSERT INTO AUDITORIA_EVENTO (
+            ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
+            ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO,
+            ORIGEM, DADOS_ANTERIORES, DADOS_NOVOS, CRIADO_EM
+        ) VALUES (
+            :origem_id, :id_evento, :evento, ''VERIFICACAO_PIX'', ''DELETE'',
+            :id_registro, :id_usuario, :id_conta, :valor, :resultado,
+            :origem, :antes, :depois, :criado_em
+        )'
+    ) (
+        origem_id := :V_ORIGEM_ID,
+        id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
+        evento := 'VERIFICACAO_PIX',
+        id_registro := OLD.ID_VERIFICACAO,
+        id_usuario := CAST(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO') AS INTEGER),
+        id_conta := OLD.ID_CONTA,
+        valor := NULL,
+        resultado := 'EXCLUIDO',
+        origem := COALESCE(RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM'), 'SQL:' || CURRENT_USER),
+        antes := '{"id_verificacao":' || COALESCE(CAST(OLD.ID_VERIFICACAO AS VARCHAR(80)), 'null') ||
+                    ',"id_conta":' || COALESCE(CAST(OLD.ID_CONTA AS VARCHAR(80)), 'null') ||
+                    ',"tentativas":' || COALESCE(CAST(OLD.TENTATIVAS AS VARCHAR(80)), 'null') ||
+                    ',"status":' || COALESCE(CAST(OLD.STATUS AS VARCHAR(80)), 'null') ||
+                    ',"expira_em":' || COALESCE('"' || CAST(OLD.EXPIRA_EM AS VARCHAR(80)) || '"', 'null') ||
+                    ',"confirmado_em":' || COALESCE('"' || CAST(OLD.CONFIRMADO_EM AS VARCHAR(80)) || '"', 'null') || '}',
+        depois := NULL,
+        criado_em := CURRENT_TIMESTAMP
+    )
+    ON EXTERNAL DATA SOURCE :V_DESTINO
+    AS USER :V_USUARIO
+    PASSWORD :V_SENHA
+    WITH COMMON TRANSACTION;
+END^
+
+GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AD_VERIFICACAO_PIX_LOG^
+
+GRANT USAGE ON SEQUENCE GEN_LOG_EVENTO TO TRIGGER TG_AD_VERIFICACAO_PIX_LOG^
+
+DROP TRIGGER ARKHE_AUD_ACESSO_AD^
+
+DROP TRIGGER ARKHE_AUD_ACESSO_AI^
+
+DROP TRIGGER ARKHE_AUD_ACESSO_AU^
+
+DROP TRIGGER ARKHE_AUD_CARTAO_AI^
+
+DROP TRIGGER ARKHE_AUD_CARTAO_AU^
+
+DROP TRIGGER ARKHE_AUD_COB_AD^
+
+DROP TRIGGER ARKHE_AUD_COB_AI^
+
+DROP TRIGGER ARKHE_AUD_COB_AU^
+
+DROP TRIGGER ARKHE_AUD_ESTORNO_AD^
+
+DROP TRIGGER ARKHE_AUD_ESTORNO_AI^
+
+DROP TRIGGER ARKHE_AUD_ESTORNO_AU^
+
+DROP TRIGGER ARKHE_AUD_LIMITE_AD^
+
+DROP TRIGGER ARKHE_AUD_LIMITE_AI^
+
+DROP TRIGGER ARKHE_AUD_LIMITE_AU^
+
+DROP TRIGGER ARKHE_AUD_MOV_AD^
+
+DROP TRIGGER ARKHE_AUD_MOV_AI^
+
+DROP TRIGGER ARKHE_AUD_MOV_AU^
+
+DROP TRIGGER ARKHE_AUD_USUARIO_AU^
+
+CREATE OR ALTER TRIGGER TG_AI_COMPRA FOR COMPRA
+ACTIVE AFTER INSERT POSITION 0
+AS
+DECLARE VARIABLE V_QTD_PARCELA_CERTA INTEGER = 0;
+DECLARE VARIABLE V_DATA DATE;
+BEGIN
+    V_DATA = NEW.DATA_COMPRA;
+    IF (NEW.TIPO = 1) THEN
+    BEGIN
+        WHILE (V_QTD_PARCELA_CERTA < NEW.QTD_PARCELA) DO
+        BEGIN
+            V_QTD_PARCELA_CERTA = V_QTD_PARCELA_CERTA + 1;
+            INSERT INTO FATURA_COMPRA (
+                ID_COMPRA,
+                NUMERO_PARCELA,
+                STATUS,
+                VALOR_PARCELA,
+                DATA_PARCELA
+            )
+            VALUES (
+                NEW.ID_COMPRA,
+                :V_QTD_PARCELA_CERTA,
+                0,
+                NEW.VALOR_PARCELA,
+                :V_DATA
+            );
+            V_DATA = DATEADD(1 MONTH TO V_DATA);
+        END
+    END
+END^
+
+CREATE OR ALTER TRIGGER TG_AI_CONTA_LIMITE_CTRL FOR CONTA
+ACTIVE AFTER INSERT POSITION 99
+AS
+BEGIN
+    INSERT INTO CONTROLE_LIMITE_CONTA (ID_CONTA, VERSAO) VALUES (NEW.ID_CONTA, 0);
+END^
+
+DROP PROCEDURE ARKHE_AUDIT_ENQUEUE^
+SET TERM ;^
+COMMIT;
