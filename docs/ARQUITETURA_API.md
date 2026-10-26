@@ -26,7 +26,7 @@ Os caminhos, métodos e contratos abaixo são usados por integrações existente
 | --- | --- | --- |
 | GET | `/api/v1/conta` | Credenciais da integração |
 | GET | `/api/v1/saldo` | Credenciais da integração |
-| POST | `/api/v1/contas/verificar-cpf` | **Consulta restrita**: integração autenticada com Client ID aprovado; body JSON com cpf; retorna apenas `possui_conta` |
+| POST | `/api/v1/contas/verificar-cpf` | Credenciais normais de integração ativa; CPF válido em JSON; retorna apenas `possui_conta`; limites anti-enumeração |
 | GET | `/api/v1/movimentacoes` | Credenciais da integração; aceita `data_inicio` e `data_fim` |
 | GET | `/api/v1/resumo-financeiro` | Credenciais da integração; aceita `data_inicio` e `data_fim` |
 | POST | `/api/v1/cobrancas/pix` | Credenciais da integração |
@@ -91,22 +91,24 @@ antes de fazer merge desta PR.
 
 ## Consulta restrita de existência de conta por CPF
 
-`POST /api/v1/contas/verificar-cpf` exige headers `X-Client-ID` e
-`X-Client-Secret`, CPF válido em JSON e **opt-in administrativo** definido
-na variável `ARKHE_API_CONSULTA_CPF_CLIENT_IDS`, com Client IDs separados por vírgula.
+`POST /api/v1/contas/verificar-cpf` exige os headers normais
+`X-Client-ID` e `X-Client-Secret` de uma integração **ativa** e CPF válido
+em JSON. Não é mais necessária a lista especial
+`ARKHE_API_CONSULTA_CPF_CLIENT_IDS`. A autenticação comum continua a
+recusar credenciais inválidas e integrações desativadas (401/403).
 
-O endpoint não é público nem está liberado automaticamente para uma PJ.
-É destinado a integrações previamente autorizadas a verificar cadastros,
-mediante finalidade legítima, controles internos de acesso e proteção
-dos dados pessoais. Não deve ser chamado diretamente do navegador.
-Para as demais integrações, retorna HTTP 403.
+O endpoint não é público. Só deve ser usado no servidor da integração,
+com finalidade legítima, controles internos de acesso e fundamento
+apropriado para o tratamento desses dados pessoais. É proibido usá-lo
+para descobrir indiscriminadamente se pessoas são clientes.
 
 Exemplo: `{"cpf":"52998224725"}` → `{"possui_conta":true}` (apenas ilustrativo).
 Só considera CPF com uma linha em `CONTA` vinculada a `USUARIO`; não retorna
 nome, saldo, número da conta, ID do usuário ou existência de mero cadastro.
 
-O limite é de 10 consultas/minuto por integração e 20 consultas/dia
-ao mesmo CPF entre integrações autorizadas. Redis é obrigatório; sem ele, 503.
+O limite é de **10 consultas/minuto e 100 consultas/dia por integração**,
+além de **20 consultas/dia ao mesmo CPF** entre todas as integrações.
+Redis é obrigatório; sem ele, 503.
 Consultas excedidas retornam 429. CPF inválido retorna 400.
 A resposta inclui `Cache-Control: no-store` e não contém o CPF consultado.
 Jamais registrar CPF em URL ou log de requisição.
