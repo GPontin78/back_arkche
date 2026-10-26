@@ -112,7 +112,7 @@ def _inserir_evento(cursor, evento, resultado, motivo, id_usuario, id_conta,
         str(resultado)[:24], str(motivo)[:500] if motivo else None,
         str(origem or '/flask')[:160], snapshot,
     )
-    cursor.execute("SELECT 1 FROM RDB$TRIGGERS WHERE RDB$TRIGGER_NAME = 'TG_AI_MOVIMENTACAO_LOG'")
+    cursor.execute("SELECT 1 FROM RDB$TRIGGERS WHERE RDB$TRIGGER_NAME IN ('TG_AI_MOVIMENTACAO_LOG', 'TG_AIUD_MOVIMENTACAO_LOG')")
     if cursor.fetchone():
         cursor.execute('''EXECUTE BLOCK (
             P_EVENTO VARCHAR(48) = ?, P_OPERACAO VARCHAR(12) = ?,
