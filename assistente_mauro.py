@@ -707,6 +707,67 @@ def _resposta_financeira_verificada(intencao, dados):
         inteiro = f'{int(inteiro):,}'.replace(',', '.')
         return f'R$ {inteiro},{centavos}'
 
+    def quando(valor):
+        try:
+            return datetime.fromisoformat(str(valor)).strftime('%d/%m/%Y às %H:%M')
+        except (ValueError, TypeError):
+            return str(valor or 'data indisponível')
+
+    if intencao == 'PERFIL':
+        conta = dados.get('conta_autorizada') or {}
+        nome = str(conta.get('nome_titular') or '').strip()
+        tipo = conta.get('tipo_conta') or 'selecionada'
+        final = f" final {conta['conta_final']}" if conta.get('conta_final') else ''
+        return (f'Você está autenticado como {nome}. Sua conta ativa é a {tipo}{final}.'
+                if nome else f'Você está na conta {tipo}{final} do Arkhé. Não consegui confirmar seu nome agora.')
+    if intencao == 'DATA_ATUAL':
+        agora = datetime.now(FUSO)
+        return f'Hoje é {agora:%d/%m/%Y}, e agora são {agora:%H:%M} (horário de Brasília).'
+    if intencao == 'CAPACIDADES':
+        return ('Posso consultar seu saldo, extrato, despesas, recebimentos, destinatários mais frequentes, '
+                'limites, boletos pendentes, agendamentos e notificações da conta ativa. '
+                'Também posso preparar um Pix para você conferir e confirmar com PIN no Arkhé. '
+                'O que você gostaria de fazer?')
+    if intencao == 'RESUMO_CONVERSA':
+        return dados.get('resumo_conversa') or 'Posso retomar nossa conversa sobre sua conta.'
+    if intencao == 'CARTAO_VIRTUAL':
+        return ('Para gerar um cartão, abra a área de Cartões do Arkhé e veja as opções disponíveis '
+                'para sua conta. Ainda não consigo emitir um cartão diretamente por esta conversa. '
+                'Se quiser, posso explicar como usar o cartão.')
+    if intencao == 'ALTERAR_SALDO':
+        return ('O saldo não pode ser editado por mensagem, nem por uma declaração de administrador. '
+                'Ele muda somente por operações autorizadas e registradas no Arkhé.')
+    if intencao == 'EDITAR_PERFIL':
+        return ('Não consigo alterar seu nome por mensagem. Para atualizar seus dados cadastrais, '
+                'use as opções de perfil disponíveis no Arkhé ou fale com o responsável pelo cadastro.')
+    if intencao == 'EXCLUIR_CHAVE':
+        return ('Não posso excluir chaves Pix diretamente pela conversa. '
+                'Abra Pix e cobranças na sua conta para gerenciar suas chaves com segurança.')
+    if intencao in ('LISTAR_DESPESAS', 'LISTAR_RECEITAS'):
+        itens = dados.get('movimentacoes') or []
+        tipo = 'saídas' if intencao == 'LISTAR_DESPESAS' else 'entradas'
+        periodo = dados.get('periodo') or 'no período solicitado'
+        if not itens:
+            return f'Não encontrei {tipo} {periodo} nesta conta.'
+        lista = '\n'.join(f'- {quando(item["data"])} — {brl(item["valor"])} — {item["contraparte"]}'
+                          for item in itens)
+        quantidade = int(dados.get('quantidade', len(itens)))
+        sufixo = f' Mostro as {len(itens)} mais recentes.' if quantidade > len(itens) else ''
+        return f'Encontrei {quantidade} {tipo} {periodo}.{sufixo}\n{lista}'
+    if intencao == 'DESTINATARIOS_FREQUENTES':
+        itens = dados.get('destinatarios') or []
+        periodo = dados.get('periodo') or 'no período consultado'
+        if not itens:
+            return f'Não encontrei transferências de saída {periodo} nesta conta.'
+        lider = itens[0]
+        texto = (f'{periodo.capitalize()}, o destinatário para quem você mais enviou dinheiro '
+                 f'foi {lider["nome"]}: {brl(lider["total"])} em {lider["quantidade"]} transferência(s).')
+        if len(itens) > 1:
+            texto += '\nOutros destinatários:\n' + '\n'.join(
+                f'- {item["nome"]}: {brl(item["total"])} em {item["quantidade"]} transferência(s)'
+                for item in itens[1:5])
+        return texto
+
     if intencao == 'SALDO':
         conta = dados.get('conta_autorizada') or {}
         nome = conta.get('nome_conta')
@@ -725,17 +786,18 @@ def _resposta_financeira_verificada(intencao, dados):
         itens = dados.get('maiores_gastos') or []
         if not itens:
             return 'Não encontrei despesas registradas para esta conta.'
-        lista = '; '.join(f'{brl(item["valor"])} em {item["data"]}' for item in itens[:5])
-        return f'Estas são as maiores despesas que encontrei: {lista}.'
+        lista = '\n'.join(f'- {brl(item["valor"])} para {item.get("contraparte", "Conta relacionada")} em {quando(item["data"])}' for item in itens[:5])
+        return f'Estas são suas maiores despesas registradas nesta conta:\n{lista}'
     if intencao == 'MOVIMENTACOES':
         itens = dados.get('movimentacoes') or []
         if not itens:
             return 'Não encontrei movimentações registradas para esta conta.'
-        lista = '; '.join(
-            f'{"Entrada" if item["tipo"] == "entrada" else "Saída"}: {brl(item["valor"])} com {item["contraparte"]} em {item["data"]}'
-            for item in itens[:5]
+        lista = '\n'.join(
+            f'- {"Entrada" if item["tipo"] == "entrada" else "Saída"} de {brl(item["valor"])} '
+            f'{"de" if item["tipo"] == "entrada" else "para"} {item["contraparte"]} — {quando(item["data"])}'
+            for item in itens[:15]
         )
-        return f'Estas são suas movimentações mais recentes: {lista}.'
+        return f'Estas são suas movimentações mais recentes ({dados.get("periodo", "histórico da conta")}, até 15 registros):\n{lista}'
     if intencao == 'AGENDAMENTOS':
         itens = dados.get('agendamentos') or []
         if not itens:
