@@ -355,9 +355,8 @@ def _dados_financeiros(cursor, contexto, intencao, pergunta='', historico=()):
     if intencao in ('DESPESAS_MES', 'DESPESAS_SEMANA', 'DESPESAS_SEMANA_PASSADA',
                     'RECEITAS_SEMANA', 'RECEITAS_SEMANA_PASSADA'):
         if intencao == 'DESPESAS_MES':
-            inicio = hoje.replace(day=1)
-            fim = hoje + timedelta(days=1)
-            direcao, rotulo = 'ID_PAGADOR', 'despesas do mês'
+            inicio, fim, rotulo = periodo_solicitado(pergunta, historico, agora)
+            direcao = 'ID_PAGADOR'
         elif intencao in ('DESPESAS_SEMANA_PASSADA', 'RECEITAS_SEMANA_PASSADA'):
             inicio = hoje - timedelta(days=hoje.weekday() + 7)
             fim = inicio + timedelta(days=7)
@@ -368,9 +367,8 @@ def _dados_financeiros(cursor, contexto, intencao, pergunta='', historico=()):
             fim = hoje + timedelta(days=1)
             direcao, rotulo = 'ID_PAGADOR', 'despesas dos últimos sete dias'
         elif intencao == 'RECEITAS_SEMANA':
-            inicio = hoje - timedelta(days=6)
-            fim = hoje + timedelta(days=1)
-            direcao, rotulo = 'ID_RECEBEDOR', 'recebimentos dos últimos sete dias'
+            inicio, fim, rotulo = periodo_solicitado(pergunta, historico, agora, padrao='semana')
+            direcao = 'ID_RECEBEDOR'
         else:
             inicio = hoje.replace(day=1)
             fim = hoje + timedelta(days=1)
@@ -776,11 +774,10 @@ def _resposta_financeira_verificada(intencao, dados):
             return f'Na conta {conta["tipo_conta"]} de {nome}{final}, o saldo é {brl(dados["saldo"])}.'
         return f'Seu saldo na conta ativa é {brl(dados["saldo"])}.'
     if intencao in ('DESPESAS_MES', 'DESPESAS_SEMANA', 'DESPESAS_SEMANA_PASSADA'):
-        periodo = ('No mês atual' if intencao == 'DESPESAS_MES' else
-                   'Na semana passada' if intencao == 'DESPESAS_SEMANA_PASSADA' else 'Nos últimos sete dias')
+        periodo = str(dados.get('periodo') or 'no período consultado').strip().capitalize()
         return f'{periodo}, suas despesas somam {brl(dados["total"])} em {dados["quantidade"]} movimentação(ões).'
     if intencao in ('RECEITAS_SEMANA', 'RECEITAS_SEMANA_PASSADA'):
-        periodo = 'Na semana passada' if intencao == 'RECEITAS_SEMANA_PASSADA' else 'Nos últimos sete dias'
+        periodo = str(dados.get('periodo') or 'no período consultado').strip().capitalize()
         return f'{periodo}, você recebeu {brl(dados["total"])} em {dados["quantidade"]} movimentação(ões).'
     if intencao == 'MAIORES_GASTOS':
         itens = dados.get('maiores_gastos') or []
