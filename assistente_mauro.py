@@ -273,6 +273,77 @@ def _dados_financeiros(cursor, contexto, intencao, pergunta='', historico=()):
     agora = datetime.now(FUSO).replace(tzinfo=None)
     hoje = agora.date()
 
+    if intencao in ('LISTAR_DESPESAS', 'LISTAR_RECEITAS', 'DESTINATARIOS_FREQUENTES'):
+        inicio, fim, periodo = periodo_solicitado(
+            pergunta, historico, agora, padrao='todos' if intencao == 'DESTINATARIOS_FREQUENTES' else 'mes')
+        filtro_periodo = ' AND M.DATA_MOVIMENTACAO >= ? AND M.DATA_MOVIMENTACAO < ?' if inicio and fim else ''
+        parametros = (conta, inicio, fim) if filtro_periodo else (conta,)
+        if intencao == 'DESTINATARIOS_FREQUENTES':
+            cursor.execute(
+                f'''SELECT FIRST 10
+                      COALESCE(CR.NOME_FANTASIA, CR.RAZAO_SOCIAL, UR.NOME, 'Conta relacionada'),
+                      CAST(COALESCE(SUM(M.VALOR), 0) AS DECIMAL(18,2)), COUNT(*)
+                   FROM MOVIMENTACAO M
+                   INNER JOIN CONTA CR ON CR.ID_CONTA = M.ID_RECEBEDOR
+                   LEFT JOIN USUARIO UR ON UR.ID_USUARIO = CR.ID_USUARIO
+                   WHERE M.ID_PAGADOR = ?{filtro_periodo}
+                   GROUP BY M.ID_RECEBEDOR, CR.NOME_FANTASIA, CR.RAZAO_SOCIAL, UR.NOME
+                   ORDER BY 2 DESC, 3 DESC''', parametros,
+            )
+            return {'destinatarios': [
+                {'nome': str(r[0]), 'total': f'{Decimal(str(r[1])):.2f}', 'quantidade': int(r[2])}
+                for r in cursor.fetchall()], 'periodo': periodo, 'moeda': 'BRL'}
+        coluna = 'ID_PAGADOR' if intencao == 'LISTAR_DESPESAS' else 'ID_RECEBEDOR'
+        cursor.execute(
+            f'''SELECT COUNT(*) FROM MOVIMENTACAO M
+                WHERE M.{coluna} = ?{filtro_periodo}''', parametros,
+        )
+        quantidade = int((cursor.fetchone() or (0,))[0] or 0)
+        cursor.execute(
+            f'''SELECT FIRST 25 M.VALOR, M.DATA_MOVIMENTACAO,
+                        COALESCE(CASE WHEN M.ID_PAGADOR = ?
+                            THEN COALESCE(CR.NOME_FANTASIA, CR.RAZAO_SOCIAL, UR.NOME)
+                            ELSE COALESCE(CP.NOME_FANTASIA, CP.RAZAO_SOCIAL, UP.NOME)
+                        END, 'Conta relacionada')
+                FROM MOVIMENTACAO M
+                INNER JOIN CONTA CP ON CP.ID_CONTA = M.ID_PAGADOR
+                LEFT JOIN USUARIO UP ON UP.ID_USUARIO = CP.ID_USUARIO
+                INNER JOIN CONTA CR ON CR.ID_CONTA = M.ID_RECEBEDOR
+                LEFT JOIN USUARIO UR ON UR.ID_USUARIO = CR.ID_USUARIO
+                WHERE M.{coluna} = ?{filtro_periodo}
+                ORDER BY M.DATA_MOVIMENTACAO DESC, M.ID_MOVIMENTACAO DESC''',
+            (conta, *parametros),
+        )
+        return {'movimentacoes': [
+            {'valor': f'{Decimal(str(r[0])):.2f}', 'data': _data_json(r[1]), 'contraparte': str(r[2])}
+            for r in cursor.fetchall()],
+            'quantidade': quantidade, 'periodo': periodo, 'moeda': 'BRL'}
+
+    if intencao == 'MOVIMENTACOES':
+        inicio, fim, periodo = periodo_solicitado(pergunta, historico, agora, padrao='todos')
+        filtro = ' AND M.DATA_MOVIMENTACAO >= ? AND M.DATA_MOVIMENTACAO < ?' if inicio and fim else ''
+        parametros = (conta, conta, conta, conta, inicio, fim) if filtro else (conta, conta, conta, conta)
+        cursor.execute(
+            f'''SELECT FIRST 15 M.VALOR, M.DATA_MOVIMENTACAO,
+                  CASE WHEN M.ID_PAGADOR = ? THEN 'saida' ELSE 'entrada' END,
+                  COALESCE(CASE WHEN M.ID_PAGADOR = ?
+                      THEN COALESCE(CR.NOME_FANTASIA, CR.RAZAO_SOCIAL, UR.NOME)
+                      ELSE COALESCE(CP.NOME_FANTASIA, CP.RAZAO_SOCIAL, UP.NOME)
+                  END, 'Conta relacionada')
+               FROM MOVIMENTACAO M
+               INNER JOIN CONTA CP ON CP.ID_CONTA = M.ID_PAGADOR
+               LEFT JOIN USUARIO UP ON UP.ID_USUARIO = CP.ID_USUARIO
+               INNER JOIN CONTA CR ON CR.ID_CONTA = M.ID_RECEBEDOR
+               LEFT JOIN USUARIO UR ON UR.ID_USUARIO = CR.ID_USUARIO
+               WHERE (M.ID_PAGADOR = ? OR M.ID_RECEBEDOR = ?){filtro}
+               ORDER BY M.DATA_MOVIMENTACAO DESC, M.ID_MOVIMENTACAO DESC''',
+            parametros,
+        )
+        return {'movimentacoes': [
+            {'valor': f'{Decimal(str(r[0])):.2f}', 'data': _data_json(r[1]),
+             'tipo': r[2], 'contraparte': str(r[3])} for r in cursor.fetchall()],
+            'periodo': periodo, 'moeda': 'BRL'}
+
     if intencao == 'SALDO':
         saldo = calcular_saldo(conta)
         if saldo is None:
@@ -314,35 +385,19 @@ def _dados_financeiros(cursor, contexto, intencao, pergunta='', historico=()):
         return {'periodo': rotulo, 'inicio': inicio.isoformat(), 'fim': (fim - timedelta(days=1)).isoformat(),
                 'total': f'{Decimal(str(total or 0)):.2f}', 'quantidade': int(quantidade or 0), 'moeda': 'BRL'}
 
-    if intencao in ('MOVIMENTACOES', 'MAIORES_GASTOS'):
-        if intencao == 'MAIORES_GASTOS':
-            cursor.execute(
-                '''SELECT FIRST 5 M.VALOR, M.DATA_MOVIMENTACAO
-                   FROM MOVIMENTACAO M WHERE M.ID_PAGADOR = ?
-                   ORDER BY M.VALOR DESC, M.DATA_MOVIMENTACAO DESC''', (conta,),
-            )
-            linhas = cursor.fetchall()
-            return {'maiores_gastos': [{'valor': f'{Decimal(str(r[0])):.2f}', 'data': _data_json(r[1])} for r in linhas], 'moeda': 'BRL'}
+    if intencao == 'MAIORES_GASTOS':
         cursor.execute(
             '''SELECT FIRST 5 M.VALOR, M.DATA_MOVIMENTACAO,
-                      CASE WHEN M.ID_PAGADOR = ? THEN 'saida' ELSE 'entrada' END,
-                      COALESCE(CASE WHEN M.ID_PAGADOR = ?
-                                    THEN COALESCE(CR.NOME_FANTASIA, CR.RAZAO_SOCIAL, UR.NOME)
-                                    ELSE COALESCE(CP.NOME_FANTASIA, CP.RAZAO_SOCIAL, UP.NOME) END,
-                               'Conta relacionada')
+                      COALESCE(CR.NOME_FANTASIA, CR.RAZAO_SOCIAL, UR.NOME, 'Conta relacionada')
                FROM MOVIMENTACAO M
-               INNER JOIN CONTA CP ON CP.ID_CONTA = M.ID_PAGADOR
-               INNER JOIN USUARIO UP ON UP.ID_USUARIO = CP.ID_USUARIO
                INNER JOIN CONTA CR ON CR.ID_CONTA = M.ID_RECEBEDOR
-               INNER JOIN USUARIO UR ON UR.ID_USUARIO = CR.ID_USUARIO
-               WHERE M.ID_PAGADOR = ? OR M.ID_RECEBEDOR = ?
-               ORDER BY M.DATA_MOVIMENTACAO DESC, M.ID_MOVIMENTACAO DESC''',
-            (conta, conta, conta, conta),
+               LEFT JOIN USUARIO UR ON UR.ID_USUARIO = CR.ID_USUARIO
+               WHERE M.ID_PAGADOR = ?
+               ORDER BY M.VALOR DESC, M.DATA_MOVIMENTACAO DESC''', (conta,),
         )
-        return {'movimentacoes': [
-            {'valor': f'{Decimal(str(r[0])):.2f}', 'data': _data_json(r[1]), 'tipo': r[2], 'contraparte': str(r[3])}
-            for r in cursor.fetchall()
-        ], 'moeda': 'BRL'}
+        return {'maiores_gastos': [
+            {'valor': f'{Decimal(str(r[0])):.2f}', 'data': _data_json(r[1]),
+             'contraparte': str(r[2])} for r in cursor.fetchall()], 'moeda': 'BRL'}
 
     if intencao == 'AGENDAMENTOS':
         cursor.execute(
