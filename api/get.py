@@ -2,7 +2,7 @@
 from flask import jsonify, request
 
 from banco import con
-from funcao import calcular_saldo, calcular_limite_cartao
+from funcao import calcular_saldo, calcular_limite_cartao, descobre_id_conta
 from main import app
 from pdf import gerar_boleto_pdf
 
