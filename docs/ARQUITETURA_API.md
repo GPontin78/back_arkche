@@ -26,6 +26,7 @@ Os caminhos, métodos e contratos abaixo são usados por integrações existente
 | --- | --- | --- |
 | GET | `/api/v1/conta` | Credenciais da integração |
 | GET | `/api/v1/saldo` | Credenciais da integração |
+| POST | `/api/v1/contas/verificar-cpf` | **Consulta restrita**: integração autenticada com Client ID aprovado; body JSON com cpf; retorna apenas `possui_conta` |
 | GET | `/api/v1/movimentacoes` | Credenciais da integração; aceita `data_inicio` e `data_fim` |
 | GET | `/api/v1/resumo-financeiro` | Credenciais da integração; aceita `data_inicio` e `data_fim` |
 | POST | `/api/v1/cobrancas/pix` | Credenciais da integração |
@@ -87,3 +88,25 @@ antes de fazer merge desta PR.
 3. Reutilize `api.common` quando autenticação ou validação forem compartilhadas. Mantenha as regras bancárias no módulo de domínio correspondente.
 4. Preserve autenticação e autorização em rotas internas. Não exponha rotas administrativas, financeiras ou de funcionários usando credenciais globais.
 5. Verifique inicialização, duplicidade de método/caminho e testes relacionados sem chamar serviços reais nem executar operações financeiras.
+
+## Consulta restrita de existência de conta por CPF
+
+`POST /api/v1/contas/verificar-cpf` exige headers `X-Client-ID` e
+`X-Client-Secret`, CPF válido em JSON e **opt-in administrativo** definido
+na variável `ARKHE_API_CONSULTA_CPF_CLIENT_IDS`, com Client IDs separados por vírgula.
+
+O endpoint não é público nem está liberado automaticamente para uma PJ.
+É destinado a integrações previamente autorizadas a verificar cadastros,
+mediante finalidade legítima, controles internos de acesso e proteção
+dos dados pessoais. Não deve ser chamado diretamente do navegador.
+Para as demais integrações, retorna HTTP 403.
+
+Exemplo: `{"cpf":"52998224725"}` → `{"possui_conta":true}` (apenas ilustrativo).
+Só considera CPF com uma linha em `CONTA` vinculada a `USUARIO`; não retorna
+nome, saldo, número da conta, ID do usuário ou existência de mero cadastro.
+
+O limite é de 10 consultas/minuto por integração e 20 consultas/dia
+ao mesmo CPF entre integrações autorizadas. Redis é obrigatório; sem ele, 503.
+Consultas excedidas retornam 429. CPF inválido retorna 400.
+A resposta inclui `Cache-Control: no-store` e não contém o CPF consultado.
+Jamais registrar CPF em URL ou log de requisição.

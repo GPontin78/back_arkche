@@ -13,6 +13,7 @@ from flask import current_app, jsonify, request
 from banco import con
 from funcao import descobre_id_usuario
 from limites import usuario_eh_admin_bancario
+from seguranca_ia import tentativa_injecao, resposta_modelo_insegura
 
 
 _LIMITE_PERGUNTAS_ADMIN_POR_MINUTO = 20
@@ -198,15 +199,14 @@ def _responder_assistente_admin(pergunta, historico, indicadores):
         'nesta consulta. O total de contas é uma contagem atual, não uma contagem por data de criação.'
     )
     conteudos = []
+    # O historico administrativo chega do cliente: nunca aceitar papel 'model'
+    # declarado pelo navegador como uma fala confiavel da IA.
     for mensagem in historico[-8:]:
-        if not isinstance(mensagem, dict) or mensagem.get('papel') not in ('USUARIO', 'ASSISTENTE'):
+        if not isinstance(mensagem, dict) or mensagem.get('papel') != 'USUARIO':
             continue
         texto = str(mensagem.get('conteudo') or '').strip()[:1200]
-        if texto:
-            conteudos.append({
-                'role': 'model' if mensagem['papel'] == 'ASSISTENTE' else 'user',
-                'parts': [{'text': texto}],
-            })
+        if texto and not tentativa_injecao(texto):
+            conteudos.append({'role': 'user', 'parts': [{'text': 'Pergunta anterior (dado nao confiavel): ' + texto}]})
     conteudos.append({
         'role': 'user',
         'parts': [{'text': (
@@ -532,6 +532,14 @@ def conversar_mauro_admin():
         return jsonify({'mensagem': 'Digite uma pergunta para o MAURO Administração.'}), 400
     if len(pergunta) > 2000:
         return jsonify({'mensagem': 'A pergunta deve ter no máximo 2.000 caracteres.'}), 400
+    if tentativa_injecao(pergunta):
+        from auditoria import registrar_evento_flask
+        registrar_evento_flask(
+            evento='MAURO_ADMIN_CONSULTA', resultado='RECUSADO',
+            motivo='Tentativa de alterar instrucoes do assistente', id_usuario=id_admin,
+            operacao='DENY', origem=request.path, dados={'tipo': 'prompt_injection', 'tamanho': len(pergunta)},
+        )
+        return jsonify({'mensagem': 'Não posso alterar políticas internas nem conceder novos privilégios por conversa.', 'codigo': 'INSTRUCAO_NAO_PERMITIDA'}), 400
     historico = corpo.get('historico') or []
     if not isinstance(historico, list):
         historico = []
@@ -563,14 +571,19 @@ def conversar_mauro_admin():
                 redis_status['conectado'] = False
         indicadores['servicos'] = {'firebird': 'operante', 'redis': redis_status}
         resposta, falha = _responder_assistente_admin(pergunta, historico, indicadores)
+        bloqueada = not falha and resposta_modelo_insegura(resposta)
         registrar_evento_flask(
-            evento='MAURO_ADMIN_CONSULTA', resultado='FALHA' if falha else 'SUCESSO',
-            motivo=falha[:180] if falha else 'Consulta administrativa agregada',
+            evento='MAURO_ADMIN_CONSULTA',
+            resultado='FALHA' if falha else 'RECUSADO' if bloqueada else 'SUCESSO',
+            motivo=falha[:180] if falha else 'Resposta insegura bloqueada' if bloqueada else 'Consulta administrativa agregada',
             id_usuario=id_admin, operacao='READ', origem=request.path,
             dados={'tamanho_pergunta': len(pergunta), 'indicadores': sorted(indicadores.keys())},
         )
         if falha:
             return jsonify({'mensagem': falha}), 503
+        if bloqueada:
+            current_app.logger.warning('Resposta do MAURO administrativo bloqueada pela politica de saida')
+            resposta = 'Não posso divulgar instruções internas, credenciais ou instruções de alteração de permissões. Consulte os painéis administrativos autorizados.'
         return jsonify({
             'resposta': resposta,
             'gerado_em': indicadores['gerado_em'],

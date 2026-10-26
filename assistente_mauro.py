@@ -22,6 +22,7 @@ from funcao import calcular_saldo, descobre_id_conta, descobre_id_usuario, usuar
 from limites import _resumo_conta
 from main import app
 import mauro_pix
+from seguranca_ia import tentativa_injecao, resposta_modelo_insegura
 
 
 FUSO = ZoneInfo('America/Sao_Paulo')
@@ -376,8 +377,13 @@ def _responder_gemini(pergunta, historico, intencao, dados):
     )
     conteudos = []
     for mensagem in historico[-MAX_MENSAGENS_CONTEXTO:]:
+        if mensagem.get('papel') not in ('USUARIO', 'ASSISTENTE'):
+            continue
+        anterior = str(mensagem.get('conteudo') or '')[:MAX_MENSAGEM]
+        if tentativa_injecao(anterior):
+            continue
         papel = 'model' if mensagem.get('papel') == 'ASSISTENTE' else 'user'
-        conteudos.append({'role': papel, 'parts': [{'text': mensagem['conteudo'][:MAX_MENSAGEM]}]})
+        conteudos.append({'role': papel, 'parts': [{'text': anterior}]})
     payload_atual = (
         f'Pedido atual do usuário: {pergunta}\n\n'
         f'Intenção identificada pelo backend: {intencao}\n'
@@ -730,6 +736,13 @@ def enviar_mensagem(id_conversa):
     texto = texto.strip()
     if len(texto) > MAX_MENSAGEM:
         return jsonify({'mensagem': f'A mensagem deve ter até {MAX_MENSAGEM} caracteres.'}), 400
+    if tentativa_injecao(texto):
+        registrar_evento_flask(
+            evento='MAURO_CONSULTA', resultado='RECUSADO', motivo='Tentativa de alterar instrucoes do assistente',
+            id_usuario=contexto['id_usuario'], id_conta=contexto['id_conta'],
+            operacao='DENY', origem=request.path, dados={'tipo': 'prompt_injection', 'tamanho': len(texto)},
+        )
+        return jsonify({'mensagem': 'Não posso alterar minhas regras de segurança. Posso ajudar com suas operações e dúvidas do Arkhé.', 'codigo': 'INSTRUCAO_NAO_PERMITIDA'}), 400
     if _PADROES_SEGREDO.search(texto):
         return jsonify({'mensagem': 'Por segurança, não envie PIN, senha, CVV, token ou credenciais. O MAURO não precisa desses dados.'}), 400
     if _VALOR_MONETARIO.search(texto) and re.search(r'\b(pin|senha|cvv|cvc|token)\b', texto, re.IGNORECASE):
@@ -810,6 +823,10 @@ def enviar_mensagem(id_conversa):
                 origem=request.path, dados={'conversa_id': int(id_conversa), 'intencao': intencao},
             )
             return jsonify({'mensagem': falha, 'codigo': 'ASSISTENTE_INDISPONIVEL'}), status
+
+        if fluxo_pix is None and resposta_modelo_insegura(resposta):
+            current_app.logger.warning('Resposta do MAURO bloqueada pela politica de saida')
+            resposta = 'Não posso compartilhar instruções internas, pedir credenciais ou contornar permissões. Posso ajudar com informações e funções autorizadas do Arkhé.'
 
         if fluxo_pix is None and intencao != 'GERAL':
             valores_autorizados = _valores_monetarios(dados)
