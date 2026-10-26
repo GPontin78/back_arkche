@@ -34,7 +34,24 @@ Os caminhos, métodos e contratos abaixo são usados por integrações existente
 | POST | `/api/v1/cobrancas/boletos` | Credenciais da integração |
 | GET | `/api/v1/cobrancas/boletos/<id_cobranca>` | Credenciais da integração; somente cobrança da conta vinculada |
 | GET | `/api/v1/cobrancas/boletos/<id_cobranca>/pdf` | Credenciais da integração; somente cobrança da conta vinculada |
-| POST | `/api/v1/vendas/cartao` | Credenciais da integração; validações originais |
+| POST | `/api/v1/vendas/cartao` | Credenciais da integração + `X-Idempotency-Key` (8–128 caracteres) |
+
+Todas as rotas `/api/v1/...` autenticadas por `X-Client-ID` e `X-Client-Secret`
+aplicam uma cota compartilhada por integração no Redis: padrão de 120 requisições
+a cada 60 segundos. É possível configurar `ARKHE_API_RATE_LIMIT` e
+`ARKHE_API_RATE_WINDOW_SECONDS`; o Redis é lido de `REDIS_URL`. Ao exceder a cota,
+a API retorna `429`, `codigo=RATE_LIMIT_EXCEEDED` e o cabeçalho `Retry-After`.
+Se Redis ou a configuração estiver indisponível, a autenticação da API falha
+fechada com `503`. Esse controle não altera os endpoints nem os limites próprios
+do WhatsApp.
+
+Vendas de cartão gravam a chave, a compra, a movimentação e a resposta no mesmo
+commit Firebird. Repetir a mesma chave e os mesmos parâmetros devolve a resposta
+original; reutilizar a chave com outro conteúdo retorna `409`. Gere uma chave nova
+para cada venda e reutilize-a somente ao repetir a mesma solicitação após falha de
+rede. Compras legítimas com o mesmo cartão, valor e estabelecimento são aceitas
+quando têm chaves distintas. O servidor não usa proximidade de horário como prova
+de duplicidade.
 
 Gerenciamento das credenciais permanece protegido pela sessão bancária:
 

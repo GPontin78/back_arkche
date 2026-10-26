@@ -6,6 +6,7 @@ Em falha de conexao, confira o recebimento antes de cobrar novamente.
 As funcoes abaixo nao repetem requisicoes automaticamente.
 """
 import os
+import uuid
 import requests
 
 
@@ -44,8 +45,10 @@ def baixar_boleto(id_cobranca, arquivo):
         destino.write(resposta.content)
 
 
-def vender_cartao(numero_cartao, validade, cvv, valor, tipo='DEBITO', parcelas=1):
-    resposta = requests.post(URL + '/api/v1/vendas/cartao', headers=HEADERS, json={
+def vender_cartao(numero_cartao, validade, cvv, valor, tipo='DEBITO', parcelas=1, chave_idempotencia=None):
+    chave = chave_idempotencia or uuid.uuid4().hex
+    headers = {**HEADERS, 'X-Idempotency-Key': chave}
+    resposta = requests.post(URL + '/api/v1/vendas/cartao', headers=headers, json={
         'numero_cartao': numero_cartao,
         'validade': validade,
         'cvv': cvv,

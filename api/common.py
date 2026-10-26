@@ -54,6 +54,10 @@ def autenticar_integracao():
         if not verificar_pin(client_secret, client_secret_hash):
             return None, (jsonify({'mensagem': 'Credenciais da API invalidas'}), 401)
 
+        limite = limitar_api_integracao(id_integracao)
+        if limite is not None:
+            return None, limite
+
         cursor.execute("""UPDATE INTEGRACAO_API SET ULTIMO_USO = CURRENT_TIMESTAMP WHERE ID_INTEGRACAO = ?""", (id_integracao,))
         con.commit()
 
@@ -69,6 +73,53 @@ def autenticar_integracao():
 
     finally:
         cursor.close()
+
+
+def limitar_api_integracao(id_integracao):
+    """Aplica uma cota Redis compartilhada por integração às APIs REST.
+
+    WhatsApp e rotas internas não passam por esta função. Em testes de Flask,
+    a cota é desativada para não depender de Redis; o helper é coberto com
+    Redis falso nos testes específicos.
+    """
+    if current_app.testing:
+        return None
+
+    try:
+        limite = int(os.getenv('ARKHE_API_RATE_LIMIT', '120'))
+        janela = int(os.getenv('ARKHE_API_RATE_WINDOW_SECONDS', '60'))
+    except (TypeError, ValueError):
+        return jsonify({'mensagem': 'Rate limit da API mal configurado'}), 503
+    if not 1 <= limite <= 100000 or not 1 <= janela <= 3600:
+        return jsonify({'mensagem': 'Rate limit da API mal configurado'}), 503
+
+    endereco = os.getenv('REDIS_URL')
+    if not endereco:
+        return jsonify({'mensagem': 'Controle de requisições da API indisponível'}), 503
+
+    chave = 'arkhe:rate:api:v1:' + hashlib.sha256(str(id_integracao).encode('utf-8')).hexdigest()
+    script = """
+        local total = redis.call('INCR', KEYS[1])
+        if total == 1 then redis.call('EXPIRE', KEYS[1], tonumber(ARGV[1])) end
+        return total
+    """
+    try:
+        cliente = redis.Redis.from_url(
+            endereco, decode_responses=True, socket_timeout=2, socket_connect_timeout=2
+        )
+        total = int(cliente.eval(script, 1, chave, janela))
+    except Exception:
+        current_app.logger.exception('Redis indisponível para rate limit da API')
+        return jsonify({'mensagem': 'Controle de requisições da API temporariamente indisponível'}), 503
+
+    if total > limite:
+        resposta = make_response(jsonify({
+            'mensagem': 'Limite de requisições atingido. Aguarde antes de tentar novamente.',
+            'codigo': 'RATE_LIMIT_EXCEEDED',
+        }), 429)
+        resposta.headers['Retry-After'] = str(janela)
+        return resposta
+    return None
 
 
 def obter_periodo():

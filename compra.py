@@ -1,10 +1,17 @@
 from decimal import Decimal, ROUND_HALF_UP
+import fdb
 from flask import jsonify, request
 from main import app
 from banco import con
 from funcao import *
 from limites import aplicar_limite
 from notificacoes import registrar_evento_bancario, tentar_publicar_eventos
+from vendas_idempotencia import (
+    assinatura_venda,
+    obter_resposta_venda,
+    registrar_venda_idempotente,
+    validar_chave_venda,
+)
 
 
 @app.route('/adicionar_compra', methods=['POST'])
@@ -17,6 +24,12 @@ def adicionar_compra():
         tipo = int(dados.get('tipo'))
         qtd_parcela = int(dados.get('qtd_parcela') or 1)
         numero_cartao = dados.get('numero_cartao')
+        chave_idempotencia = validar_chave_venda(
+            request.headers.get('X-Idempotency-Key') or dados.get('chave_idempotencia')
+        )
+
+        if not chave_idempotencia:
+            return jsonify({'mensagem': 'Informe uma chave de idempotencia para esta venda.'}), 400
 
         id_conta = descobre_id_conta()
 
@@ -66,36 +79,17 @@ def adicionar_compra():
                 'mensagem': 'Erro ao realizar compra, cartao bloqueado'
             }), 400
 
-        cursor.execute("""
-            SELECT 1
-            FROM COMPRA C
-            INNER JOIN CARTAO CA
-                ON CA.ID_CARTAO = C.ID_CARTAO
-            INNER JOIN MOVIMENTACAO M
-                ON M.ID_PAGADOR = CA.ID_CONTA
-            WHERE C.ID_CARTAO = ?
-              AND C.VALOR_COMPRA = ?
-              AND M.ID_RECEBEDOR = ?
-              AND C.DATA_COMPRA BETWEEN DATEADD(-5 MINUTE TO ?)
-                                     AND ?
-              AND M.DATA_MOVIMENTACAO BETWEEN DATEADD(-5 MINUTE TO ?)
-                                          AND ?
-        """, (
-            id_cartao_pagador,
-            valor_compra,
-            id_conta,
-            data_compra,
-            data_compra,
-            data_compra,
-            data_compra
-        ))
-
-        compra_duplicada = cursor.fetchone()
-
-        if compra_duplicada:
-            return jsonify({
-                'mensagem': 'Compra duplicada. A mesma transacao ja foi realizada.'
-            }), 409
+        assinatura = assinatura_venda(
+            id_cartao=int(id_cartao_pagador), id_pagador=int(id_conta_pagador),
+            id_recebedor=int(id_conta), valor=str(Decimal(str(valor_compra))),
+            tipo=int(tipo), parcelas=int(qtd_parcela),
+        )
+        repeticao = obter_resposta_venda(
+            cursor, 'LEGADO', id_conta, chave_idempotencia, assinatura,
+        )
+        if repeticao is not None:
+            con.rollback()
+            return repeticao
 
         restricao_limite = aplicar_limite(
             cursor, id_conta_pagador, 'PAGAMENTO', valor_compra,
@@ -154,12 +148,16 @@ def adicionar_compra():
                 referencia_id=id_movimentacao, valor=valor_compra, id_pagador=id_conta_pagador
             )
 
+            resposta = {'mensagem': 'Compra realizada com sucesso', 'id_compra': id_compra,
+                        'id_movimentacao': id_movimentacao}
+            registrar_venda_idempotente(
+                cursor, 'LEGADO', id_conta, chave_idempotencia, assinatura,
+                id_compra, id_movimentacao, resposta, 200,
+            )
             con.commit()
             tentar_publicar_eventos(eventos)
 
-            return jsonify({
-                'mensagem': 'Compra realizada com sucesso'
-            }), 200
+            return jsonify(resposta), 200
 
         if tipo == 1:
 
@@ -223,22 +221,37 @@ def adicionar_compra():
                 referencia_id=id_movimentacao, valor=valor_recebido_vendedor, id_pagador=id_conta_pagador
             )
 
+            resposta = {'mensagem': 'Compra realizada com sucesso', 'id_compra': id_compra,
+                        'id_movimentacao': id_movimentacao}
+            registrar_venda_idempotente(
+                cursor, 'LEGADO', id_conta, chave_idempotencia, assinatura,
+                id_compra, id_movimentacao, resposta, 200,
+            )
             con.commit()
             tentar_publicar_eventos(eventos)
 
-            return jsonify({
-                'mensagem': 'Compra realizada com sucesso'
-            }), 200
+            return jsonify(resposta), 200
 
         return jsonify({
             'mensagem': 'Tipo de compra invalido'
         }), 400
 
-    except Exception as e:
+    except (fdb.IntegrityError, fdb.TransactionConflict):
+        con.rollback()
+        if cursor and 'assinatura' in locals() and 'chave_idempotencia' in locals():
+            try:
+                repeticao = obter_resposta_venda(
+                    cursor, 'LEGADO', id_conta, chave_idempotencia, assinatura,
+                )
+                if repeticao is not None:
+                    return repeticao
+            except Exception:
+                con.rollback()
+        return jsonify({'mensagem': 'Venda concorrente. Confira o extrato antes de repetir.'}), 409
+    except Exception:
         con.rollback()
         return jsonify({
             'mensagem': 'Erro ao realizar compra',
-            'erro': str(e)
         }), 500
     finally:
         if cursor:

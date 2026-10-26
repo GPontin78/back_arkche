@@ -16,6 +16,12 @@ from notificacoes import registrar_evento_bancario, tentar_publicar_eventos
 from .common import (autenticar_integracao, autenticar_requisicao, autorizar_pagamento_externo,
                      executar_operacao_idempotente, limitar_pagamento_whatsapp, valor_monetario_api)
 from .whatsapp import _conta_vinculada, _servico_valido
+from vendas_idempotencia import (
+    assinatura_venda,
+    obter_resposta_venda,
+    registrar_venda_idempotente,
+    validar_chave_venda,
+)
 
 
 @app.route('/integracoes/api', methods=['POST'])
@@ -241,6 +247,10 @@ def api_vender_cartao():
     if erro:
         return erro
 
+    chave_idempotencia = validar_chave_venda(request.headers.get('X-Idempotency-Key'))
+    if not chave_idempotencia:
+        return jsonify({'mensagem': 'Envie X-Idempotency-Key unica (8 a 128 caracteres)'}), 400
+
     dados = request.get_json(silent=True)
     if not isinstance(dados, dict):
         return jsonify({'mensagem': 'Envie um objeto JSON'}), 400
@@ -322,6 +332,19 @@ def api_vender_cartao():
             return jsonify({'mensagem': 'Cartao bloqueado'}), 400
 
         id_cartao = cartao[0]
+        assinatura = assinatura_venda(
+            id_pagador=int(id_pagador), id_recebedor=int(id_recebedor),
+            id_cartao=int(id_cartao), valor=str(valor), tipo=tipo,
+            parcelas=int(parcelas), validade=validade_informada.isoformat(),
+        )
+        repeticao = obter_resposta_venda(
+            cursor, 'API', integracao['id_integracao'], chave_idempotencia,
+            assinatura,
+        )
+        if repeticao is not None:
+            con.rollback()
+            return repeticao
+
         if tipo == 'DEBITO':
             valor_recebido = valor
             valor_parcela = None
@@ -339,23 +362,6 @@ def api_vender_cartao():
             return restricao_limite
 
         agora = data_atual()
-        # Mesma protecao de cinco minutos usada pela maquininha, com tipo e parcelas.
-        cursor.execute(
-            """SELECT FIRST 1 C.ID_COMPRA FROM COMPRA C
-               INNER JOIN MOVIMENTACAO M ON M.DATA_MOVIMENTACAO = C.DATA_COMPRA
-                 AND M.ID_PAGADOR = ? AND M.ID_RECEBEDOR = ? AND M.VALOR = ?
-                 AND M.ID_COBRANCA IS NULL
-               WHERE C.ID_CARTAO = ? AND C.VALOR_COMPRA = ? AND C.TIPO = ?
-                 AND C.QTD_PARCELA = ? AND C.DATA_COMPRA BETWEEN ? AND ?""",
-            (id_liquidacao, id_recebedor, valor_recebido, id_cartao, valor, tipo_compra,
-             parcelas, agora - datetime.timedelta(minutes=5), agora)
-        )
-        if cursor.fetchone():
-            con.rollback()
-            return jsonify({
-                'mensagem': 'Venda semelhante aprovada nos ultimos cinco minutos. Confira o recebimento antes de cobrar novamente',
-                'codigo': 'VENDA_SEMELHANTE_RECENTE'
-            }), 409
 
         if tipo == 'DEBITO':
             if not pode_debitar_saldo(id_pagador, valor):
@@ -411,11 +417,25 @@ def api_vender_cartao():
             'taxa': float(valor - valor_recebido), 'tipo': tipo, 'parcelas': parcelas,
             'final_cartao': numero[-4:], 'data_compra': agora.isoformat()
         }
+        registrar_venda_idempotente(
+            cursor, 'API', integracao['id_integracao'], chave_idempotencia,
+            assinatura, id_compra, id_movimentacao, resposta, 201,
+        )
         con.commit()
         tentar_publicar_eventos(eventos)
         return jsonify(resposta), 201
     except (fdb.IntegrityError, fdb.TransactionConflict):
         con.rollback()
+        if cursor and chave_idempotencia and 'integracao' in locals() and 'assinatura' in locals():
+            try:
+                repeticao = obter_resposta_venda(
+                    cursor, 'API', integracao['id_integracao'],
+                    chave_idempotencia, assinatura,
+                )
+                if repeticao is not None:
+                    return repeticao
+            except Exception:
+                con.rollback()
         return jsonify({'mensagem': 'Operacao concorrente. Confira o recebimento antes de enviar novamente'}), 409
     except Exception:
         con.rollback()
