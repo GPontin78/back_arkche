@@ -271,7 +271,20 @@ class LimitesFirebirdIntegracao(unittest.TestCase):
         configuracao = pj.get('/api/v1/limites/conta/configuracao')
         self.assertEqual(configuracao.status_code, 200, configuracao.json)
         dia = next(p for p in configuracao.json['periodos'] if p['periodo'] == 'DIURNO')
-        self.assertIsNone(dia['operacoes']['TRANSFERENCIA']['limite_por_operacao_banco'])
+        self.assertEqual(dia['operacoes']['TRANSFERENCIA']['limite_por_operacao_banco'], 5000.0)
+        self.assertEqual(dia['limite_acumulado_banco'], 5000.0)
+        resposta_excessiva = pj.put('/api/v1/limites/conta/configuracao', json={
+            'periodo': 'DIURNO', 'motivo': 'Tentativa acima do teto bancario',
+            'limite_acumulado': '999999.00',
+            'operacoes': {
+                'TRANSFERENCIA': {'limite_por_operacao': '90000.00',
+                                  'limite_por_operacao_favorito': None},
+                'PAGAMENTO': {'limite_por_operacao': '500.00',
+                              'limite_por_operacao_favorito': None},
+            },
+        })
+        self.assertEqual(resposta_excessiva.status_code, 400, resposta_excessiva.json)
+        self.assertEqual(self.sql('SELECT COUNT(*) FROM LIMITE_CONTA_PERIODO WHERE ID_CONTA = 2')[0][0], 0)
         resposta = pj.put('/api/v1/limites/conta/configuracao', json={
             'periodo': 'DIURNO', 'motivo': 'Protecao voluntaria da conta PJ',
             'limite_acumulado': '1200.00',
