@@ -258,6 +258,42 @@ class LimitesFirebirdIntegracao(unittest.TestCase):
         self.assertEqual(acima_teto.status_code, 400, acima_teto.json)
         self.assertEqual(self.cliente(10, 1).get('/api/v1/limites/conta/configuracao').json['periodos'][0]['operacoes']['TRANSFERENCIA']['limite_por_operacao_conta'], 80.0)
 
+    def test_conta_pj_pode_criar_limite_pessoal_sem_teto_bancario_ativo(self):
+        # Nao configurar teto geral nao deve impedir o titular de se proteger.
+        self.sql("""UPDATE POLITICA_LIMITE_OPERACAO
+                       SET ATIVO = 0, LIMITE_POR_OPERACAO = NULL,
+                           LIMITE_POR_OPERACAO_FAVORITO = NULL
+                     WHERE TIPO_CONTA = 'PJ' AND PERIODO = 'DIURNO'""")
+        self.sql("""UPDATE POLITICA_LIMITE_PERIODO
+                       SET ATIVO = 0, LIMITE_ACUMULADO = NULL
+                     WHERE TIPO_CONTA = 'PJ' AND PERIODO = 'DIURNO'""")
+        pj = self.cliente(11, 2)
+        configuracao = pj.get('/api/v1/limites/conta/configuracao')
+        self.assertEqual(configuracao.status_code, 200, configuracao.json)
+        dia = next(p for p in configuracao.json['periodos'] if p['periodo'] == 'DIURNO')
+        self.assertIsNone(dia['operacoes']['TRANSFERENCIA']['limite_por_operacao_banco'])
+        resposta = pj.put('/api/v1/limites/conta/configuracao', json={
+            'periodo': 'DIURNO', 'motivo': 'Protecao voluntaria da conta PJ',
+            'limite_acumulado': '1200.00',
+            'operacoes': {
+                'TRANSFERENCIA': {'limite_por_operacao': '700.00',
+                                  'limite_por_operacao_favorito': None},
+                'PAGAMENTO': {'limite_por_operacao': '500.00',
+                              'limite_por_operacao_favorito': None},
+            },
+        })
+        self.assertEqual(resposta.status_code, 200, resposta.json)
+        resumo = pj.get('/api/v1/limites').json['limites'][0]
+        self.assertEqual(resumo['limite_acumulado'], 1200.0)
+        operacoes = {o['operacao']: o for o in resumo['operacoes']}
+        self.assertEqual(operacoes['TRANSFERENCIA']['limite_por_operacao'], 700.0)
+        self.assertEqual(operacoes['PAGAMENTO']['limite_por_operacao'], 500.0)
+        self.assertEqual(self.sql(
+            "SELECT COUNT(*) FROM AUDITORIA_LIMITE WHERE ID_CONTA = 2 AND EVENTO = 'LIMITE_CONTA_ATUALIZADO'"
+        )[0][0], 1)
+        outra = self.cliente(10, 1).get('/api/v1/limites').json['limites'][0]
+        self.assertEqual(outra['limite_acumulado'], 300.0)
+
     def test_somente_titular_configura_conta_e_somente_admin_edita_credito(self):
         titular = self.cliente(10, 1)
         nao_titular = self.cliente(13, 2)

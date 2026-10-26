@@ -731,7 +731,8 @@ def atualizar_configuracao_limites_conta():
             teto_banco = _politica_atual(cursor, tipo, operacao, periodo)
             valor_conta = regra['limite_por_operacao']
             valor_favorito = regra['limite_por_operacao_favorito']
-            if valor_conta is not None and (teto_banco['limite_por_operacao'] is None or valor_conta > teto_banco['limite_por_operacao']):
+            if (valor_conta is not None and teto_banco['limite_por_operacao'] is not None
+                    and valor_conta > teto_banco['limite_por_operacao']):
                 raise ValueError(f'O limite individual de {operacao} não pode superar o teto bancário ativo ({teto_banco["limite_por_operacao"] or "inexistente"})')
             if valor_favorito is not None and (teto_banco['limite_por_operacao_favorito'] is None or valor_favorito > teto_banco['limite_por_operacao_favorito']):
                 raise ValueError('O limite individual para favoritos não pode superar o teto bancário ativo para favoritos')
@@ -754,7 +755,8 @@ def atualizar_configuracao_limites_conta():
         cursor.execute('SELECT ATIVO, LIMITE_ACUMULADO FROM POLITICA_LIMITE_PERIODO WHERE TIPO_CONTA = ? AND PERIODO = ?', (tipo, periodo))
         banco_periodo = cursor.fetchone()
         teto_acumulado_banco = Decimal(str(banco_periodo[1])) if banco_periodo and int(banco_periodo[0]) == 1 and banco_periodo[1] is not None else None
-        if limite_acumulado is not None and (teto_acumulado_banco is None or limite_acumulado > teto_acumulado_banco):
+        if (limite_acumulado is not None and teto_acumulado_banco is not None
+                and limite_acumulado > teto_acumulado_banco):
             raise ValueError('O limite acumulado individual não pode superar o teto bancário ativo')
         cursor.execute(
             '''UPDATE OR INSERT INTO LIMITE_CONTA_PERIODO
