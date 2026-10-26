@@ -565,6 +565,17 @@ class TestConversacaoNatural(unittest.TestCase):
         self.assertEqual(mauro._detectar_intencao('Quero criar um cartão virtual'), 'CARTAO_VIRTUAL')
         self.assertFalse(mauro.mauro_pix.extrair_valor('Quero criar um cartão virtual')[0] if hasattr(mauro.mauro_pix, 'extrair_valor') else False)
 
+    def test_pix_pendente_nao_sequestra_uma_mensagem_nova(self):
+        proposta = object()
+        for texto in ('Oi, Mauro', 'Preciso de ajuda', 'Como vai?', 'Quero entender minha conta'):
+            with self.subTest(texto=texto):
+                self.assertFalse(mauro._deve_continuar_pix(proposta, 'GERAL', texto))
+        self.assertFalse(mauro._deve_continuar_pix(proposta, 'SALDO', 'sim'))
+        self.assertFalse(mauro._deve_continuar_pix(None, 'GERAL', 'sim'))
+        for texto in ('sim', 'cancelar', 'R$ 25,00', 'cliente@exemplo.com'):
+            with self.subTest(texto=texto):
+                self.assertTrue(mauro._deve_continuar_pix(proposta, 'GERAL', texto))
+
     def test_consultas_agrupadas_na_conta_autorizada(self):
         class Cursor:
             def __init__(self):
