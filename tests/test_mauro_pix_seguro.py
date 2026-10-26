@@ -69,6 +69,12 @@ class TestInterpretacaoSeguraPix(unittest.TestCase):
         self.assertEqual(mauro_pix.extrair_valor('15,50')[0], Decimal('15.50'))
         self.assertIsNone(mauro_pix.extrair_valor('R$ 20,999 para esta chave')[0])
 
+    def test_valor_de_pix_com_erros_de_digitacao_e_sem_unidade(self):
+        self.assertEqual(mauro_pix.extrair_valor('Quero um pix de 20')[0], Decimal('20.00'))
+        self.assertEqual(mauro_pix.extrair_valor('Me envie um pix de 10')[0], Decimal('10.00'))
+        self.assertEqual(mauro_pix.extrair_valor('quero fazer pix no valor de 20 reias')[0], Decimal('20.00'))
+        self.assertIsNone(mauro_pix.extrair_valor('minha chave pix é 52998224725')[0])
+
     def test_chaves_sao_extraidas_e_redigidas_do_historico(self):
         texto = 'Pix de R$ 20,00 para 529.982.247-25'
         chave = mauro_pix.extrair_chave(texto, mauro_pix.extrair_valor(texto)[1])
