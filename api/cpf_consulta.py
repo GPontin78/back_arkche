@@ -1,0 +1,102 @@
+"""Consulta restrita de existencia de conta por CPF para integracoes aprovadas.
+
+Evita enumeracao publica: autenticar a credencial, exigir opt-in administrativo,
+validar CPF, limitar consultas no Redis e nao retornar cadastro pessoal.
+"""
+import hashlib
+import os
+
+import redis
+from flask import current_app, jsonify, request
+
+from banco import con
+from funcao import normalizar_cpf, validar_cpf
+from main import app
+from .common import autenticar_integracao
+
+
+_LUA_LIMITE_CPF = """
+local count1 = redis.call('INCR', KEYS[1])
+if count1 == 1 then redis.call('EXPIRE', KEYS[1], tonumber(ARGV[1])) end
+local count2 = redis.call('INCR', KEYS[2])
+if count2 == 1 then redis.call('EXPIRE', KEYS[2], tonumber(ARGV[3])) end
+if count1 > tonumber(ARGV[2]) or count2 > tonumber(ARGV[4]) then return 0 end
+return 1
+"""
+
+
+def _autorizar_consulta_cpf(integracao):
+    """Somente credenciais explicitamente liberadas podem testar CPF de terceiros."""
+    client_id = request.headers.get('X-Client-ID', '')
+    liberados = {i.strip() for i in os.getenv('ARKHE_API_CONSULTA_CPF_CLIENT_IDS', '').split(',') if i.strip()}
+    return bool(integracao and integracao.get('id_integracao') and client_id in liberados)
+
+
+def _limitar_consulta_cpf(id_integracao, cpf):
+    """Redis e obrigatorio: sem rate limiting nao ha consulta de CPFs de terceiros."""
+    url = os.getenv('ARKHE_WHATSAPP_REDIS_URL') or os.getenv('REDIS_URL')
+    if not url:
+        return None
+    cliente = None
+    try:
+        cliente = redis.Redis.from_url(url, socket_timeout=2, socket_connect_timeout=2)
+        cliente_hash = hashlib.sha256(str(id_integracao).encode('utf-8')).hexdigest()
+        cpf_hash = hashlib.sha256(cpf.encode('ascii')).hexdigest()
+        permitido = cliente.eval(
+            _LUA_LIMITE_CPF, 2,
+            'arkhe:cpf:integracao:' + cliente_hash,
+            'arkhe:cpf:documento:' + cpf_hash,
+            60, 10, 86400, 20,
+        )
+        return bool(permitido)
+    except (redis.RedisError, OSError, ValueError):
+        current_app.logger.warning('Rate limiter da consulta CPF indisponivel')
+        return None
+    finally:
+        if cliente is not None:
+            try:
+                cliente.close()
+            except (redis.RedisError, OSError):
+                pass
+
+
+@app.route('/api/v1/contas/verificar-cpf', methods=['POST'])
+def api_verificar_cpf():
+    contexto, erro = autenticar_integracao()
+    if erro:
+        return erro
+    if not _autorizar_consulta_cpf(contexto):
+        return jsonify({'mensagem': 'Integracao sem permissao para verificacao de CPF'}), 403
+
+    dados = request.get_json(silent=True)
+    cpf_informado = dados.get('cpf') if isinstance(dados, dict) else None
+    if not isinstance(cpf_informado, str) or len(cpf_informado) > 32 or not validar_cpf(cpf_informado):
+        return jsonify({'mensagem': 'CPF invalido'}), 400
+    cpf = normalizar_cpf(cpf_informado)
+
+    permitido = _limitar_consulta_cpf(contexto['id_integracao'], cpf)
+    if permitido is None:
+        return jsonify({'mensagem': 'Consulta temporariamente indisponivel'}), 503
+    if not permitido:
+        return jsonify({'mensagem': 'Limite de consultas excedido'}), 429
+
+    cursor = None
+    try:
+        cursor = con.cursor()
+        cursor.execute(
+            """SELECT FIRST 1 1 FROM USUARIO U
+               INNER JOIN CONTA C ON C.ID_USUARIO = U.ID_USUARIO
+               WHERE REPLACE(REPLACE(TRIM(U.CPF), '.', ''), '-', '') = ?""",
+            (cpf,),
+        )
+        existe = cursor.fetchone() is not None
+        # Sem CPF no payload, na URL ou nos logs de erro. Sem dados de terceiros.
+        resposta = jsonify({'possui_conta': existe})
+        resposta.headers['Cache-Control'] = 'no-store'
+        return resposta, 200
+    except Exception:
+        current_app.logger.exception('Falha na consulta restrita de existencia de conta')
+        return jsonify({'mensagem': 'Consulta indisponivel'}), 503
+    finally:
+        if cursor:
+            cursor.close()
