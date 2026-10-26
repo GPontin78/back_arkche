@@ -50,6 +50,11 @@ def adicionar_compra():
         id_conta_pagador = cartao[1]
         if int(id_conta) != int(id_conta_pagador):
             return jsonify({'mensagem': 'Cartao nao pertence a conta ativa'}), 403
+        cursor.execute('SELECT LIMITE, STATUS FROM CARTAO WHERE ID_CARTAO = ? WITH LOCK', (id_cartao_pagador,))
+        cartao_bloqueado = cursor.fetchone()
+        if not cartao_bloqueado:
+            return jsonify({'mensagem': 'Cartao nao encontrado'}), 404
+        cartao = (id_cartao_pagador, id_conta_pagador, cartao_bloqueado[0], cartao_bloqueado[1])
         limite_cartao = float(cartao[2] or 0)
         status_cartao = cartao[3]
 
@@ -114,6 +119,7 @@ def adicionar_compra():
                     TIPO
                 )
                 VALUES (?, ?, ?, ?)
+                RETURNING ID_COMPRA
             """, (
                 id_cartao_pagador,
                 valor_compra,
@@ -121,20 +127,24 @@ def adicionar_compra():
                 tipo
             ))
 
+            id_compra = cursor.fetchone()[0]
+
             cursor.execute("""
                 INSERT INTO MOVIMENTACAO (
                     ID_PAGADOR,
                     ID_RECEBEDOR,
                     VALOR,
-                    DATA_MOVIMENTACAO
+                    DATA_MOVIMENTACAO,
+                    ID_COMPRA
                 )
-                VALUES (?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?)
                 RETURNING ID_MOVIMENTACAO
             """, (
                 id_conta_pagador,
                 id_conta,
                 valor_compra,
-                data_compra
+                data_compra,
+                id_compra
             ))
 
             id_movimentacao = cursor.fetchone()[0]
@@ -174,6 +184,7 @@ def adicionar_compra():
                     QTD_PARCELA
                 )
                 VALUES (?, ?, ?, ?, ?, ?)
+                RETURNING ID_COMPRA
             """, (
                 id_cartao_pagador,
                 valor_compra,
@@ -183,6 +194,8 @@ def adicionar_compra():
                 qtd_parcela
             ))
 
+            id_compra = cursor.fetchone()[0]
+
             valor_recebido_vendedor = valor_compra * 0.95
 
             cursor.execute("""
@@ -190,15 +203,17 @@ def adicionar_compra():
                     ID_PAGADOR,
                     ID_RECEBEDOR,
                     VALOR,
-                    DATA_MOVIMENTACAO
+                    DATA_MOVIMENTACAO,
+                    ID_COMPRA
                 )
-                VALUES (?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?)
                 RETURNING ID_MOVIMENTACAO
             """, (
                 id_conta_pagador,
                 id_conta,
                 valor_recebido_vendedor,
-                data_compra
+                data_compra,
+                id_compra
             ))
 
             id_movimentacao = cursor.fetchone()[0]

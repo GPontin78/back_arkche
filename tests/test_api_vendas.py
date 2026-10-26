@@ -3,9 +3,9 @@
 Nunca conecta ao ARKHE.FDB local ou ao servidor de producao.
 """
 import datetime
-import re
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import types
@@ -42,13 +42,6 @@ os.environ['FATURA_SCHEDULER_ENABLED'] = 'false'
 os.environ['CONTA_LIQUIDACAO_CARTAO'] = '9'
 
 with patch('apscheduler.schedulers.background.BackgroundScheduler.start'):
-    # O Firebird desta suíte foi criado com a migração de notificações, sem as
-    # tabelas novas de políticas. As regras ativas são verificadas em test_limites.
-    _limites_teste = types.ModuleType('limites')
-    _limites_teste.aplicar_limite = lambda *_args, **_kwargs: None
-    _limites_teste.usuario_eh_admin_bancario = lambda *_args, **_kwargs: False
-    _limites_teste.registrar_rotas = lambda _app: None
-    sys.modules['limites'] = _limites_teste
     import auditoria as _auditoria_teste
     _auditoria_teste.registrar_rotas = lambda _app: None
     import main
@@ -110,32 +103,52 @@ class ApiVendasTests(unittest.TestCase):
         for statement in statements:
             cursor.execute(statement)
             cls.db.commit()
-        migration = (ROOT / 'migrations' / '001_notificacoes_outbox.sql').read_text(encoding='utf-8')
-        migration = re.sub(r'/\*.*?\*/', '', migration, flags=re.DOTALL)
-        migration = re.sub(r'(?m)^\s*--.*$', '', migration)
-        for statement in migration.split(';'):
-            if statement.strip():
-                cursor.execute(statement)
-                cls.db.commit()
+        for migration_name in ('001_notificacoes_outbox.sql', '002_limites_diurnos_noturnos.sql',
+                               '003_favoritos_pix.sql', '010_limites_conta_credito_cartao.sql'):
+            migration_path = ROOT / 'migrations' / migration_name
+            migrated = subprocess.run(
+                [str(Path(os.getenv('ARKHE_ISQL_PATH', r'C:\Program Files\Firebird\Firebird_4_0\isql.exe'))),
+                 '-user', 'SYSDBA', '-password', 'sysdba', '-i', str(migration_path),
+                 f'localhost:{TEST_DB}'],
+                capture_output=True, text=True, timeout=60,
+            )
+            if migrated.returncode:
+                raise AssertionError(f'Migracao {migration_name} falhou:\n{migrated.stdout}\n{migrated.stderr}')
         cursor.close()
         cls.redis_fake = RedisTeste()
         cls.redis_patch = patch.object(notificacoes, 'criar_cliente_redis', return_value=cls.redis_fake)
         cls.redis_patch.start()
         cls.secret_hash = bcrypt.hashpw(b'segredo-ficticio', bcrypt.gensalt(rounds=4)).decode()
-        main.app.config.update(TESTING=True, DB_HOST='127.0.0.1', DB_NAME=str(TEST_DB), DB_USER='SYSDBA', DB_PASSWORD='sysdba')
+        main.app.config.update(TESTING=True, DB_HOST='127.0.0.1', DB_NAME=str(TEST_DB), DB_USER='SYSDBA', DB_PASSWORD='sysdba', DB_CHARSET='UTF8')
         print('Firebird de teste:', TEST_DB)
 
     @classmethod
     def tearDownClass(cls):
         cls.redis_patch.stop()
         cls.db.close()
+        if TEST_DB.name.startswith('ARKHE_API_TESTE_') and TEST_DB.parent == Path(tempfile.gettempdir()):
+            drop_file = Path(tempfile.gettempdir()) / f'arkhe-api-vendas-drop-{uuid.uuid4().hex}.sql'
+            drop_file.write_text('DROP DATABASE;\n', encoding='ascii')
+            subprocess.run(
+                [str(Path(os.getenv('ARKHE_ISQL_PATH', r'C:\Program Files\Firebird\Firebird_4_0\isql.exe'))),
+                 '-user', 'SYSDBA', '-password', 'sysdba', '-i', str(drop_file),
+                 f'localhost:{TEST_DB}'],
+                capture_output=True, text=True, timeout=30, check=True,
+            )
+            drop_file.unlink(missing_ok=True)
 
     def setUp(self):
         cursor = self.db.cursor()
+        for table in ['AUDITORIA_LIMITE_CARTAO', 'AUDITORIA_LIMITE', 'LIMITE_CONTA_OPERACAO',
+                      'LIMITE_CONTA_PERIODO', 'CONTROLE_LIMITE_CONTA']:
+            cursor.execute('DELETE FROM ' + table)
         for table in ['NOTIFICACAO_DESTINATARIO', 'NOTIFICACAO', 'PREFERENCIA_NOTIFICACAO',
                       'EVENTO_NOTIFICACAO_OUTBOX', 'MOVIMENTACAO', 'FATURA_COMPRA', 'COMPRA',
                       'CARTAO', 'COBRANCA', 'INTEGRACAO_API', 'CONTA', 'USUARIO']:
             cursor.execute('DELETE FROM ' + table)
+        cursor.execute('''UPDATE POLITICA_LIMITE_OPERACAO SET ATIVO = 0,
+                          LIMITE_POR_OPERACAO = NULL, LIMITE_POR_OPERACAO_FAVORITO = NULL''')
+        cursor.execute('''UPDATE POLITICA_LIMITE_PERIODO SET ATIVO = 0, LIMITE_ACUMULADO = NULL''')
         for account, tipo, cpf, cnpj in [(1, 0, '52998224725', None), (2, 1, '22222222222', '11222333000181'),
                                         (3, 1, '33333333333', '22333444000100'), (4, 0, '44444444444', None), (9, 1, '99999999999', '99999999000199')]:
             cursor.execute('INSERT INTO USUARIO VALUES (?, ?, ?)', (account, 'Pessoa Ficticia ' + str(account), cpf))
@@ -183,6 +196,36 @@ class ApiVendasTests(unittest.TestCase):
         self.assertEqual(self.sql('SELECT COUNT(*) FROM NOTIFICACAO')[0][0], 2)
         self.assertEqual(self.sql('SELECT COUNT(*) FROM NOTIFICACAO_DESTINATARIO')[0][0], 2)
         self.assertEqual(len(self.redis_fake.eventos), 2)
+
+    def test_venda_a_credito_linka_compra_e_movimentacao_sem_contar_duas_vezes(self):
+        venda = {**self.venda, 'tipo': 'CREDITO', 'parcelas': 3}
+        resposta = self.post('/api/v1/vendas/cartao', venda)
+        self.assertEqual(resposta.status_code, 201, resposta.json)
+        id_compra = resposta.json['id_compra']
+        self.assertEqual(self.sql('SELECT ID_COMPRA FROM MOVIMENTACAO WHERE ID_RECEBEDOR = 2')[0][0], id_compra)
+        with main.app.app_context():
+            conexao = conectar()
+            cursor = conexao.cursor()
+            try:
+                from limites import _uso_no_periodo
+                uso = _uso_no_periodo(cursor, 1, datetime.datetime(2000, 1, 1), datetime.datetime(2100, 1, 1))
+            finally:
+                cursor.close()
+                conexao.close()
+        self.assertEqual(uso, Decimal('100.00'))
+
+    def test_venda_obedece_ao_guard_real_de_limites_no_backend(self):
+        for periodo in ('DIURNO', 'NOTURNO'):
+            self.sql('''UPDATE POLITICA_LIMITE_OPERACAO SET ATIVO = 1, LIMITE_POR_OPERACAO = 50
+                        WHERE TIPO_CONTA = 'PF' AND OPERACAO = 'PAGAMENTO' AND PERIODO = ?''', (periodo,))
+            self.sql('''UPDATE POLITICA_LIMITE_PERIODO SET ATIVO = 1, LIMITE_ACUMULADO = 200
+                        WHERE TIPO_CONTA = 'PF' AND PERIODO = ?''', (periodo,))
+        resposta = self.post('/api/v1/vendas/cartao', self.venda)
+        self.assertEqual(resposta.status_code, 403, resposta.json)
+        self.assertEqual(resposta.json['codigo'], 'LIMITE_ATINGIDO')
+        self.assertEqual(self.sql('SELECT COUNT(*) FROM COMPRA')[0][0], 0)
+        self.assertEqual(self.sql('SELECT COUNT(*) FROM MOVIMENTACAO')[0][0], 1)
+        self.assertEqual(self.sql("SELECT COUNT(*) FROM AUDITORIA_LIMITE WHERE EVENTO = 'OPERACAO_RECUSADA'")[0][0], 1)
 
     def test_redis_indisponivel_preserva_operacao_e_deixa_eventos_pendentes(self):
         with patch.object(notificacoes, 'criar_cliente_redis', side_effect=ConnectionError('redis offline')):
@@ -299,7 +342,8 @@ class ApiVendasTests(unittest.TestCase):
         movement = self.sql('SELECT ID_PAGADOR, ID_RECEBEDOR, VALOR FROM MOVIMENTACAO WHERE ID_COBRANCA = ?', (identifier,))[0]
         self.assertEqual(movement, (1, 2, Decimal('17.89')))
         repeated = self.client.post('/baixar_cobranca', json={'id_cobranca': identifier, 'valor': 19})
-        self.assertEqual(repeated.status_code, 400)
+        self.assertEqual(repeated.status_code, 409)
+        self.assertEqual(repeated.json['codigo'], 'COBRANCA_INDISPONIVEL')
         self.assertEqual(self.sql('SELECT COUNT(*) FROM MOVIMENTACAO WHERE ID_COBRANCA = ?', (identifier,))[0][0], 1)
 
     def test_qr_fixo_preserva_valor_e_fluxo_antigo(self):

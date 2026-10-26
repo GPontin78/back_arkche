@@ -49,22 +49,35 @@ def _uso_no_periodo(cursor, id_conta, inicio, fim):
     cursor.execute(
         '''SELECT CAST(COALESCE(SUM(M.VALOR), 0) AS DECIMAL(18,2))
            FROM MOVIMENTACAO M
-           WHERE M.ID_PAGADOR = ? AND M.DATA_MOVIMENTACAO >= ? AND M.DATA_MOVIMENTACAO < ?''',
+           WHERE M.ID_PAGADOR = ? AND M.DATA_MOVIMENTACAO >= ? AND M.DATA_MOVIMENTACAO < ?
+             AND M.ID_COMPRA IS NULL
+             AND NOT EXISTS (
+                 SELECT 1 FROM COMPRA C
+                 INNER JOIN CARTAO CA ON CA.ID_CARTAO = C.ID_CARTAO
+                 WHERE CA.ID_CONTA = M.ID_PAGADOR
+                   AND C.TIPO IN (0, 1)
+                   AND C.DATA_COMPRA = M.DATA_MOVIMENTACAO
+                   AND M.ID_RECEBEDOR = CA.ID_CONTA
+                   AND M.VALOR = CASE
+                       WHEN C.TIPO = 0 THEN C.VALOR_COMPRA
+                       ELSE CAST(C.VALOR_COMPRA * 0.95 AS DECIMAL(18,2))
+                   END
+             )''',
         (int(id_conta), inicio, fim),
     )
     movimentacoes = Decimal(str(cursor.fetchone()[0] or 0))
-    # Compras no credito nao debitam a conta na hora da venda, mas consomem
-    # o limite operacional de pagamentos. Compras no debito ja estao em MOVIMENTACAO.
+    # COMPRA e a fonte da compra no cartao (debito ou credito). Movimentacoes
+    # vinculadas e compras legadas com o mesmo instante ficam fora da soma acima.
     cursor.execute(
         '''SELECT CAST(COALESCE(SUM(C.VALOR_COMPRA), 0) AS DECIMAL(18,2))
            FROM COMPRA C
            INNER JOIN CARTAO CA ON CA.ID_CARTAO = C.ID_CARTAO
-           WHERE CA.ID_CONTA = ? AND C.TIPO = 1
+           WHERE CA.ID_CONTA = ? AND C.TIPO IN (0, 1)
              AND C.DATA_COMPRA >= ? AND C.DATA_COMPRA < ?''',
         (int(id_conta), inicio, fim),
     )
-    compras_credito = Decimal(str(cursor.fetchone()[0] or 0))
-    return movimentacoes + compras_credito
+    compras_cartao = Decimal(str(cursor.fetchone()[0] or 0))
+    return movimentacoes + compras_cartao
 
 
 def _politica_atual(cursor, tipo_conta, operacao, periodo):
@@ -84,9 +97,63 @@ def _politica_atual(cursor, tipo_conta, operacao, periodo):
     periodo_row = cursor.fetchone()
     return {
         'limite_por_operacao': Decimal(str(operacao_row[1])) if operacao_row and int(operacao_row[0]) == 1 and operacao_row[1] is not None else None,
-        'limite_por_operacao_favorito': Decimal(str(operacao_row[2])) if operacao_row and len(operacao_row) > 2 and operacao_row[2] is not None else None,
+        'limite_por_operacao_favorito': Decimal(str(operacao_row[2])) if operacao_row and int(operacao_row[0]) == 1 and len(operacao_row) > 2 and operacao_row[2] is not None else None,
         'limite_acumulado': Decimal(str(periodo_row[1])) if periodo_row and int(periodo_row[0]) == 1 and periodo_row[1] is not None else None,
     }
+
+
+def _politica_da_conta(cursor, id_conta, operacao, periodo):
+    cursor.execute(
+        '''SELECT LIMITE_POR_OPERACAO, LIMITE_POR_OPERACAO_FAVORITO
+           FROM LIMITE_CONTA_OPERACAO
+           WHERE ID_CONTA = ? AND OPERACAO = ? AND PERIODO = ?''',
+        (int(id_conta), operacao, periodo),
+    )
+    operacao_row = cursor.fetchone()
+    cursor.execute(
+        '''SELECT LIMITE_ACUMULADO FROM LIMITE_CONTA_PERIODO
+           WHERE ID_CONTA = ? AND PERIODO = ?''',
+        (int(id_conta), periodo),
+    )
+    periodo_row = cursor.fetchone()
+    return {
+        'limite_por_operacao': Decimal(str(operacao_row[0])) if operacao_row and operacao_row[0] is not None else None,
+        'limite_por_operacao_favorito': Decimal(str(operacao_row[1])) if operacao_row and operacao_row[1] is not None else None,
+        'limite_acumulado': Decimal(str(periodo_row[0])) if periodo_row and periodo_row[0] is not None else None,
+    }
+
+
+def _menor_teto(teto_banco, teto_conta):
+    if teto_banco is None:
+        return teto_conta
+    if teto_conta is None:
+        return teto_banco
+    return min(teto_banco, teto_conta)
+
+
+def _teto_favorito(banco, conta):
+    # Sem uma regra individual para favoritos, o teto pessoal normal também
+    # vale para favoritos. Uma excecao maior precisa ser configurada na conta.
+    teto_banco = banco['limite_por_operacao_favorito'] or banco['limite_por_operacao']
+    teto_conta = conta['limite_por_operacao_favorito'] or conta['limite_por_operacao']
+    return _menor_teto(teto_banco, teto_conta)
+
+
+def _politica_efetiva(cursor, id_conta, tipo_conta, operacao, periodo):
+    banco = _politica_atual(cursor, tipo_conta, operacao, periodo)
+    conta = _politica_da_conta(cursor, id_conta, operacao, periodo)
+    efetiva = {
+        'limite_por_operacao': _menor_teto(banco['limite_por_operacao'], conta['limite_por_operacao']),
+        'limite_por_operacao_favorito': _teto_favorito(banco, conta),
+        'limite_acumulado': _menor_teto(banco['limite_acumulado'], conta['limite_acumulado']),
+        'limite_por_operacao_banco': banco['limite_por_operacao'],
+        'limite_por_operacao_favorito_banco': banco['limite_por_operacao_favorito'],
+        'limite_acumulado_banco': banco['limite_acumulado'],
+        'limite_por_operacao_conta': conta['limite_por_operacao'],
+        'limite_por_operacao_favorito_conta': conta['limite_por_operacao_favorito'],
+        'limite_acumulado_conta': conta['limite_acumulado'],
+    }
+    return efetiva
 
 
 def _registrar_recusa(id_conta, id_usuario, tipo_conta, operacao, periodo,
@@ -100,6 +167,7 @@ def _registrar_recusa(id_conta, id_usuario, tipo_conta, operacao, periodo,
             host=current_app.config['DB_HOST'], port=current_app.config['DB_PORT'],
             database=current_app.config['DB_NAME'], user=current_app.config['DB_USER'],
             password=current_app.config['DB_PASSWORD'],
+            charset=current_app.config.get('DB_CHARSET', 'UTF8'),
         )
         cursor = conexao.cursor()
         if id_usuario is None:
@@ -169,20 +237,23 @@ def aplicar_limite(cursor, id_conta, operacao, valor_total, *, valor_por_operaca
     tipo_conta = _tipo_conta(cursor, id_conta)
     if not tipo_conta:
         return jsonify({'mensagem': 'Conta nao encontrada para aplicar os limites', 'codigo': 'CONTA_NAO_ENCONTRADA'}), 404
-    politica = _politica_atual(cursor, tipo_conta, operacao, periodo)
-    if (destinatario_favorito and operacao == 'TRANSFERENCIA'
-            and politica['limite_por_operacao_favorito'] is not None):
-        politica['limite_por_operacao'] = politica['limite_por_operacao_favorito']
-    politica['destinatario_favorito'] = bool(destinatario_favorito)
-    if politica['limite_por_operacao'] is None and politica['limite_acumulado'] is None:
-        return None
 
+    # A mesma linha serializa pagamentos concorrentes e alteracoes dos limites
+    # individuais da conta ate o commit da operacao.
     cursor.execute(
         'UPDATE CONTROLE_LIMITE_CONTA SET VERSAO = VERSAO + 1 WHERE ID_CONTA = ? RETURNING ID_CONTA',
         (int(id_conta),),
     )
     if not cursor.fetchone():
         raise RuntimeError('Registro de concorrencia dos limites ausente para a conta')
+
+    politica = _politica_efetiva(cursor, id_conta, tipo_conta, operacao, periodo)
+    if (destinatario_favorito and operacao == 'TRANSFERENCIA'
+            and politica['limite_por_operacao_favorito'] is not None):
+        politica['limite_por_operacao'] = politica['limite_por_operacao_favorito']
+    politica['destinatario_favorito'] = bool(destinatario_favorito)
+    if politica['limite_por_operacao'] is None and politica['limite_acumulado'] is None:
+        return None
 
     usado = _uso_no_periodo(cursor, id_conta, inicio, fim)
     motivo = None
@@ -221,7 +292,14 @@ def _resumo_conta(cursor, id_conta, tipo_conta):
            WHERE TIPO_CONTA = ? AND PERIODO = ?''', (tipo_conta, periodo)
     )
     acumulado = cursor.fetchone()
-    limite_acumulado = Decimal(str(acumulado[1])) if acumulado and int(acumulado[0]) == 1 and acumulado[1] is not None else None
+    limite_acumulado_banco = Decimal(str(acumulado[1])) if acumulado and int(acumulado[0]) == 1 and acumulado[1] is not None else None
+    cursor.execute(
+        '''SELECT LIMITE_ACUMULADO FROM LIMITE_CONTA_PERIODO
+           WHERE ID_CONTA = ? AND PERIODO = ?''', (int(id_conta), periodo)
+    )
+    acumulado_conta = cursor.fetchone()
+    limite_acumulado_conta = Decimal(str(acumulado_conta[0])) if acumulado_conta and acumulado_conta[0] is not None else None
+    limite_acumulado = _menor_teto(limite_acumulado_banco, limite_acumulado_conta)
     restante = max(Decimal('0.00'), limite_acumulado - usado) if limite_acumulado is not None else None
     cursor.execute(
         '''SELECT OPERACAO, ATIVO, LIMITE_POR_OPERACAO, LIMITE_POR_OPERACAO_FAVORITO FROM POLITICA_LIMITE_OPERACAO
@@ -229,14 +307,26 @@ def _resumo_conta(cursor, id_conta, tipo_conta):
     )
     operacoes = []
     for operacao, ativo, maximo, maximo_favorito in cursor.fetchall():
-        maximo = Decimal(str(maximo)) if int(ativo) == 1 and maximo is not None else None
-        maximo_favorito = Decimal(str(maximo_favorito)) if maximo_favorito is not None else None
+        maximo_banco = Decimal(str(maximo)) if int(ativo) == 1 and maximo is not None else None
+        maximo_favorito_banco = Decimal(str(maximo_favorito)) if int(ativo) == 1 and maximo_favorito is not None else None
+        conta = _politica_da_conta(cursor, id_conta, operacao, periodo)
+        maximo_conta = conta['limite_por_operacao']
+        maximo_favorito_conta = conta['limite_por_operacao_favorito']
+        maximo = _menor_teto(maximo_banco, maximo_conta)
+        maximo_favorito = _teto_favorito(
+            {'limite_por_operacao': maximo_banco, 'limite_por_operacao_favorito': maximo_favorito_banco},
+            {'limite_por_operacao': maximo_conta, 'limite_por_operacao_favorito': maximo_favorito_conta},
+        )
         capacidade = min(maximo, restante) if maximo is not None and restante is not None else (maximo if maximo is not None else restante)
         capacidade_favorito = min(maximo_favorito, restante) if maximo_favorito is not None and restante is not None else (maximo_favorito if maximo_favorito is not None else restante)
         operacoes.append({
             'operacao': operacao,
             'limite_por_operacao': float(maximo) if maximo is not None else None,
             'limite_por_operacao_favorito': float(maximo_favorito) if maximo_favorito is not None else None,
+            'limite_por_operacao_banco': float(maximo_banco) if maximo_banco is not None else None,
+            'limite_por_operacao_conta': float(maximo_conta) if maximo_conta is not None else None,
+            'limite_por_operacao_favorito_banco': float(maximo_favorito_banco) if maximo_favorito_banco is not None else None,
+            'limite_por_operacao_favorito_conta': float(maximo_favorito_conta) if maximo_favorito_conta is not None else None,
             'disponivel_favorito_agora': float(capacidade_favorito) if capacidade_favorito is not None else None,
             'disponivel_agora': float(capacidade) if capacidade is not None else None,
             'configurado': maximo is not None or maximo_favorito is not None or limite_acumulado is not None,
@@ -248,6 +338,8 @@ def _resumo_conta(cursor, id_conta, tipo_conta):
         'fim': fim.isoformat(timespec='minutes'),
         'utilizado': float(usado),
         'limite_acumulado': float(limite_acumulado) if limite_acumulado is not None else None,
+        'limite_acumulado_banco': float(limite_acumulado_banco) if limite_acumulado_banco is not None else None,
+        'limite_acumulado_conta': float(limite_acumulado_conta) if limite_acumulado_conta is not None else None,
         'disponivel_periodo': float(restante) if restante is not None else None,
         'operacoes': operacoes,
     }
@@ -310,6 +402,8 @@ def consultar_limites_conta():
         tipo_conta = 'PJ' if int(conta['tipo_conta']) == 1 else 'PF'
         return jsonify({
             'tipo_conta': tipo_conta,
+            'vinculo': conta.get('vinculo'),
+            'pode_configurar_conta': conta.get('vinculo') in ('titular', 'proprietario'),
             'administrador': int(usuario['id_usuario']) in _ids_administradores(),
             'limites': [_resumo_conta(cursor, int(conta['id_conta']), tipo_conta)],
         }), 200
@@ -528,8 +622,316 @@ def historico_politicas_limites():
             cursor.close()
 
 
+def _conta_propria_atual():
+    usuario = _usuario_atual()
+    conta = dados_conta()
+    if not usuario or not conta:
+        return None, None, (jsonify({'mensagem': 'Sessao invalida ou conta nao selecionada'}), 401)
+    if conta.get('vinculo') not in ('titular', 'proprietario') or int(conta.get('id_titular') or 0) != int(usuario['id_usuario']):
+        return None, None, (jsonify({'mensagem': 'Somente o titular pode configurar limites individuais desta conta'}), 403)
+    return usuario, conta, None
+
+
+def consultar_configuracao_limites_conta():
+    usuario, conta, erro = _conta_propria_atual()
+    if erro:
+        return erro
+    cursor = None
+    try:
+        cursor = con.cursor()
+        id_conta = int(conta['id_conta'])
+        tipo = 'PJ' if int(conta['tipo_conta']) == 1 else 'PF'
+        periodos = []
+        for periodo in PERIODOS:
+            cursor.execute(
+                '''SELECT ATIVO, LIMITE_ACUMULADO FROM POLITICA_LIMITE_PERIODO
+                   WHERE TIPO_CONTA = ? AND PERIODO = ?''', (tipo, periodo)
+            )
+            row = cursor.fetchone()
+            teto_acumulado_banco = Decimal(str(row[1])) if row and int(row[0]) == 1 and row[1] is not None else None
+            cursor.execute(
+                '''SELECT LIMITE_ACUMULADO FROM LIMITE_CONTA_PERIODO
+                   WHERE ID_CONTA = ? AND PERIODO = ?''', (id_conta, periodo)
+            )
+            own_row = cursor.fetchone()
+            limite_acumulado_conta = Decimal(str(own_row[0])) if own_row and own_row[0] is not None else None
+            operacoes = {}
+            for operacao in OPERACOES:
+                banco = _politica_atual(cursor, tipo, operacao, periodo)
+                own = _politica_da_conta(cursor, id_conta, operacao, periodo)
+                operacoes[operacao] = {
+                    'limite_por_operacao_banco': float(banco['limite_por_operacao']) if banco['limite_por_operacao'] is not None else None,
+                    'limite_por_operacao_favorito_banco': float(banco['limite_por_operacao_favorito']) if banco['limite_por_operacao_favorito'] is not None else None,
+                    'limite_por_operacao_conta': float(own['limite_por_operacao']) if own['limite_por_operacao'] is not None else None,
+                    'limite_por_operacao_favorito_conta': float(own['limite_por_operacao_favorito']) if own['limite_por_operacao_favorito'] is not None else None,
+                    'limite_por_operacao_efetivo': float(_menor_teto(banco['limite_por_operacao'], own['limite_por_operacao'])) if _menor_teto(banco['limite_por_operacao'], own['limite_por_operacao']) is not None else None,
+                    'limite_por_operacao_favorito_efetivo': float(_teto_favorito(banco, own)) if _teto_favorito(banco, own) is not None else None,
+                }
+            periodos.append({
+                'periodo': periodo,
+                'limite_acumulado_banco': float(teto_acumulado_banco) if teto_acumulado_banco is not None else None,
+                'limite_acumulado_conta': float(limite_acumulado_conta) if limite_acumulado_conta is not None else None,
+                'limite_acumulado_efetivo': float(_menor_teto(teto_acumulado_banco, limite_acumulado_conta)) if _menor_teto(teto_acumulado_banco, limite_acumulado_conta) is not None else None,
+                'operacoes': operacoes,
+            })
+        return jsonify({'id_conta': id_conta, 'tipo_conta': tipo, 'periodos': periodos}), 200
+    except Exception:
+        current_app.logger.exception('Falha ao consultar configuracao individual de limites')
+        return jsonify({'mensagem': 'Nao foi possivel consultar os limites individuais'}), 500
+    finally:
+        if cursor:
+            cursor.close()
+
+
+def atualizar_configuracao_limites_conta():
+    usuario, conta, erro = _conta_propria_atual()
+    if erro:
+        return erro
+    dados = request.get_json(silent=True)
+    if not isinstance(dados, dict):
+        return jsonify({'mensagem': 'Envie a configuracao de limites em JSON'}), 400
+    periodo = str(dados.get('periodo') or '').upper()
+    motivo = str(dados.get('motivo') or '').strip()
+    operacoes_in = dados.get('operacoes')
+    if periodo not in PERIODOS or not isinstance(operacoes_in, dict):
+        return jsonify({'mensagem': 'Periodo ou operacoes invalidos'}), 400
+    if not 5 <= len(motivo) <= 250:
+        return jsonify({'mensagem': 'Informe o motivo da alteracao (5 a 250 caracteres)'}), 400
+    try:
+        normalizadas = {}
+        for operacao in OPERACOES:
+            regra = operacoes_in.get(operacao)
+            if not isinstance(regra, dict):
+                raise ValueError(f'Configure os limites individuais de {operacao}')
+            normalizadas[operacao] = {
+                'limite_por_operacao': _decimal_config(regra.get('limite_por_operacao'), f'limite individual de {operacao}', False),
+                'limite_por_operacao_favorito': _decimal_config(regra.get('limite_por_operacao_favorito'), 'limite individual para favoritos', False),
+            }
+            if operacao == 'PAGAMENTO' and normalizadas[operacao]['limite_por_operacao_favorito'] is not None:
+                raise ValueError('Limite para favoritos só se aplica a transferências Pix')
+        limite_acumulado = _decimal_config(dados.get('limite_acumulado'), 'limite acumulado da conta', False)
+    except ValueError as e:
+        return jsonify({'mensagem': str(e)}), 400
+
+    cursor = None
+    try:
+        cursor = con.cursor()
+        id_conta = int(conta['id_conta'])
+        id_usuario = int(usuario['id_usuario'])
+        tipo = 'PJ' if int(conta['tipo_conta']) == 1 else 'PF'
+        cursor.execute(
+            'UPDATE CONTROLE_LIMITE_CONTA SET VERSAO = VERSAO + 1 WHERE ID_CONTA = ? RETURNING ID_CONTA',
+            (id_conta,),
+        )
+        if not cursor.fetchone():
+            raise RuntimeError('Controle concorrente da conta ausente')
+
+        anteriores = {'operacoes': {}, 'limite_acumulado': None}
+        for operacao, regra in normalizadas.items():
+            teto_banco = _politica_atual(cursor, tipo, operacao, periodo)
+            valor_conta = regra['limite_por_operacao']
+            valor_favorito = regra['limite_por_operacao_favorito']
+            if valor_conta is not None and (teto_banco['limite_por_operacao'] is None or valor_conta > teto_banco['limite_por_operacao']):
+                raise ValueError(f'O limite individual de {operacao} não pode superar o teto bancário ativo ({teto_banco["limite_por_operacao"] or "inexistente"})')
+            if valor_favorito is not None and (teto_banco['limite_por_operacao_favorito'] is None or valor_favorito > teto_banco['limite_por_operacao_favorito']):
+                raise ValueError('O limite individual para favoritos não pode superar o teto bancário ativo para favoritos')
+            anterior = _politica_da_conta(cursor, id_conta, operacao, periodo)
+            anteriores['operacoes'][operacao] = {
+                'limite_por_operacao': str(anterior['limite_por_operacao']) if anterior['limite_por_operacao'] is not None else None,
+                'limite_por_operacao_favorito': str(anterior['limite_por_operacao_favorito']) if anterior['limite_por_operacao_favorito'] is not None else None,
+            }
+            cursor.execute(
+                '''UPDATE OR INSERT INTO LIMITE_CONTA_OPERACAO
+                   (ID_CONTA, OPERACAO, PERIODO, LIMITE_POR_OPERACAO,
+                    LIMITE_POR_OPERACAO_FAVORITO, ATUALIZADO_POR, ATUALIZADO_EM)
+                   VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                   MATCHING (ID_CONTA, OPERACAO, PERIODO)''',
+                (id_conta, operacao, periodo, valor_conta, valor_favorito, id_usuario),
+            )
+        cursor.execute('SELECT LIMITE_ACUMULADO FROM LIMITE_CONTA_PERIODO WHERE ID_CONTA = ? AND PERIODO = ?', (id_conta, periodo))
+        row = cursor.fetchone()
+        anteriores['limite_acumulado'] = str(row[0]) if row and row[0] is not None else None
+        cursor.execute('SELECT ATIVO, LIMITE_ACUMULADO FROM POLITICA_LIMITE_PERIODO WHERE TIPO_CONTA = ? AND PERIODO = ?', (tipo, periodo))
+        banco_periodo = cursor.fetchone()
+        teto_acumulado_banco = Decimal(str(banco_periodo[1])) if banco_periodo and int(banco_periodo[0]) == 1 and banco_periodo[1] is not None else None
+        if limite_acumulado is not None and (teto_acumulado_banco is None or limite_acumulado > teto_acumulado_banco):
+            raise ValueError('O limite acumulado individual não pode superar o teto bancário ativo')
+        cursor.execute(
+            '''UPDATE OR INSERT INTO LIMITE_CONTA_PERIODO
+               (ID_CONTA, PERIODO, LIMITE_ACUMULADO, ATUALIZADO_POR, ATUALIZADO_EM)
+               VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP) MATCHING (ID_CONTA, PERIODO)''',
+            (id_conta, periodo, limite_acumulado, id_usuario),
+        )
+        depois = {
+            'operacoes': {op: {
+                'limite_por_operacao': str(regra['limite_por_operacao']) if regra['limite_por_operacao'] is not None else None,
+                'limite_por_operacao_favorito': str(regra['limite_por_operacao_favorito']) if regra['limite_por_operacao_favorito'] is not None else None,
+            } for op, regra in normalizadas.items()},
+            'limite_acumulado': str(limite_acumulado) if limite_acumulado is not None else None,
+        }
+        cursor.execute(
+            '''INSERT INTO AUDITORIA_LIMITE
+               (EVENTO, ID_USUARIO, ID_CONTA, TIPO_CONTA, PERIODO, MOTIVO, DETALHES_JSON)
+               VALUES ('LIMITE_CONTA_ATUALIZADO', ?, ?, ?, ?, ?, ?)''',
+            (id_usuario, id_conta, tipo, periodo, motivo,
+             json.dumps({'antes': anteriores, 'depois': depois}, ensure_ascii=False)),
+        )
+        con.commit()
+        return jsonify({'mensagem': 'Limites individuais atualizados', 'id_conta': id_conta, 'periodo': periodo}), 200
+    except ValueError as e:
+        con.rollback()
+        return jsonify({'mensagem': str(e)}), 400
+    except Exception:
+        con.rollback()
+        current_app.logger.exception('Falha ao atualizar limites individuais da conta')
+        return jsonify({'mensagem': 'Nao foi possivel salvar os limites individuais'}), 500
+    finally:
+        if cursor:
+            cursor.close()
+
+
+def listar_cartoes_limites_admin():
+    _admin, erro = _exigir_admin()
+    if erro:
+        return erro
+    try:
+        limite = max(1, min(int(request.args.get('limite', '100')), 200))
+        id_conta = request.args.get('id_conta')
+        if id_conta not in (None, ''):
+            id_conta = int(id_conta)
+            if id_conta <= 0:
+                raise ValueError
+    except ValueError:
+        return jsonify({'mensagem': 'Filtro de conta ou pagina invalido'}), 400
+    cursor = None
+    try:
+        cursor = con.cursor()
+        filtro = 'WHERE (? IS NULL OR C.ID_CONTA = ?)'
+        cursor.execute(
+            f'''SELECT FIRST {limite} C.ID_CARTAO, C.ID_CONTA, CN.TIPO_CONTA,
+                       RIGHT(C.NUMERO_CARTAO, 4), C.LIMITE,
+                       CAST(COALESCE(SUM(FC.VALOR_PARCELA), 0) AS DECIMAL(18,2)),
+                       CN.NOME_FANTASIA, CN.RAZAO_SOCIAL
+                FROM CARTAO C
+                INNER JOIN CONTA CN ON CN.ID_CONTA = C.ID_CONTA
+                LEFT JOIN COMPRA CM ON CM.ID_CARTAO = C.ID_CARTAO AND CM.TIPO = 1
+                LEFT JOIN FATURA_COMPRA FC ON FC.ID_COMPRA = CM.ID_COMPRA AND FC.STATUS = 0
+                {filtro}
+                GROUP BY C.ID_CARTAO, C.ID_CONTA, CN.TIPO_CONTA, C.NUMERO_CARTAO,
+                         C.LIMITE, CN.NOME_FANTASIA, CN.RAZAO_SOCIAL
+                ORDER BY C.ID_CARTAO DESC''',
+            (id_conta, id_conta),
+        )
+        cartoes = [{
+            'id_cartao': row[0], 'id_conta': row[1],
+            'tipo_conta': 'PJ' if int(row[2]) == 1 else 'PF',
+            'final_cartao': row[3], 'limite': float(row[4] or 0),
+            'utilizado': float(row[5] or 0),
+            'disponivel': max(0.0, float(row[4] or 0) - float(row[5] or 0)),
+            'identificacao_conta': row[6] or row[7] or f'Conta {row[1]}',
+        } for row in cursor.fetchall()]
+        return jsonify({'cartoes': cartoes}), 200
+    except Exception:
+        current_app.logger.exception('Falha ao consultar limites de credito dos cartoes')
+        return jsonify({'mensagem': 'Nao foi possivel consultar os cartoes'}), 500
+    finally:
+        if cursor:
+            cursor.close()
+
+
+def atualizar_limite_credito_cartao(id_cartao):
+    id_admin, erro = _exigir_admin()
+    if erro:
+        return erro
+    dados = request.get_json(silent=True)
+    if not isinstance(dados, dict):
+        return jsonify({'mensagem': 'Envie o novo limite e o motivo em JSON'}), 400
+    motivo = str(dados.get('motivo') or '').strip()
+    try:
+        limite = _decimal_config(dados.get('limite'), 'limite de credito do cartao', True)
+        if limite > Decimal('9999999999999.99'):
+            raise ValueError('Limite de credito fora do intervalo permitido')
+    except ValueError as e:
+        return jsonify({'mensagem': str(e)}), 400
+    if not 5 <= len(motivo) <= 250:
+        return jsonify({'mensagem': 'Informe o motivo da alteracao (5 a 250 caracteres)'}), 400
+    cursor = None
+    try:
+        cursor = con.cursor()
+        cursor.execute(
+            '''SELECT C.ID_CARTAO, C.ID_CONTA, C.LIMITE
+               FROM CARTAO C WHERE C.ID_CARTAO = ? WITH LOCK''', (int(id_cartao),)
+        )
+        cartao = cursor.fetchone()
+        if not cartao:
+            return jsonify({'mensagem': 'Cartao nao encontrado'}), 404
+        atual = Decimal(str(cartao[2] or 0))
+        cursor.execute(
+            '''SELECT CAST(COALESCE(SUM(FC.VALOR_PARCELA), 0) AS DECIMAL(18,2))
+               FROM FATURA_COMPRA FC INNER JOIN COMPRA CM ON CM.ID_COMPRA = FC.ID_COMPRA
+               WHERE FC.STATUS = 0 AND CM.ID_CARTAO = ?''', (int(id_cartao),)
+        )
+        utilizado = Decimal(str(cursor.fetchone()[0] or 0))
+        if limite < utilizado:
+            con.rollback()
+            return jsonify({'mensagem': 'O limite nao pode ser menor que o credito ja utilizado',
+                            'codigo': 'LIMITE_MENOR_QUE_UTILIZADO', 'utilizado': float(utilizado)}), 409
+        cursor.execute('UPDATE CARTAO SET LIMITE = ? WHERE ID_CARTAO = ?', (limite, int(id_cartao)))
+        cursor.execute(
+            '''INSERT INTO AUDITORIA_LIMITE_CARTAO
+               (ID_ADMINISTRADOR, ID_CARTAO, ID_CONTA, LIMITE_ANTERIOR, LIMITE_NOVO, MOTIVO)
+               VALUES (?, ?, ?, ?, ?, ?)''',
+            (id_admin, int(id_cartao), int(cartao[1]), atual, limite, motivo),
+        )
+        con.commit()
+        return jsonify({'mensagem': 'Limite de credito do cartao atualizado',
+                        'id_cartao': int(id_cartao), 'limite': float(limite),
+                        'utilizado': float(utilizado), 'disponivel': float(limite - utilizado)}), 200
+    except Exception:
+        con.rollback()
+        current_app.logger.exception('Falha ao atualizar limite de credito do cartao %s', id_cartao)
+        return jsonify({'mensagem': 'Nao foi possivel atualizar o limite de credito'}), 500
+    finally:
+        if cursor:
+            cursor.close()
+
+
+def historico_limites_cartoes_admin():
+    _admin, erro = _exigir_admin()
+    if erro:
+        return erro
+    try:
+        limite = max(1, min(int(request.args.get('limite', '50')), 100))
+    except ValueError:
+        return jsonify({'mensagem': 'Limite de historico invalido'}), 400
+    cursor = None
+    try:
+        cursor = con.cursor()
+        cursor.execute(
+            f'''SELECT FIRST {limite} ID_AUDITORIA, ID_ADMINISTRADOR, ID_CARTAO,
+                       ID_CONTA, LIMITE_ANTERIOR, LIMITE_NOVO, MOTIVO, CRIADO_EM
+                FROM AUDITORIA_LIMITE_CARTAO ORDER BY ID_AUDITORIA DESC'''
+        )
+        return jsonify({'historico': [{
+            'id': row[0], 'id_administrador': row[1], 'id_cartao': row[2],
+            'id_conta': row[3], 'limite_anterior': float(row[4]), 'limite_novo': float(row[5]),
+            'motivo': row[6], 'criado_em': row[7].isoformat() if row[7] else None,
+        } for row in cursor.fetchall()]}), 200
+    except Exception:
+        current_app.logger.exception('Falha ao consultar historico de limites de cartoes')
+        return jsonify({'mensagem': 'Nao foi possivel consultar o historico de cartoes'}), 500
+    finally:
+        if cursor:
+            cursor.close()
+
+
 def registrar_rotas(app):
     app.add_url_rule('/api/v1/limites', 'consultar_limites_conta', consultar_limites_conta, methods=['GET'])
+    app.add_url_rule('/api/v1/limites/conta/configuracao', 'consultar_configuracao_limites_conta', consultar_configuracao_limites_conta, methods=['GET'])
+    app.add_url_rule('/api/v1/limites/conta/configuracao', 'atualizar_configuracao_limites_conta', atualizar_configuracao_limites_conta, methods=['PUT'])
     app.add_url_rule('/api/v1/limites/admin/politicas', 'listar_politicas_limites', listar_politicas_limites, methods=['GET'])
     app.add_url_rule('/api/v1/limites/admin/politicas', 'atualizar_politicas_limites', atualizar_politicas_limites, methods=['PUT'])
     app.add_url_rule('/api/v1/limites/admin/historico', 'historico_politicas_limites', historico_politicas_limites, methods=['GET'])
+    app.add_url_rule('/api/v1/limites/admin/cartoes', 'listar_cartoes_limites_admin', listar_cartoes_limites_admin, methods=['GET'])
+    app.add_url_rule('/api/v1/limites/admin/cartoes/historico', 'historico_limites_cartoes_admin', historico_limites_cartoes_admin, methods=['GET'])
+    app.add_url_rule('/api/v1/limites/admin/cartoes/<int:id_cartao>', 'atualizar_limite_credito_cartao', atualizar_limite_credito_cartao, methods=['PUT'])

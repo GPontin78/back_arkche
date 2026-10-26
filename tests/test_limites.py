@@ -110,12 +110,12 @@ class LimitesIsoladosTests(unittest.TestCase):
         self.assertEqual(resultado[0].get_json()['codigo'], 'LIMITE_ATINGIDO')
         self.assertIn('acumulado', resultado[0].get_json()['mensagem'])
 
-    def test_politicas_desativadas_preservam_os_tetos_anteriores(self):
+    def test_politicas_desativadas_nao_recusam_e_continuam_serializando_a_conta(self):
         cursor = CursorFake(ativo_operacao=0, ativo_periodo=0)
         resultado, auditoria = self._avaliar(cursor, Decimal('100000'))
         self.assertIsNone(resultado)
         auditoria.assert_not_called()
-        self.assertFalse(any('UPDATE CONTROLE_LIMITE_CONTA' in sql.upper() for sql, _ in cursor.queries))
+        self.assertTrue(any('UPDATE CONTROLE_LIMITE_CONTA' in sql.upper() for sql, _ in cursor.queries))
 
     def test_migracao_e_aditiva_e_prepara_o_controle_concorrente(self):
         sql = (ROOT / 'migrations' / '002_limites_diurnos_noturnos.sql').read_text(encoding='utf-8').upper()
@@ -124,6 +124,13 @@ class LimitesIsoladosTests(unittest.TestCase):
             self.assertIn(esperado, sql)
         self.assertNotIn('DROP TABLE', sql)
         self.assertNotIn('CREATE TABLE MOVIMENTACAO', sql)
+
+        nova = (ROOT / 'migrations' / '010_limites_conta_credito_cartao.sql').read_text(encoding='utf-8').upper()
+        for esperado in ('LIMITE_CONTA_OPERACAO', 'LIMITE_CONTA_PERIODO',
+                         'AUDITORIA_LIMITE_CARTAO', 'ALTER TABLE MOVIMENTACAO ADD ID_COMPRA',
+                         'FK_MOV_COMPRA_LIMITE', 'LIMITE_CONTA_ATUALIZADO'):
+            self.assertIn(esperado, nova)
+        self.assertNotIn('DROP TABLE', nova)
 
 
 if __name__ == '__main__':

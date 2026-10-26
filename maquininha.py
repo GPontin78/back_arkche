@@ -334,21 +334,24 @@ def comprar_maquininha():
                 'mensagem': 'Saldo insuficiente'
             }), 400
 
-    else:
-        limite_total = Decimal(str(cartao[3] or 0))
-        limite_utilizado = Decimal(str(calcular_limite_cartao(id_cartao) or 0))
-
-        if limite_utilizado + valor > limite_total:
-            return jsonify({
-                'aprovado': False,
-                'codigo': 'LIMITE_INSUFICIENTE',
-                'mensagem': 'Limite insuficiente'
-            }), 400
-
     cursor = None
 
     try:
         cursor = con.cursor()
+
+        if tipo == 'CREDITO':
+            # O mesmo bloqueio é usado pela administração do limite do cartão,
+            # evitando que a aprovação concorra com uma alteração de crédito.
+            cursor.execute('SELECT LIMITE, STATUS FROM CARTAO WHERE ID_CARTAO = ? WITH LOCK', (id_cartao,))
+            cartao_bloqueado = cursor.fetchone()
+            if not cartao_bloqueado or cartao_bloqueado[1] != 0:
+                con.rollback()
+                return jsonify({'aprovado': False, 'codigo': 'CARTAO_BLOQUEADO', 'mensagem': 'Cartao bloqueado'}), 400
+            limite_total = Decimal(str(cartao_bloqueado[0] or 0))
+            limite_utilizado = Decimal(str(calcular_limite_cartao(id_cartao) or 0))
+            if limite_utilizado + valor > limite_total:
+                con.rollback()
+                return jsonify({'aprovado': False, 'codigo': 'LIMITE_INSUFICIENTE', 'mensagem': 'Limite insuficiente'}), 400
 
         restricao_limite = aplicar_limite(
             cursor, id_conta_pagador, 'PAGAMENTO', valor,
@@ -381,14 +384,16 @@ def comprar_maquininha():
                     ID_PAGADOR,
                     ID_RECEBEDOR,
                     VALOR,
-                    DATA_MOVIMENTACAO
+                    DATA_MOVIMENTACAO,
+                    ID_COMPRA
                 )
-                VALUES (?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?)
             """, (
                 id_conta_pagador,
                 id_recebedor,
                 valor,
-                data_compra
+                data_compra,
+                id_compra
             ))
 
             eventos = registrar_evento_bancario(

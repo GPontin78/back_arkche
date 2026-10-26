@@ -9,7 +9,8 @@ def get_db():
             port=current_app.config['DB_PORT'],
             database=current_app.config['DB_NAME'],
             user=current_app.config['DB_USER'],
-            password=current_app.config['DB_PASSWORD']
+            password=current_app.config['DB_PASSWORD'],
+            charset=current_app.config.get('DB_CHARSET', 'UTF8')
         )
 
     return g.db_connection

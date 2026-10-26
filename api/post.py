@@ -392,9 +392,10 @@ def api_vender_cartao():
         # No credito o banco antecipa 95%; o comprador deve 100% nas faturas.
         # Assim a compra a credito nao debita tambem o saldo do comprador.
         cursor.execute(
-            """INSERT INTO MOVIMENTACAO (ID_PAGADOR, ID_RECEBEDOR, VALOR, DATA_MOVIMENTACAO)
-               VALUES (?, ?, ?, ?) RETURNING ID_MOVIMENTACAO""",
-            (id_liquidacao, id_recebedor, valor_recebido, agora)
+            """INSERT INTO MOVIMENTACAO
+               (ID_PAGADOR, ID_RECEBEDOR, VALOR, DATA_MOVIMENTACAO, ID_COMPRA)
+               VALUES (?, ?, ?, ?, ?) RETURNING ID_MOVIMENTACAO""",
+            (id_liquidacao, id_recebedor, valor_recebido, agora, id_compra)
         )
         id_movimentacao = cursor.fetchone()[0]
         eventos = registrar_evento_bancario(
