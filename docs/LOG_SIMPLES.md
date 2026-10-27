@@ -13,12 +13,13 @@ No Firebird separado, os novos registros vão para `LOG`:
 | VALOR_ANTERIOR | Valores anteriores relevantes |
 | VALOR_NOVO | Valores novos ou resumo da ação |
 
-Cada uma das 11 tabelas principais mantém uma trigger AFTER INSERT OR UPDATE OR
-DELETE e um único EXECUTE STATEMENT ON EXTERNAL DATA SOURCE. Os valores são resumos
+Cada uma das 11 tabelas principais mantém três triggers: TG_AI_<TABELA>_LOG para
+AFTER INSERT, TG_AU_<TABELA>_LOG para AFTER UPDATE e TG_AD_<TABELA>_LOG para AFTER
+DELETE. Cada trigger tem um único EXECUTE STATEMENT ON EXTERNAL DATA SOURCE. Os valores são resumos
 fixos em texto, como TIPO=0; STATUS=1; TENTATIVAS=0. No UPDATE, ficam o resumo anterior
 e o novo, inclusive os campos do resumo que não mudaram. INSERT tem apenas valor
 novo e DELETE apenas valor anterior. Não há comparação campo a campo nem montagem
-de JSON nas triggers; a única verificação IF valida a configuração do destino. Os campos auditáveis seguem a seleção já
+de JSON ou CASE nas triggers; a única verificação IF valida a configuração do destino. Os campos auditáveis seguem a seleção já
 usada pelo sistema, sem copiar credenciais, PIN, CVV ou dados pessoais protegidos.
 As duas regras financeiras existentes mantêm seus nomes, posições e comportamento.
 
@@ -70,8 +71,8 @@ financeiras de QA no banco online.
 
 A migração 015 troca apenas as fontes das 11 triggers. A LOG continua com os mesmos
 oito campos; os dados, credenciais e duas regras financeiras são preservados.
-A trigger USUARIO tem 33 linhas, três variáveis de conexão, CASE para a operação e
-um INSERT externo. O ID do registro fica na sua coluna, sem repetição no resumo.
+Nessa versão anterior, a trigger USUARIO tinha 33 linhas, três variáveis de conexão,
+CASE para a operação e um INSERT externo. O ID do registro fica na sua coluna, sem repetição no resumo.
 
 Publicar o Python que aceita valores em texto e os JSONs antigos. Conferir com
 `python scripts/aplicar_log_simples.py --texto` e aplicar com
@@ -79,3 +80,20 @@ Publicar o Python que aceita valores em texto e os JSONs antigos. Conferir com
 fontes, faz backup dos dois bancos e salva o rollback antes da troca em um commit.
 Não altera o marcador privado de versão, a estrutura da tabela ou os registros.
 A tela já aceita texto e continua abrindo os registros anteriores em JSON.
+
+## Três triggers por tabela (016, versão atual)
+
+A migração 016 substitui as 11 triggers combinadas por 33 triggers de LOG nas mesmas
+11 tabelas principais. INSERT usa apenas NEW e grava VALOR_ANTERIOR nulo; DELETE usa
+apenas OLD e grava VALOR_NOVO nulo; UPDATE grava os dois resumos fixos. A operação
+fica escrita diretamente no INSERT externo, sem CASE ou escolha do evento em execução.
+Continuam os oito campos, a conexão configurada, a transação comum, os logs de IA/API
+e as duas triggers financeiras existentes.
+
+Conferir com `python scripts/aplicar_log_simples.py --tres` e aplicar com
+`python scripts/aplicar_log_simples.py --tres --apply`. O aplicador salva as fontes
+anteriores e faz backup dos dois bancos. A remoção das 11 combinadas e a criação das
+33 separadas são confirmadas na mesma transação. Se falhar, o rollback mantém as 11
+anteriores. O script de retorno remove as 33 e restaura as fontes anteriores sem
+apagar os registros. A conferência recusa misturas, alterações inesperadas ou
+triggers desativadas e a reaplicação da versão atual não faz alterações.
