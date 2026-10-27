@@ -42,6 +42,8 @@ class LogExternoFirebird(unittest.TestCase):
         cls.schema = json.loads((ROOT / 'tests/fixtures/log_schema_online_20261026.json').read_text(encoding='utf-8'))
         cls._criar_schema()
         cls._aplicar(cls.arquivo, ROOT / 'migrations/auditoria_separada/001_estrutura.sql')
+        # O Python atual sempre grava na LOG de oito campos, inclusive ao testar DDL antigo.
+        cls._aplicar(cls.arquivo, ROOT / 'migrations/auditoria_separada/002_log_simples.sql')
         cls._legado()
         from scripts.aplicar_log_externo import aplicar_ddl
         aplicar_ddl(cls.con, f'{HOST}/{PORT}:{cls.arquivo}', 'SYSDBA', cls.senha, 'teste')
@@ -261,15 +263,16 @@ class LogExternoFirebird(unittest.TestCase):
              patch.object(auditoria, 'descobre_id_conta', return_value=None):
             self.assertEqual(cliente.get('/api/v1/recurso-inexistente', headers={'X-Client-ID':'pretenso', 'X-Client-Secret':'segredo-api'}).status_code,404)
         self.audit.rollback()
-        linhas = self.sql("SELECT EVENTO,OPERACAO,ID_USUARIO,ID_CONTA,RESULTADO,ORIGEM,DADOS_NOVOS FROM AUDITORIA_EVENTO WHERE EVENTO='SISTEMA_REQUISICAO'", banco=self.audit)
-        favorito = next(r for r in linhas if r[5] == '/favoritos/<int:id_favorito>')
-        self.assertEqual(favorito[1:5], ('DELETE',44,9,'SUCESSO'))
-        api = next(r for r in linhas if r[5] == '/api/v1/saldo')
-        self.assertEqual(api[2:4], (None,9))
-        self.assertEqual(json.loads(api[6])['id_integracao'],7)
-        recusada = next(r for r in linhas if json.loads(r[6]).get('status_http') == 404)
-        self.assertEqual(recusada[1:5], ('DENY',None,None,'RECUSADO'))
-        self.assertEqual(json.loads(recusada[6])['canal'],'api')
+        linhas = self.sql("SELECT USUARIO,TABELA,ACAO,VALOR_NOVO FROM LOG", banco=self.audit)
+        favorito = next(r for r in linhas if 'ROTA=/favoritos/<int:id_favorito>' in r[3])
+        self.assertEqual(favorito[:3], ('44','SISTEMA','SISTEMA_REQUISICAO / SUCESSO'))
+        self.assertIn('METODO=DELETE',favorito[3])
+        self.assertIn('ID_CONTA=9',favorito[3])
+        api = next(r for r in linhas if 'ROTA=/api/v1/saldo' in r[3])
+        self.assertEqual(api[:2], ('INTEGRACAO_API:7','API'))
+        self.assertIn('ID_CONTA=9',api[3])
+        recusada = next(r for r in linhas if 'STATUS_HTTP=404' in r[3])
+        self.assertEqual(recusada[:3], (None,'API','SISTEMA_REQUISICAO / RECUSADO'))
         texto = str(linhas)
         for segredo in ('999999','segredo-api','pretenso','token-privado','segredo=123'):
             self.assertNotIn(segredo,texto)
@@ -320,20 +323,21 @@ class LogExternoFirebird(unittest.TestCase):
             self.assertFalse(self.eventos(tabela,registro))
         self.assertEqual(self.sql('SELECT CONTEUDO FROM MAURO_MENSAGEM WHERE ID_MENSAGEM=2002')[0][0], 'texto confidencial 123456')
 
-    def test_log_python_create_execute_e_rollback_da_mesma_transacao(self):
+    def test_log_python_usa_oito_campos_e_rollback_da_mesma_transacao(self):
         cursor = self.con.cursor()
         try:
             for op in ('CREATE', 'EXECUTE'):
-                auditoria.registrar_evento_flask(cursor=cursor, evento='MAURO_TESTE_' + op,
-                    resultado='SUCESSO', operacao=op, id_usuario=44, id_conta=9, id_registro=3001)
+                auditoria.registrar_log(cursor=cursor, usuario=44, tabela='IA',
+                    acao=f'MAURO_TESTE_{op} / SUCESSO', id_registro=3001,
+                    valor_novo='ID_CONTA=9')
             self.con.commit()
-            ops = self.sql("SELECT OPERACAO FROM AUDITORIA_EVENTO WHERE EVENTO STARTING WITH 'MAURO_TESTE_' ORDER BY ID_AUDITORIA", banco=self.audit)
-            self.assertEqual(ops, [('INSERT',), ('UPDATE',)])
-            auditoria.registrar_evento_flask(cursor=cursor, evento='MAURO_TESTE_ROLLBACK',
-                resultado='SUCESSO', operacao='READ', id_registro=3002)
+            ops = self.sql("SELECT ACAO FROM LOG WHERE ACAO STARTING WITH 'MAURO_TESTE_' ORDER BY ID_LOG", banco=self.audit)
+            self.assertEqual(ops, [('MAURO_TESTE_CREATE / SUCESSO',), ('MAURO_TESTE_EXECUTE / SUCESSO',)])
+            auditoria.registrar_log(cursor=cursor, usuario=44, tabela='IA',
+                acao='MAURO_TESTE_ROLLBACK / SUCESSO', id_registro=3002)
             self.con.rollback()
             self.audit.rollback()
-            self.assertFalse(self.sql("SELECT 1 FROM AUDITORIA_EVENTO WHERE EVENTO='MAURO_TESTE_ROLLBACK'", banco=self.audit))
+            self.assertFalse(self.sql("SELECT 1 FROM LOG WHERE ACAO='MAURO_TESTE_ROLLBACK / SUCESSO'", banco=self.audit))
         finally:
             cursor.close()
 
@@ -409,17 +413,15 @@ class LogExternoFirebird(unittest.TestCase):
         app.after_request(auditoria._registrar_resposta_relevante)
         contexto = {'id_usuario':44, 'id_conta':9, 'tipo_conta':'PF',
                     'nome_conta':'Conta de teste', 'conta_final':'0009'}
-        inserir_original = auditoria._inserir_evento
-
-        def falhar_consulta(cursor, evento, resultado, *args):
-            if evento == 'MAURO_CONSULTA' and resultado == 'SUCESSO':
+        def falhar_consulta(**dados):
+            if dados['acao'] == 'MAURO_CONSULTA / SUCESSO':
                 raise RuntimeError('Falha simulada de persistência do log')
-            return inserir_original(cursor, evento, resultado, *args)
+            return auditoria.registrar_log(**dados)
 
         with patch.object(servico, 'con', self.con), \
              patch.object(servico, 'request', request), \
              patch.object(servico, 'current_app', current_app), \
-             patch.object(servico, 'registrar_evento_flask', auditoria.registrar_evento_flask), \
+             patch.object(servico, 'registrar_log', auditoria.registrar_log), \
              patch.object(servico, '_contexto_atual', return_value=(contexto, None)), \
              patch.object(servico, '_limitar_requisicoes', return_value=True), \
              patch.object(servico, '_responder_gemini', return_value=('Posso ajudar com sua conta no Arkhé.', None)), \
@@ -435,13 +437,13 @@ class LogExternoFirebird(unittest.TestCase):
             self.assertEqual(resposta.status_code,200)
             self.assertEqual(len(client.get(url).get_json()['mensagens']),2)
             self.audit.rollback()
-            self.assertTrue(self.sql("SELECT 1 FROM AUDITORIA_EVENTO WHERE EVENTO='MAURO_CONSULTA' AND RESULTADO='SUCESSO'",banco=self.audit))
-            with patch.object(auditoria, '_inserir_evento', side_effect=falhar_consulta), self.assertLogs(app.logger, level='ERROR'):
+            self.assertTrue(self.sql("SELECT 1 FROM LOG WHERE ACAO='MAURO_CONSULTA / SUCESSO'",banco=self.audit))
+            with patch.object(servico, 'registrar_log', side_effect=falhar_consulta), self.assertLogs(app.logger, level='ERROR'):
                 falhou = client.post(url,json={'mensagem':'Mostre meu saldo'})
             self.assertEqual(falhou.status_code,503)
             self.assertEqual(self.sql('SELECT COUNT(*) FROM MAURO_MENSAGEM WHERE ID_CONVERSA=?',(conversa,))[0][0],2)
             self.audit.rollback()
-            self.assertTrue(self.sql("SELECT 1 FROM AUDITORIA_EVENTO WHERE EVENTO='MAURO_CONSULTA' AND RESULTADO='FALHA'",banco=self.audit))
+            self.assertTrue(self.sql("SELECT 1 FROM LOG WHERE ACAO='MAURO_CONSULTA / FALHA'",banco=self.audit))
 
     def test_central_usa_id_unico_entre_historico_e_origem_nova(self):
         self.sql("INSERT INTO AUDITORIA_EVENTO (ORIGEM_ID,ID_EVENTO_ORIGEM,EVENTO,TABELA_ORIGEM,OPERACAO,RESULTADO,CRIADO_EM) VALUES ('outra-origem',1,'HISTORICO_2','FLASK','READ','SUCESSO',CURRENT_TIMESTAMP)",banco=self.audit)

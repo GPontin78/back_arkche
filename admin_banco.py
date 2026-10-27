@@ -533,11 +533,10 @@ def conversar_mauro_admin():
     if len(pergunta) > 2000:
         return jsonify({'mensagem': 'A pergunta deve ter no máximo 2.000 caracteres.'}), 400
     if tentativa_injecao(pergunta):
-        from auditoria import registrar_evento_flask
-        registrar_evento_flask(
-            evento='MAURO_ADMIN_CONSULTA', resultado='RECUSADO',
-            motivo='Tentativa de alterar instrucoes do assistente', id_usuario=id_admin,
-            operacao='DENY', origem=request.path, dados={'tipo': 'prompt_injection', 'tamanho': len(pergunta)},
+        from auditoria import registrar_log
+        registrar_log(
+            usuario=id_admin, tabela='IA', acao='MAURO_ADMIN_CONSULTA / RECUSADO',
+            valor_novo=f'TIPO=prompt_injection - TAMANHO={len(pergunta)}',
         )
         return jsonify({'mensagem': 'Não posso alterar políticas internas nem conceder novos privilégios por conversa.', 'codigo': 'INSTRUCAO_NAO_PERMITIDA'}), 400
     historico = corpo.get('historico') or []
@@ -545,14 +544,12 @@ def conversar_mauro_admin():
         historico = []
     historico = historico[-8:]
 
-    from auditoria import registrar_evento_flask
+    from auditoria import registrar_log
 
     if not _limitar_perguntas_assistente(id_admin):
-        registrar_evento_flask(
-            evento='MAURO_ADMIN_CONSULTA', resultado='RECUSADO',
-            motivo='Limite de consultas por minuto atingido', id_usuario=id_admin,
-            operacao='DENY', origem=request.path,
-            dados={'tamanho_pergunta': len(pergunta)},
+        registrar_log(
+            usuario=id_admin, tabela='IA', acao='MAURO_ADMIN_CONSULTA / RECUSADO',
+            valor_novo=f'TAMANHO_PERGUNTA={len(pergunta)} - RESUMO=Limite de consultas por minuto atingido',
         )
         return jsonify({'mensagem': 'Você atingiu o limite de perguntas por minuto. Aguarde um pouco e tente novamente.'}), 429
 
@@ -572,12 +569,17 @@ def conversar_mauro_admin():
         indicadores['servicos'] = {'firebird': 'operante', 'redis': redis_status}
         resposta, falha = _responder_assistente_admin(pergunta, historico, indicadores)
         bloqueada = not falha and resposta_modelo_insegura(resposta)
-        registrar_evento_flask(
-            evento='MAURO_ADMIN_CONSULTA',
-            resultado='FALHA' if falha else 'RECUSADO' if bloqueada else 'SUCESSO',
-            motivo=falha[:180] if falha else 'Resposta insegura bloqueada' if bloqueada else 'Consulta administrativa agregada',
-            id_usuario=id_admin, operacao='READ', origem=request.path,
-            dados={'tamanho_pergunta': len(pergunta), 'indicadores': sorted(indicadores.keys())},
+        resultado_log = 'SUCESSO'
+        resumo_log = f'TAMANHO_PERGUNTA={len(pergunta)} - INDICADORES={", ".join(sorted(indicadores))}'
+        if falha:
+            resultado_log = 'FALHA'
+            resumo_log += f' - RESUMO={falha[:180]}'
+        elif bloqueada:
+            resultado_log = 'RECUSADO'
+            resumo_log += ' - RESUMO=Resposta insegura bloqueada'
+        registrar_log(
+            usuario=id_admin, tabela='IA', acao=f'MAURO_ADMIN_CONSULTA / {resultado_log}',
+            valor_novo=resumo_log,
         )
         if falha:
             return jsonify({'mensagem': falha}), 503
@@ -591,11 +593,9 @@ def conversar_mauro_admin():
             'somente_agregados': True,
         }), 200
     except Exception:
-        registrar_evento_flask(
-            evento='MAURO_ADMIN_CONSULTA', resultado='FALHA',
-            motivo='Falha ao consultar indicadores administrativos', id_usuario=id_admin,
-            operacao='READ', origem=request.path,
-            dados={'tamanho_pergunta': len(pergunta)},
+        registrar_log(
+            usuario=id_admin, tabela='IA', acao='MAURO_ADMIN_CONSULTA / FALHA',
+            valor_novo=f'TAMANHO_PERGUNTA={len(pergunta)} - RESUMO=Falha ao consultar indicadores administrativos',
         )
         current_app.logger.exception('Falha ao montar consulta do MAURO administrativo')
         return jsonify({'mensagem': 'Não foi possível consultar os indicadores reais do Firebird agora.'}), 503

@@ -111,7 +111,7 @@ class LogSimplesFirebird(unittest.TestCase):
         linhas = self.sql("SELECT USUARIO,TABELA,ACAO,VALOR_NOVO FROM LOG WHERE USUARIO='INTEGRACAO_API:10004'",banco=self.audit)
         self.assertEqual({r[1] for r in linhas},{'API','MOVIMENTACAO'})
         registro_api = next(r for r in linhas if r[1]=='API')
-        self.assertIn('METODO=GET; STATUS_HTTP=200',registro_api[3])
+        self.assertIn('METODO=GET - STATUS_HTTP=200',registro_api[3])
         self.assertFalse(registro_api[3].startswith('{'))
         self.assertNotIn('segredo-nao-copiar',str(linhas))
         self.assertNotIn('segredo=nao-copiar',str(linhas))
@@ -124,15 +124,13 @@ class LogSimplesFirebird(unittest.TestCase):
         servico.registrar_rotas(app)
         app.after_request(auditoria._registrar_resposta_relevante)
         contexto = {'id_usuario':44,'id_conta':9,'tipo_conta':'PF','nome_conta':'Teste','conta_final':'0009'}
-        original = auditoria._inserir_evento_simples
-
-        def falhar(cursor,evento,resultado,*args):
-            if evento == 'MAURO_CONSULTA' and resultado == 'SUCESSO':
+        def falhar(**dados):
+            if dados['acao'] == 'MAURO_CONSULTA / SUCESSO':
                 raise RuntimeError('Falha simulada no LOG')
-            return original(cursor,evento,resultado,*args)
+            return auditoria.registrar_log(**dados)
 
         with patch.object(servico,'con',self.con),patch.object(servico,'request',request),patch.object(servico,'current_app',current_app), \
-             patch.object(servico,'registrar_evento_flask',auditoria.registrar_evento_flask), \
+             patch.object(servico,'registrar_log',auditoria.registrar_log), \
              patch.object(servico,'_contexto_atual',return_value=(contexto,None)),patch.object(servico,'_limitar_requisicoes',return_value=True), \
              patch.object(servico,'_responder_gemini',return_value=('Posso ajudar com sua conta.',None)), \
              patch.object(auditoria,'descobre_id_usuario',return_value=44),patch.object(auditoria,'descobre_id_conta',return_value=9), \
@@ -141,7 +139,7 @@ class LogSimplesFirebird(unittest.TestCase):
             conversa = cliente.post('/api/v1/assistente/conversas').get_json()['conversa']['id']
             url = f'/api/v1/assistente/conversas/{conversa}/mensagens'
             self.assertEqual(cliente.post(url,json={'mensagem':'Qual é meu saldo privado?'}).status_code,200)
-            with patch.object(auditoria,'_inserir_evento_simples',side_effect=falhar),self.assertLogs(app.logger,level='ERROR'):
+            with patch.object(servico,'registrar_log',side_effect=falhar),self.assertLogs(app.logger,level='ERROR'):
                 self.assertEqual(cliente.post(url,json={'mensagem':'Meu saldo privado'}).status_code,503)
             self.assertEqual(self.sql('SELECT COUNT(*) FROM MAURO_MENSAGEM WHERE ID_CONVERSA=?',(conversa,))[0][0],2)
         self.audit.rollback()
