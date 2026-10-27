@@ -15,7 +15,7 @@ def valores(tabela,registro):
     )
 
 
-def gerar_trigger(tabela,operacao,destino='__LOG_DATA_SOURCE__',usuario='__LOG_USUARIO__',senha='__LOG_SENHA__'):
+def gerar_trigger(tabela,operacao,destino='__LOG_DATA_SOURCE__',usuario='__LOG_USUARIO__',senha='__LOG_SENHA__',sem_complementos=True):
     chave = CAMPOS[tabela].split()[0]
     if operacao == 'INSERT':
         sigla = 'AI'
@@ -37,9 +37,15 @@ def gerar_trigger(tabela,operacao,destino='__LOG_DATA_SOURCE__',usuario='__LOG_U
         anterior,novo = ':V_ANTIGO','NULL'
     else:
         raise ValueError('Operação de trigger inválida')
+    cabecalho = f'AFTER {operacao}'
+    transacao = ''
+    if not sem_complementos:
+        # Somente para conferir a versão 017 já instalada.
+        cabecalho = f'ACTIVE AFTER {operacao} POSITION 32000'
+        transacao = '\n    WITH COMMON TRANSACTION'
     return f'''CREATE OR ALTER TRIGGER TG_{sigla}_{tabela}_LOG
 FOR {tabela}
-ACTIVE AFTER {operacao} POSITION 32000
+{cabecalho}
 AS
 DECLARE VARIABLE V_USUARIO VARCHAR(100);
 {declaracoes}
@@ -77,8 +83,7 @@ BEGIN
     )
     ON EXTERNAL DATA SOURCE {texto_sql(destino)}
     AS USER {texto_sql(usuario)}
-    PASSWORD {texto_sql(senha)}
-    WITH COMMON TRANSACTION;
+    PASSWORD {texto_sql(senha)}{transacao};
 END^
 '''
 
@@ -90,7 +95,7 @@ def main():
         for _,operacao,_ in OPERACOES:
             sql.append(gerar_trigger(tabela,operacao))
     sql.extend(['SET TERM ;^','COMMIT;'])
-    caminho = ROOT/'migrations/017_log_modelo_direto.sql'
+    caminho = ROOT/'migrations/018_log_sem_complementos.sql'
     caminho.write_text('\n'.join(sql),encoding='utf-8')
     print(caminho)
 

@@ -40,6 +40,11 @@ def modelo_ativo(triggers):
     return any(r[0]=='TG_AU_USUARIO_LOG' and 'DECLARE VARIABLE V_ANTIGO VARCHAR(2000);' in r[5] for r in triggers)
 
 
+def sem_complementos(triggers):
+    return modelo_ativo(triggers) and all(r[3]==0 and 'WITH COMMON TRANSACTION' not in r[5].upper()
+                                        for r in triggers if r[0].endswith('_LOG'))
+
+
 def conferir(conexao):
     cursor = conexao.cursor()
     cursor.execute('SELECT ORIGEM_ID,DATA_SOURCE,USUARIO,SENHA FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO=1')
@@ -58,12 +63,15 @@ def conferir(conexao):
             esperadas[nome] = (tabela,tipo,posicao,inativo,corpo)
     separadas = {nome:dados for nome,dados in esperadas.items() if not nome.endswith('_LOG')}
     modelo = dict(separadas)
+    modelo_anterior = dict(separadas)
     for tabela in TABELAS_PRINCIPAIS:
         for sigla,operacao,tipo in OPERACOES:
             corpo = 'AS\n'+gerar_trigger_separada(tabela,operacao).split('\nAS\n',1)[1].strip().removesuffix('^')
             separadas[f'TG_{sigla}_{tabela}_LOG'] = (tabela,tipo,32000,0,corpo)
             corpo_modelo = 'AS\n'+gerar_trigger_modelo(tabela,operacao,destino,usuario,senha).split('\nAS\n',1)[1].strip().removesuffix('^')
-            modelo[f'TG_{sigla}_{tabela}_LOG'] = (tabela,tipo,32000,0,corpo_modelo)
+            modelo[f'TG_{sigla}_{tabela}_LOG'] = (tabela,tipo,0,0,corpo_modelo)
+            corpo_anterior = 'AS\n'+gerar_trigger_modelo(tabela,operacao,destino,usuario,senha,sem_complementos=False).split('\nAS\n',1)[1].strip().removesuffix('^')
+            modelo_anterior[f'TG_{sigla}_{tabela}_LOG'] = (tabela,tipo,32000,0,corpo_anterior)
     try:
         cursor.execute('''SELECT TRIM(RDB$TRIGGER_NAME),TRIM(RDB$RELATION_NAME),
             RDB$TRIGGER_TYPE,RDB$TRIGGER_SEQUENCE,RDB$TRIGGER_INACTIVE,RDB$TRIGGER_SOURCE
@@ -71,6 +79,8 @@ def conferir(conexao):
         atuais = cursor.fetchall()
         if {r[0] for r in atuais} == set(separadas):
             esperadas_tres = modelo if modelo_ativo(atuais) else separadas
+            if modelo_ativo(atuais) and not sem_complementos(atuais):
+                esperadas_tres = modelo_anterior
             for nome,*dados in atuais:
                 esperado = esperadas_tres[nome]
                 if tuple(dados[:4]) != esperado[:4] or re.sub(r'\s+',' ',dados[4]).strip() != re.sub(r'\s+',' ',esperado[4]).strip():
@@ -202,18 +212,23 @@ def aplicar_modelo(conexao,arquivo):
     atuais,origem = conferir(conexao)
     if not origem.endswith('-simples') or not tres_ativas(atuais) or not conferir_log(arquivo):
         raise RuntimeError('Aplicar a LOG de oito campos com três triggers antes do modelo direto')
-    if modelo_ativo(atuais):
+    if sem_complementos(atuais):
         conexao.rollback()
         return False
     cursor = conexao.cursor()
     try:
         cursor.execute('SELECT DATA_SOURCE,USUARIO,SENHA FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO=1')
         destino,usuario,senha = cursor.fetchone()
-        ddl = (ROOT/'migrations/017_log_modelo_direto.sql').read_text(encoding='utf-8')
+        ddl = (ROOT/'migrations/018_log_sem_complementos.sql').read_text(encoding='utf-8')
         for marcador,valor in (('__LOG_DATA_SOURCE__',destino),('__LOG_USUARIO__',usuario),('__LOG_SENHA__',senha)):
             ddl = ddl.replace(texto_sql(marcador),texto_sql(valor))
         for sql in comandos_sql(ddl):
             cursor.execute(sql)
+        # Omitir POSITION em CREATE OR ALTER mantém a posição antiga.
+        # Volta ao padrão sem recriar triggers nem perder privilégios/descrições.
+        for tabela in TABELAS_PRINCIPAIS:
+            for sigla,_,_ in OPERACOES:
+                cursor.execute(f'ALTER TRIGGER TG_{sigla}_{tabela}_LOG POSITION 0')
         conferir(conexao)
         testar_eds(cursor)
         conexao.commit()
@@ -258,7 +273,7 @@ def main():
         if args.tres:
             atualizado = origem.endswith('-simples') and tres_ativas(triggers)
         if args.modelo:
-            atualizado = origem.endswith('-simples') and modelo_ativo(triggers)
+            atualizado = origem.endswith('-simples') and sem_complementos(triggers)
         if not args.apply or atualizado:
             print('Versão solicitada já ativa.' if atualizado else 'Somente leitura.',flush=True)
             return
