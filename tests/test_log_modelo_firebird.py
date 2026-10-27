@@ -9,9 +9,11 @@ from unittest.mock import patch
 import fdb
 import auditoria
 from tests import test_log_tres_firebird as base
+from tests import test_log_externo_firebird as legado
 from scripts.aplicar_log_externo import comandos_sql
 from scripts.aplicar_log_simples import aplicar_modelo,conferir,conferir_log,modelo_ativo,salvar_rollback
 from scripts.gerar_migracao_log import CAMPOS,TABELAS_PRINCIPAIS
+from scripts.gerar_log_modelo import gerar_trigger
 
 
 class LogModeloFirebird(unittest.TestCase):
@@ -34,6 +36,7 @@ class LogModeloFirebird(unittest.TestCase):
     test_texto_e_json_antigo_na_tela = base.LogTresFirebird.test_texto_e_json_antigo_na_tela
     test_api_identifica_integracao_sem_credenciais = base.LogTresFirebird.test_api_identifica_integracao_sem_credenciais
     test_ia_grava_resumo_sem_conteudo_privado = base.LogTresFirebird.test_ia_grava_resumo_sem_conteudo_privado
+    test_regra_de_compra_na_posicao_padrao = legado.LogExternoFirebird.test_trigger_de_compra_preserva_parcelas_e_datas
 
     def test_python_grava_antes_depois_sem_converter_para_json(self):
         cursor = self.con.cursor()
@@ -83,14 +86,20 @@ class LogModeloFirebird(unittest.TestCase):
         self.assertTrue(modelo_ativo(triggers))
         self.assertTrue(conferir_log(self.audit))
         self.assertEqual(len(triggers),35)
-        for nome,tabela,tipo,_,_,corpo in triggers:
+        for nome,tabela,tipo,posicao,inativo,corpo in triggers:
             if nome.endswith('_LOG'):
+                self.assertEqual(posicao,0)
+                self.assertEqual(inativo,0)
                 self.assertEqual(corpo.count('EXECUTE STATEMENT'),1)
                 self.assertNotIn('IF (',corpo)
                 self.assertNotIn('CASE',corpo)
                 self.assertNotIn('JSON',corpo)
                 self.assertNotIn('CONFIGURACAO_LOG',corpo)
                 self.assertNotIn('__LOG_',corpo)
+                self.assertNotIn('WITH COMMON TRANSACTION',corpo)
+                sql = gerar_trigger(tabela,{2:'INSERT',4:'UPDATE',6:'DELETE'}[tipo])
+                self.assertNotIn('POSITION',sql)
+                self.assertNotIn('ACTIVE',sql)
                 self.assertIn('VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?)',corpo)
                 self.assertIn('V_USUARIO =',corpo)
                 if tipo == 2:
@@ -146,6 +155,8 @@ class LogModeloFirebird(unittest.TestCase):
                     valores.append(valor)
                 self.sql(f'INSERT INTO {tabela} ('+','.join(colunas)+') VALUES ('+','.join('?' for _ in valores)+')',tuple(valores))
                 self.con.commit()
+                if tabela=='CONTA':
+                    self.assertEqual(self.sql('SELECT VERSAO FROM CONTROLE_LIMITE_CONTA WHERE ID_CONTA=?',(registro,)),[(0,)])
                 self.sql(f'UPDATE {tabela} SET {chave}={chave} WHERE {chave}=?',(registro,))
                 self.con.commit()
                 self.sql(f'DELETE FROM {tabela} WHERE {chave}=?',(registro,))
@@ -189,6 +200,28 @@ class LogModeloFirebird(unittest.TestCase):
         finally:
             self.con.rollback()
             aplicar_modelo(self.con,self.audit)
+
+    def test_atualiza_modelo_017_sem_perder_privilegios_ou_descricao(self):
+        from scripts.aplicar_log_simples import sem_complementos
+        cursor = self.con.cursor()
+        try:
+            cursor.execute('SELECT DATA_SOURCE,USUARIO,SENHA FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO=1')
+            destino,usuario,senha = cursor.fetchone()
+            for tabela in TABELAS_PRINCIPAIS:
+                for operacao in ('INSERT','UPDATE','DELETE'):
+                    cursor.execute(gerar_trigger(tabela,operacao,destino,usuario,senha,sem_complementos=False).strip().removesuffix('^'))
+            cursor.execute("COMMENT ON TRIGGER TG_AU_USUARIO_LOG IS 'Descricao preservada'")
+            cursor.execute('GRANT SELECT ON CONFIGURACAO_LOG TO TRIGGER TG_AU_USUARIO_LOG')
+            self.con.commit()
+            self.assertFalse(sem_complementos(conferir(self.con)[0]))
+            aplicar_modelo(self.con,self.audit)
+            self.assertTrue(sem_complementos(conferir(self.con)[0]))
+            self.assertEqual(self.sql("SELECT RDB$DESCRIPTION FROM RDB$TRIGGERS WHERE RDB$TRIGGER_NAME='TG_AU_USUARIO_LOG'"),[('Descricao preservada',)])
+            self.assertEqual(self.sql("SELECT COUNT(*) FROM RDB$USER_PRIVILEGES WHERE RDB$USER='TG_AU_USUARIO_LOG' AND RDB$RELATION_NAME='CONFIGURACAO_LOG'"),[(1,)])
+        finally:
+            self.con.rollback()
+            aplicar_modelo(self.con,self.audit)
+            cursor.close()
 
 
 if __name__ == '__main__':

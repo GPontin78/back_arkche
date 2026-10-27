@@ -100,7 +100,7 @@ anteriores. O script de retorno remove as 33 e restaura as fontes anteriores sem
 apagar os registros. A conferência recusa misturas, alterações inesperadas ou
 triggers desativadas e a reaplicação da versão atual não faz alterações.
 
-## Modelo direto do exemplo (017, versão atual)
+## Modelo direto do exemplo (017)
 
 As 33 triggers passam a declarar V_USUARIO e as variáveis V_ANTIGO/V_NOVO necessárias
 à operação, atribuir seus valores e executar o INSERT com parâmetros posicionais ?.
@@ -124,6 +124,19 @@ inclusive TG_AI_COMPRA. WITH COMMON TRANSACTION acompanha commit/rollback da
 operação. O aplicador faz backup dos dois bancos e salva as fontes anteriores.
 A migração troca apenas as fontes na mesma transação, preservando a tabela de
 oito campos, os dados existentes, os logs de IA/API e as duas triggers financeiras.
+
+## Sem complementos no cabeçalho (018, versão atual)
+
+As 33 triggers usam apenas CREATE OR ALTER TRIGGER, FOR e AFTER INSERT/UPDATE/DELETE.
+Não escrevem ACTIVE, POSITION ou WITH COMMON TRANSACTION. O Firebird usa a transação
+comum por padrão; commit/rollback continuam acompanhando a operação.
+
+O aplicador `--modelo --apply` agora instala a 018. Omitir POSITION em CREATE OR ALTER
+não apaga a posição anterior, por isso o aplicador devolve as 33 posições ao padrão 0
+na mesma transação. Usa ALTER sem remover as triggers, preservando privilégios e
+descrições. As duas triggers financeiras, os oito campos, a conexão e os dados
+continuam preservados. A conferência aceita a 017 anterior e a 018 completa, recusando
+misturas ou alterações inesperadas. A migração 017 permanece como histórico.
 
 ## Python direto
 
