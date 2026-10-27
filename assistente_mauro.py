@@ -917,13 +917,12 @@ def criar_conversa():
             (contexto['id_usuario'], contexto['id_conta']),
         )
         row = cursor.fetchone()
+        con.commit()
         registrar_log(
             usuario=contexto['id_usuario'], tabela='IA',
             acao='MAURO_CONVERSA_CRIADA / SUCESSO', id_registro=int(row[0]),
             valor_novo=f'CONVERSA_ID={int(row[0])} - ID_CONTA={contexto["id_conta"]}',
-            cursor=cursor,
         )
-        con.commit()
         return jsonify({'conversa': {'id': int(row[0]), 'titulo': 'Conversa com MAURO', 'criada_em': _data_json(row[1])}}), 201
     except Exception:
         con.rollback()
@@ -1121,20 +1120,19 @@ def enviar_mensagem(id_conversa):
         )
         id_assistente_msg = int(cursor.fetchone()[0])
         cursor.execute('UPDATE MAURO_CONVERSA SET ATUALIZADA_EM = CURRENT_TIMESTAMP WHERE ID_CONVERSA = ?', (id_conversa,))
+        con.commit()
         registrar_log(
             usuario=contexto['id_usuario'], tabela='IA',
             acao='MAURO_CONSULTA / SUCESSO', id_registro=id_usuario_msg,
             valor_novo=(f'CONVERSA_ID={int(id_conversa)} - MENSAGEM_USUARIO_ID={id_usuario_msg}'
                         f' - MENSAGEM_ASSISTENTE_ID={id_assistente_msg} - INTENCAO={intencao}'
                         f' - CARACTERES={len(texto)} - ID_CONTA={contexto["id_conta"]}'),
-            cursor=cursor,
         )
         for evento_pix in mensagens_pix_auditoria:
             mauro_pix._auditar(
                 evento_pix['id'], contexto, evento_pix['evento'], evento_pix['resultado'],
-                valor=evento_pix.get('valor'), cursor=cursor,
+                valor=evento_pix.get('valor'),
             )
-        con.commit()
         return jsonify({
             'mensagem': {'id': id_assistente_msg, 'papel': 'ASSISTENTE', 'conteudo': resposta,
                          'criada_em': datetime.now(FUSO).isoformat(timespec='seconds')},

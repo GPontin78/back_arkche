@@ -4,7 +4,7 @@ from decimal import Decimal
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import fdb
 import auditoria
@@ -44,7 +44,7 @@ class LogModeloFirebird(unittest.TestCase):
             auditoria.registrar_log(
                 usuario=44, tabela='IA', acao='MAURO_TESTE_EDICAO / SUCESSO',
                 id_registro=14004, valor_anterior='Nome anterior - 0',
-                valor_novo='Nome novo - 1', cursor=cursor,
+                valor_novo='Nome novo - 1',
             )
             self.con.commit()
             self.assertEqual(self.eventos('IA',14004),[
@@ -55,20 +55,48 @@ class LogModeloFirebird(unittest.TestCase):
         finally:
             cursor.close()
 
-    def test_python_preserva_rollback_e_recusa_texto_maior_que_o_campo(self):
-        cursor = self.con.cursor()
+    def test_python_grava_no_outro_banco_sem_confirmar_transacao_principal(self):
+        self.sql("INSERT INTO MAURO_CONVERSA (ID_CONVERSA,ID_USUARIO,ID_CONTA,TITULO) VALUES (14005,44,9,'Teste')")
+        auditoria.registrar_log(usuario=44,tabela='API',acao='TESTE_CONSULTA',
+                              id_registro=14005,valor_novo='STATUS=1')
+        self.con.rollback()
+        self.assertFalse(self.sql('SELECT ID_CONVERSA FROM MAURO_CONVERSA WHERE ID_CONVERSA=14005'))
+        self.assertEqual(self.eventos('API',14005),[('TESTE_CONSULTA',None,'STATUS=1','44')])
+
+    def test_python_falha_sem_gravar_parcial_e_permite_nova_chamada(self):
+        self.sql("ALTER TABLE LOG ADD CONSTRAINT CK_LOG_TESTE_PY CHECK (ACAO <> 'TESTE_ERRO_PYTHON')",banco=self.audit)
+        self.audit.commit()
         try:
-            auditoria.registrar_log(usuario=44,tabela='API',acao='TESTE_ROLLBACK',
-                                  id_registro=14005,valor_novo='STATUS=1',cursor=cursor)
-            self.con.rollback()
-            self.assertFalse(self.eventos('API',14005))
-            with self.assertRaises((ValueError,fdb.DatabaseError)):
-                auditoria.registrar_log(usuario=44,tabela='API',acao='TESTE_TAMANHO',
-                                      id_registro=14005,valor_novo='x'*4001,cursor=cursor)
-            self.con.rollback()
-            self.assertFalse(self.eventos('API',14005))
+            with self.assertRaises(fdb.DatabaseError):
+                auditoria.registrar_log(usuario=44,tabela='API',acao='TESTE_ERRO_PYTHON',id_registro=14006)
+            self.assertFalse(self.eventos('API',14006))
+            auditoria.registrar_log(usuario=44,tabela='API',acao='TESTE_RECUPERADO',
+                                  id_registro=14006,valor_novo='x'*5000)
+            self.assertEqual(self.eventos('API',14006),[('TESTE_RECUPERADO',None,'x'*5000,'44')])
         finally:
-            cursor.close()
+            self.audit.rollback()
+            self.sql('ALTER TABLE LOG DROP CONSTRAINT CK_LOG_TESTE_PY',banco=self.audit)
+            self.audit.commit()
+
+    def test_ia_nao_registra_sucesso_se_commit_da_conversa_falhar(self):
+        from tests.test_assistente_mauro_intencoes import carregar_servico
+        from flask import Flask, current_app
+        servico = carregar_servico()
+        app = Flask('log_commit_recusado')
+        app.config.update(self.app.config)
+        servico.registrar_rotas(app)
+        contexto = {'id_usuario':44,'id_conta':9}
+        conexao = Mock(wraps=self.con)
+        conexao.commit.side_effect = fdb.DatabaseError('Commit recusado no teste')
+        quantidade = self.sql('SELECT COUNT(*) FROM MAURO_CONVERSA')[0][0]
+        with patch.object(servico,'con',conexao), \
+             patch.object(servico,'current_app',current_app), \
+             patch.object(servico,'_contexto_atual',return_value=(contexto,None)), \
+             patch.object(servico,'registrar_log') as log, self.assertLogs(app.logger,level='ERROR'):
+            resposta = app.test_client().post('/api/v1/assistente/conversas')
+        self.assertEqual(resposta.status_code,503)
+        log.assert_not_called()
+        self.assertEqual(self.sql('SELECT COUNT(*) FROM MAURO_CONVERSA')[0][0],quantidade)
 
     def test_contexto_da_trigger_limpa_o_usuario_da_requisicao_anterior(self):
         with patch.object(auditoria,'con',self.con):

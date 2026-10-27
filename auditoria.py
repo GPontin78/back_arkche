@@ -102,65 +102,33 @@ def _origem_id():
     return os.getenv('ARKHE_AUDIT_SOURCE_ID') or ('arkhe-' + hashlib.sha256(base.encode('utf-8')).hexdigest()[:24])
 
 
-def registrar_log(*, usuario, tabela, acao, id_registro=None,
-                  valor_anterior=None, valor_novo=None, cursor=None):
-    """Grava os campos da LOG. Com cursor, usa a transação da operação."""
-    conexao = None
+def registrar_log(usuario, tabela, acao, id_registro=None,
+                  valor_anterior=None, valor_novo=None):
+    conexao = fdb.connect(
+        host=os.getenv('ARKHE_AUDIT_DB_HOST', current_app.config.get('DB_HOST', '127.0.0.1')),
+        port=int(os.getenv('ARKHE_AUDIT_DB_PORT', current_app.config.get('DB_PORT', 3050))),
+        database=os.environ['ARKHE_AUDIT_DB_NAME'],
+        user=os.getenv('ARKHE_AUDIT_DB_USER', current_app.config.get('DB_USER', 'SYSDBA')),
+        password=os.getenv('ARKHE_AUDIT_DB_PASSWORD', current_app.config.get('DB_PASSWORD', '')),
+        charset='UTF8',
+    )
+    cursor = conexao.cursor()
     try:
-        if cursor is None:
-            conexao = fdb.connect(
-                host=current_app.config['DB_HOST'], port=current_app.config['DB_PORT'],
-                database=current_app.config['DB_NAME'], user=current_app.config['DB_USER'],
-                password=current_app.config['DB_PASSWORD'], charset='UTF8',
-            )
-            cursor = conexao.cursor()
-
-        cursor.execute("""
-            SELECT DATA_SOURCE, USUARIO, SENHA
-            FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
-        """)
-        configuracao = cursor.fetchone()
-        if not configuracao or not configuracao[0]:
-            raise RuntimeError('Banco de log não configurado')
-        destino, login, senha = configuracao
         if usuario is not None:
             usuario = str(usuario)
-
-        cursor.execute("""EXECUTE BLOCK (
-            P_USUARIO VARCHAR(100) = ?, P_TABELA VARCHAR(64) = ?,
-            P_REGISTRO BIGINT = ?, P_ACAO VARCHAR(120) = ?,
-            P_ANTIGO VARCHAR(4000) = ?, P_NOVO VARCHAR(4000) = ?,
-            P_DESTINO VARCHAR(512) = ?, P_LOGIN VARCHAR(63) = ?, P_SENHA VARCHAR(255) = ?
-        ) AS
-        BEGIN
-            EXECUTE STATEMENT (
-                'INSERT INTO LOG (
-                    USUARIO, DATA_HORA, TABELA, ID_REGISTRO,
-                    ACAO, VALOR_ANTERIOR, VALOR_NOVO
-                ) VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?)'
-            ) (
-                :P_USUARIO, :P_TABELA, :P_REGISTRO,
-                :P_ACAO, :P_ANTIGO, :P_NOVO
-            )
-            ON EXTERNAL DATA SOURCE :P_DESTINO
-            AS USER :P_LOGIN PASSWORD :P_SENHA
-            WITH COMMON TRANSACTION;
-        END""", (
+        cursor.execute("""
+            INSERT INTO LOG (
+                USUARIO, DATA_HORA, TABELA, ID_REGISTRO,
+                ACAO, VALOR_ANTERIOR, VALOR_NOVO
+            ) VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?)
+        """, (
             usuario, tabela, id_registro, acao, valor_anterior, valor_novo,
-            destino, login, senha,
         ))
-        if conexao:
-            conexao.commit()
+        conexao.commit()
         return True
-    except Exception:
-        if conexao:
-            conexao.rollback()
-        raise
     finally:
-        if conexao:
-            if cursor:
-                cursor.close()
-            conexao.close()
+        cursor.close()
+        conexao.close()
 
 
 def _registrar_acesso_detalhe(admin_id, recurso, identificador):
@@ -283,7 +251,7 @@ def _registrar_resposta_relevante(response):
                     cliente.close()
     except Exception:
         current_app.logger.exception('Falha ao registrar evento HTTP')
-        # Escritas já confirmadas mantêm a resposta; o log da operação usa seu cursor.
+        # Escritas já confirmadas mantêm a resposta; as triggers gravam as alterações.
         if request.method == 'GET' and response.status_code < 400:
             return current_app.make_response((jsonify({'mensagem': 'Não foi possível registrar o log da operação.'}), 503))
     return response
