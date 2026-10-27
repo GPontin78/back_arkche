@@ -13,6 +13,7 @@ from scripts.aplicar_log_externo import backup, comandos_sql, conectar, testar_e
 from scripts.gerar_log_simples import gerar_trigger
 from scripts.gerar_log_texto import gerar_trigger as gerar_trigger_texto
 from scripts.gerar_log_tres_triggers import OPERACOES, gerar_trigger as gerar_trigger_separada
+from scripts.gerar_log_modelo import gerar_trigger as gerar_trigger_modelo
 from scripts.gerar_migracao_log import SCHEMA, TABELAS_PRINCIPAIS, texto_sql
 from scripts.unificar_log import conferir as conferir_anterior
 
@@ -35,10 +36,14 @@ def tres_ativas(triggers):
     return {r[0] for r in triggers if r[0].endswith('_LOG')} == nomes
 
 
+def modelo_ativo(triggers):
+    return any(r[0]=='TG_AU_USUARIO_LOG' and 'DECLARE VARIABLE V_ANTIGO VARCHAR(2000);' in r[5] for r in triggers)
+
+
 def conferir(conexao):
     cursor = conexao.cursor()
-    cursor.execute('SELECT ORIGEM_ID FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO=1')
-    origem = cursor.fetchone()[0]
+    cursor.execute('SELECT ORIGEM_ID,DATA_SOURCE,USUARIO,SENHA FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO=1')
+    origem,destino,usuario,senha = cursor.fetchone()
     if not origem.endswith('-simples'):
         cursor.close()
         atuais = conferir_anterior(conexao)
@@ -52,18 +57,22 @@ def conferir(conexao):
         if not nome.startswith('ARKHE_AUD_'):
             esperadas[nome] = (tabela,tipo,posicao,inativo,corpo)
     separadas = {nome:dados for nome,dados in esperadas.items() if not nome.endswith('_LOG')}
+    modelo = dict(separadas)
     for tabela in TABELAS_PRINCIPAIS:
         for sigla,operacao,tipo in OPERACOES:
             corpo = 'AS\n'+gerar_trigger_separada(tabela,operacao).split('\nAS\n',1)[1].strip().removesuffix('^')
             separadas[f'TG_{sigla}_{tabela}_LOG'] = (tabela,tipo,32000,0,corpo)
+            corpo_modelo = 'AS\n'+gerar_trigger_modelo(tabela,operacao,destino,usuario,senha).split('\nAS\n',1)[1].strip().removesuffix('^')
+            modelo[f'TG_{sigla}_{tabela}_LOG'] = (tabela,tipo,32000,0,corpo_modelo)
     try:
         cursor.execute('''SELECT TRIM(RDB$TRIGGER_NAME),TRIM(RDB$RELATION_NAME),
             RDB$TRIGGER_TYPE,RDB$TRIGGER_SEQUENCE,RDB$TRIGGER_INACTIVE,RDB$TRIGGER_SOURCE
             FROM RDB$TRIGGERS WHERE COALESCE(RDB$SYSTEM_FLAG,0)=0 ORDER BY 1''')
         atuais = cursor.fetchall()
         if {r[0] for r in atuais} == set(separadas):
+            esperadas_tres = modelo if modelo_ativo(atuais) else separadas
             for nome,*dados in atuais:
-                esperado = separadas[nome]
+                esperado = esperadas_tres[nome]
                 if tuple(dados[:4]) != esperado[:4] or re.sub(r'\s+',' ',dados[4]).strip() != re.sub(r'\s+',' ',esperado[4]).strip():
                     raise RuntimeError(f'Trigger {nome} mudou desde o estudo')
             return atuais,origem
@@ -189,12 +198,40 @@ def aplicar_tres(conexao,arquivo):
         cursor.close()
 
 
+def aplicar_modelo(conexao,arquivo):
+    atuais,origem = conferir(conexao)
+    if not origem.endswith('-simples') or not tres_ativas(atuais) or not conferir_log(arquivo):
+        raise RuntimeError('Aplicar a LOG de oito campos com três triggers antes do modelo direto')
+    if modelo_ativo(atuais):
+        conexao.rollback()
+        return False
+    cursor = conexao.cursor()
+    try:
+        cursor.execute('SELECT DATA_SOURCE,USUARIO,SENHA FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO=1')
+        destino,usuario,senha = cursor.fetchone()
+        ddl = (ROOT/'migrations/017_log_modelo_direto.sql').read_text(encoding='utf-8')
+        for marcador,valor in (('__LOG_DATA_SOURCE__',destino),('__LOG_USUARIO__',usuario),('__LOG_SENHA__',senha)):
+            ddl = ddl.replace(texto_sql(marcador),texto_sql(valor))
+        for sql in comandos_sql(ddl):
+            cursor.execute(sql)
+        conferir(conexao)
+        testar_eds(cursor)
+        conexao.commit()
+        return True
+    except Exception:
+        conexao.rollback()
+        raise
+    finally:
+        cursor.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--apply',action='store_true')
     versao = parser.add_mutually_exclusive_group()
     versao.add_argument('--texto',action='store_true',help='Usa resumos em texto, sem JSON')
     versao.add_argument('--tres',action='store_true',help='Separa INSERT, UPDATE e DELETE: três triggers por tabela')
+    versao.add_argument('--modelo',action='store_true',help='Usa variáveis antigo/novo e parâmetros posicionais, como no exemplo')
     args = parser.parse_args()
     conexao = conectar(config.DB_HOST,config.DB_PORT,config.DB_NAME,config.DB_USER,config.DB_PASSWORD)
     arquivo = None
@@ -220,24 +257,28 @@ def main():
         atualizado = origem.endswith('-simples') and (not args.texto or texto_ativo(triggers))
         if args.tres:
             atualizado = origem.endswith('-simples') and tres_ativas(triggers)
+        if args.modelo:
+            atualizado = origem.endswith('-simples') and modelo_ativo(triggers)
         if not args.apply or atualizado:
             print('Versão solicitada já ativa.' if atualizado else 'Somente leitura.',flush=True)
             return
         sufixo = datetime.now().strftime('%Y%m%d-%H%M%S')
-        prefixo = 'log-tres-' if args.tres else 'log-texto-' if args.texto else 'log-simples-'
+        prefixo = 'log-modelo-' if args.modelo else 'log-tres-' if args.tres else 'log-texto-' if args.texto else 'log-simples-'
         pasta = ROOT/'.runtime'/(prefixo+sufixo)
         pasta.mkdir(parents=True,exist_ok=False)
         salvar_rollback(pasta,triggers,origem,remover_tres=args.tres)
         backups = [backup(config.DB_HOST,config.DB_PORT,config.DB_NAME,config.DB_USER,config.DB_PASSWORD,sufixo),backup(host,int(porta),nome,usuario,senha,sufixo)]
         print('Backups concluídos:',*backups,sep='\n',flush=True)
-        if args.tres:
+        if args.modelo:
+            aplicar_modelo(conexao,arquivo)
+        elif args.tres:
             aplicar_tres(conexao,arquivo)
         elif args.texto:
             aplicar_texto(conexao,arquivo)
         else:
             aplicar(conexao,arquivo)
-        (pasta/'resultado.json').write_text(json.dumps({'campos':CAMPOS_LOG,'historico_antes':historicos,'backups':backups,'texto':args.texto or args.tres,'tres_por_tabela':args.tres},indent=2),encoding='utf-8')
-        quantidade = 33 if args.tres else 11
+        (pasta/'resultado.json').write_text(json.dumps({'campos':CAMPOS_LOG,'historico_antes':historicos,'backups':backups,'texto':args.texto or args.tres or args.modelo,'tres_por_tabela':args.tres or args.modelo,'modelo_direto':args.modelo},indent=2),encoding='utf-8')
+        quantidade = 33 if args.tres or args.modelo else 11
         print(f'Aplicado: LOG com 8 campos; {quantidade} triggers de LOG e 2 financeiras preservadas.',flush=True)
         print('Rollback:',pasta/'rollback-log-simples.sql',flush=True)
     finally:
