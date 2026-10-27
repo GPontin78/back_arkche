@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch
 
 import fdb
+import auditoria
 from tests import test_log_tres_firebird as base
 from scripts.aplicar_log_externo import comandos_sql
 from scripts.aplicar_log_simples import aplicar_modelo,conferir,conferir_log,modelo_ativo,salvar_rollback
@@ -33,6 +34,49 @@ class LogModeloFirebird(unittest.TestCase):
     test_texto_e_json_antigo_na_tela = base.LogTresFirebird.test_texto_e_json_antigo_na_tela
     test_api_identifica_integracao_sem_credenciais = base.LogTresFirebird.test_api_identifica_integracao_sem_credenciais
     test_ia_grava_resumo_sem_conteudo_privado = base.LogTresFirebird.test_ia_grava_resumo_sem_conteudo_privado
+
+    def test_python_grava_antes_depois_sem_converter_para_json(self):
+        cursor = self.con.cursor()
+        try:
+            auditoria.registrar_log(
+                usuario=44, tabela='IA', acao='MAURO_TESTE_EDICAO / SUCESSO',
+                id_registro=14004, valor_anterior='Nome anterior - 0',
+                valor_novo='Nome novo - 1', cursor=cursor,
+            )
+            self.con.commit()
+            self.assertEqual(self.eventos('IA',14004),[
+                ('MAURO_TESTE_EDICAO / SUCESSO','Nome anterior - 0','Nome novo - 1','44'),
+            ])
+            cursor.execute('SELECT 1 FROM RDB$DATABASE')
+            self.assertEqual(cursor.fetchone(),(1,))
+        finally:
+            cursor.close()
+
+    def test_python_preserva_rollback_e_recusa_texto_maior_que_o_campo(self):
+        cursor = self.con.cursor()
+        try:
+            auditoria.registrar_log(usuario=44,tabela='API',acao='TESTE_ROLLBACK',
+                                  id_registro=14005,valor_novo='STATUS=1',cursor=cursor)
+            self.con.rollback()
+            self.assertFalse(self.eventos('API',14005))
+            with self.assertRaises((ValueError,fdb.DatabaseError)):
+                auditoria.registrar_log(usuario=44,tabela='API',acao='TESTE_TAMANHO',
+                                      id_registro=14005,valor_novo='x'*4001,cursor=cursor)
+            self.con.rollback()
+            self.assertFalse(self.eventos('API',14005))
+        finally:
+            cursor.close()
+
+    def test_contexto_da_trigger_limpa_o_usuario_da_requisicao_anterior(self):
+        with patch.object(auditoria,'con',self.con):
+            with self.app.test_request_context('/api/v1/assistente/conversas'):
+                with patch.object(auditoria,'descobre_id_usuario',return_value=44):
+                    auditoria._preparar_contexto_trigger()
+            self.assertEqual(self.sql("SELECT RDB$GET_CONTEXT('USER_SESSION','ARKHE_USUARIO_LOG') FROM RDB$DATABASE"),[('44',)])
+            with self.app.test_request_context('/api/v1/saldo'):
+                with patch.object(auditoria,'descobre_id_usuario',return_value=None):
+                    auditoria._preparar_contexto_trigger()
+            self.assertEqual(self.sql("SELECT RDB$GET_CONTEXT('USER_SESSION','ARKHE_USUARIO_LOG'), RDB$GET_CONTEXT('USER_SESSION','ARKHE_ID_USUARIO') FROM RDB$DATABASE"),[(None,None)])
 
     def test_tres_por_tabela_no_modelo_solicitado(self):
         triggers,_ = conferir(self.con)

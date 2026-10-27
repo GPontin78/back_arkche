@@ -31,7 +31,7 @@ def carregar_servico():
             jsonify=lambda value: value,
             request=types.SimpleNamespace(path='/teste'),
         ),
-        'auditoria': types.SimpleNamespace(registrar_evento_flask=lambda **kwargs: True),
+        'auditoria': types.SimpleNamespace(registrar_log=lambda **kwargs: True),
         'banco': types.SimpleNamespace(con=ConexaoSemBanco()),
         'funcao': types.SimpleNamespace(
             calcular_saldo=lambda *_: 0,

@@ -25,10 +25,11 @@ usada pelo sistema, sem copiar credenciais, PIN, CVV ou dados pessoais protegido
 As duas regras financeiras existentes mantêm seus nomes, posições e comportamento.
 
 A IA e a API usam a mesma LOG. A ação indica o evento e seu resultado. O resumo
-registra IDs, rota parametrizada e status em texto CAMPO=valor, sem corpo da requisição,
+registra IDs e status em texto CAMPO=valor separado por ' - ', sem corpo da requisição,
 query, headers, áudio ou texto privado da conversa. O log da ação da IA participa
 do commit/rollback da própria operação. A integração autenticada é identificada
 como INTEGRACAO_API:<id>, inclusive nas alterações feitas por suas chamadas.
+O registro HTTP inclui a rota parametrizada, método, status e IDs da rota.
 
 ## Histórico preservado
 
@@ -123,3 +124,22 @@ inclusive TG_AI_COMPRA. WITH COMMON TRANSACTION acompanha commit/rollback da
 operação. O aplicador faz backup dos dois bancos e salva as fontes anteriores.
 A migração troca apenas as fontes na mesma transação, preservando a tabela de
 oito campos, os dados existentes, os logs de IA/API e as duas triggers financeiras.
+
+## Python direto
+
+`registrar_log(usuario=..., tabela=..., acao=..., id_registro=...,
+valor_anterior=..., valor_novo=..., cursor=...)` recebe os próprios campos da LOG.
+ID_LOG e DATA_HORA são gerados no banco. Cada chamada da IA, Pix e administração
+monta seu resumo em texto explicitamente; o hook HTTP faz o mesmo para API e sistema.
+Não há mais serialização JSON, detecção de versões ou escolha entre três gravadores
+a cada ação. Os endpoints, autenticação e regras financeiras mantêm seus contratos.
+
+Com cursor, usa a conexão e o commit/rollback da operação. Sem cursor, abre uma
+conexão ao principal, executa a gravação externa e confirma ou reverte antes de
+fechar. O SQL usa parâmetros posicionais e a conexão já existente em CONFIGURACAO_LOG.
+Senhas, PIN, headers, query strings e o conteúdo das conversas não entram nos resumos.
+
+A consulta de oito campos usa SELECT, filtros parametrizados e uma lista explícita
+de registros. Continua lendo tanto texto quanto JSON dos registros anteriores.
+AUDITORIA_EVENTO permanece intacta, e o worker continua entregando somente a fila
+antiga ainda pendente. Os novos registros Python vão exclusivamente para LOG.

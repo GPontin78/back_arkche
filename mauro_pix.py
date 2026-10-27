@@ -5,7 +5,7 @@ from decimal import Decimal, InvalidOperation
 
 from flask import current_app, jsonify, request
 
-from auditoria import registrar_evento_flask
+from auditoria import registrar_log
 from banco import con
 from funcao import data_atual, verificar_pin_usuario
 from notificacoes import tentar_publicar_eventos
@@ -373,14 +373,17 @@ def _obter_por_id(cursor, id_proposta, id_conversa, contexto, bloquear=True):
 
 def _auditar(proposta, contexto, evento, resultado, *, motivo=None, valor=None,
              id_movimentacao=None, cursor=None):
-    return registrar_evento_flask(
-        evento=evento, resultado=resultado, motivo=motivo,
-        id_usuario=contexto['id_usuario'], id_conta=contexto['id_conta'],
-        valor=valor, id_registro=id_movimentacao or proposta,
-        operacao='EXECUTE' if evento == 'MAURO_PIX_EXECUTADO' else 'UPDATE',
-        origem=request.path if request else '/api/v1/assistente/pix',
-        dados={'proposta_id': int(proposta), 'movimentacao_id': id_movimentacao},
-        cursor=cursor, obrigatorio=True,
+    resumo = f'PROPOSTA_ID={int(proposta)} - ID_CONTA={contexto["id_conta"]}'
+    if id_movimentacao:
+        resumo += f' - MOVIMENTACAO_ID={id_movimentacao}'
+    if valor is not None:
+        resumo += f' - VALOR={valor}'
+    if motivo:
+        resumo += f' - RESUMO={motivo[:180]}'
+    return registrar_log(
+        usuario=contexto['id_usuario'], tabela='IA',
+        acao=f'{evento} / {resultado}', id_registro=id_movimentacao or proposta,
+        valor_novo=resumo, cursor=cursor,
     )
 
 

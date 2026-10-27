@@ -16,7 +16,7 @@ import redis
 import requests
 from flask import current_app, jsonify, request
 
-from auditoria import registrar_evento_flask
+from auditoria import registrar_log
 from banco import con
 from funcao import calcular_saldo, descobre_id_conta, descobre_id_usuario, usuario_pode_acessar_conta
 from limites import _resumo_conta
@@ -664,12 +664,15 @@ def transcrever_audio(id_conversa):
             return jsonify({'mensagem': 'Você enviou muitas mensagens em pouco tempo. Aguarde um minuto e tente novamente.'}), 429
         con.commit()
         transcricao, falha = _transcrever_audio_gemini(audio, mime)
-        registrar_evento_flask(
-            evento='MAURO_AUDIO_TRANSCRICAO', resultado='FALHA' if falha else 'SUCESSO',
-            motivo=falha[:180] if falha else None, id_usuario=contexto['id_usuario'],
-            id_conta=contexto['id_conta'], operacao='READ', origem=request.path,
-            dados={'conversa_id': int(id_conversa), 'mime': mime, 'bytes': len(audio)},
-            obrigatorio=True,
+        resultado_log = 'SUCESSO'
+        resumo_log = f'CONVERSA_ID={int(id_conversa)} - MIME={mime} - BYTES={len(audio)} - ID_CONTA={contexto["id_conta"]}'
+        if falha:
+            resultado_log = 'FALHA'
+            resumo_log += f' - RESUMO={falha[:180]}'
+        registrar_log(
+            usuario=contexto['id_usuario'], tabela='IA',
+            acao=f'MAURO_AUDIO_TRANSCRICAO / {resultado_log}',
+            valor_novo=resumo_log,
         )
         if falha:
             return jsonify({'mensagem': falha, 'codigo': 'TRANSCRICAO_INDISPONIVEL'}), 503
@@ -914,10 +917,10 @@ def criar_conversa():
             (contexto['id_usuario'], contexto['id_conta']),
         )
         row = cursor.fetchone()
-        registrar_evento_flask(
-            evento='MAURO_CONVERSA_CRIADA', resultado='SUCESSO', id_usuario=contexto['id_usuario'],
-            id_conta=contexto['id_conta'], id_registro=int(row[0]), operacao='CREATE',
-            origem=request.path, dados={'conversa_id': int(row[0])},
+        registrar_log(
+            usuario=contexto['id_usuario'], tabela='IA',
+            acao='MAURO_CONVERSA_CRIADA / SUCESSO', id_registro=int(row[0]),
+            valor_novo=f'CONVERSA_ID={int(row[0])} - ID_CONTA={contexto["id_conta"]}',
             cursor=cursor,
         )
         con.commit()
@@ -971,10 +974,9 @@ def enviar_mensagem(id_conversa):
     if len(texto) > MAX_MENSAGEM:
         return jsonify({'mensagem': f'A mensagem deve ter até {MAX_MENSAGEM} caracteres.'}), 400
     if tentativa_injecao(texto):
-        registrar_evento_flask(
-            evento='MAURO_CONSULTA', resultado='RECUSADO', motivo='Tentativa de alterar instrucoes do assistente',
-            id_usuario=contexto['id_usuario'], id_conta=contexto['id_conta'],
-            operacao='DENY', origem=request.path, dados={'tipo': 'prompt_injection', 'tamanho': len(texto)},
+        registrar_log(
+            usuario=contexto['id_usuario'], tabela='IA', acao='MAURO_CONSULTA / RECUSADO',
+            valor_novo=f'TIPO=prompt_injection - TAMANHO={len(texto)} - ID_CONTA={contexto["id_conta"]}',
         )
         return jsonify({'mensagem': 'Não posso alterar minhas regras de segurança. Posso ajudar com suas operações e dúvidas do Arkhé.', 'codigo': 'INSTRUCAO_NAO_PERMITIDA'}), 400
     if _PADROES_SEGREDO.search(texto):
@@ -1079,10 +1081,9 @@ def enviar_mensagem(id_conversa):
             status = 503
             if 'GEMINI_API_KEY' in falha:
                 current_app.logger.error('GEMINI_API_KEY não está configurada no backend')
-            registrar_evento_flask(
-                evento='MAURO_CONSULTA', resultado='FALHA', motivo=falha[:180],
-                id_usuario=contexto['id_usuario'], id_conta=contexto['id_conta'], operacao='READ',
-                origem=request.path, dados={'conversa_id': int(id_conversa), 'intencao': intencao},
+            registrar_log(
+                usuario=contexto['id_usuario'], tabela='IA', acao='MAURO_CONSULTA / FALHA',
+                valor_novo=f'CONVERSA_ID={int(id_conversa)} - INTENCAO={intencao} - ID_CONTA={contexto["id_conta"]} - RESUMO={falha[:180]}',
             )
             return jsonify({'mensagem': falha, 'codigo': 'ASSISTENTE_INDISPONIVEL'}), status
 
@@ -1120,13 +1121,12 @@ def enviar_mensagem(id_conversa):
         )
         id_assistente_msg = int(cursor.fetchone()[0])
         cursor.execute('UPDATE MAURO_CONVERSA SET ATUALIZADA_EM = CURRENT_TIMESTAMP WHERE ID_CONVERSA = ?', (id_conversa,))
-        registrar_evento_flask(
-            evento='MAURO_CONSULTA', resultado='SUCESSO', id_usuario=contexto['id_usuario'],
-            id_conta=contexto['id_conta'], id_registro=id_usuario_msg, operacao='READ',
-            origem=request.path,
-            dados={'conversa_id': int(id_conversa), 'mensagem_usuario_id': id_usuario_msg,
-                   'mensagem_assistente_id': id_assistente_msg, 'intencao': intencao,
-                   'caracteres': len(texto)},
+        registrar_log(
+            usuario=contexto['id_usuario'], tabela='IA',
+            acao='MAURO_CONSULTA / SUCESSO', id_registro=id_usuario_msg,
+            valor_novo=(f'CONVERSA_ID={int(id_conversa)} - MENSAGEM_USUARIO_ID={id_usuario_msg}'
+                        f' - MENSAGEM_ASSISTENTE_ID={id_assistente_msg} - INTENCAO={intencao}'
+                        f' - CARACTERES={len(texto)} - ID_CONTA={contexto["id_conta"]}'),
             cursor=cursor,
         )
         for evento_pix in mensagens_pix_auditoria:
@@ -1145,10 +1145,9 @@ def enviar_mensagem(id_conversa):
         con.rollback()
         current_app.logger.exception('Falha no MAURO para a intenção %s', intencao)
         try:
-            registrar_evento_flask(
-                evento='MAURO_CONSULTA', resultado='FALHA', motivo='Consulta de dados indisponível',
-                id_usuario=contexto['id_usuario'], id_conta=contexto['id_conta'], operacao='READ',
-                origem=request.path, dados={'conversa_id': int(id_conversa), 'intencao': intencao},
+            registrar_log(
+                usuario=contexto['id_usuario'], tabela='IA', acao='MAURO_CONSULTA / FALHA',
+                valor_novo=f'CONVERSA_ID={int(id_conversa)} - INTENCAO={intencao} - ID_CONTA={contexto["id_conta"]} - RESUMO=Consulta de dados indisponível',
             )
         except Exception:
             current_app.logger.warning('Falha ao registrar auditoria da consulta indisponível do MAURO')

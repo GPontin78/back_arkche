@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 import math
 import os
 import time
@@ -22,7 +21,6 @@ from limites import usuario_eh_admin_bancario
 CANAL_AUDITORIA = 'arkhe:admin:audit:v1'
 LEASE_SEGUNDOS = 90
 _ULTIMO_AVISO_SCHEMA = 0.0
-_ULTIMO_AVISO_OUTBOX_HTTP = 0.0
 
 
 def _admin():
@@ -84,7 +82,11 @@ def _json_data(valor, texto_simples=False):
 
 
 def _json_timestamp(valor):
-    return valor.isoformat(sep=' ') if isinstance(valor, datetime) else str(valor) if valor is not None else None
+    if valor is None:
+        return None
+    if isinstance(valor, datetime):
+        return valor.isoformat(sep=' ')
+    return str(valor)
 
 
 def _redis():
@@ -100,217 +102,98 @@ def _origem_id():
     return os.getenv('ARKHE_AUDIT_SOURCE_ID') or ('arkhe-' + hashlib.sha256(base.encode('utf-8')).hexdigest()[:24])
 
 
-def _inserir_evento(cursor, evento, resultado, motivo, id_usuario, id_conta,
-                    valor, id_registro, operacao, origem, dados):
-    # CREATE/EXECUTE são ações do assistente, e não operações DML do Firebird.
-    operacao = {'CREATE': 'INSERT', 'EXECUTE': 'UPDATE'}.get(operacao, operacao)
-    if operacao not in ('INSERT', 'UPDATE', 'DELETE', 'READ', 'DENY'):
-        raise ValueError('Operação de log inválida')
-    snapshot = json.dumps(dados or {}, ensure_ascii=False, separators=(',', ':'), default=str)
-    if len(snapshot) > 4000:
-        raise ValueError('Dados do log excedem 4000 caracteres')
-    parametros = (
-        str(evento)[:48], operacao, id_registro, id_usuario, id_conta, valor,
-        str(resultado)[:24], str(motivo)[:500] if motivo else None,
-        str(origem or '/flask')[:160], snapshot,
-    )
-    cursor.execute("SELECT 1 FROM RDB$TRIGGERS WHERE RDB$TRIGGER_NAME IN ('TG_AI_MOVIMENTACAO_LOG', 'TG_AIUD_MOVIMENTACAO_LOG')")
-    if cursor.fetchone():
-        cursor.execute('SELECT ORIGEM_ID FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO=1')
-        configuracao = cursor.fetchone()
-        if configuracao and configuracao[0].endswith('-simples'):
-            return _inserir_evento_simples(cursor, evento, resultado, motivo,
-                id_usuario, id_conta, valor, id_registro, origem, dados)
-        cursor.execute('''EXECUTE BLOCK (
-            P_EVENTO VARCHAR(48) = ?, P_OPERACAO VARCHAR(12) = ?,
-            P_ID_REGISTRO BIGINT = ?, P_ID_USUARIO INTEGER = ?, P_ID_CONTA INTEGER = ?,
-            P_VALOR DECIMAL(18,2) = ?, P_RESULTADO VARCHAR(24) = ?,
-            P_MOTIVO VARCHAR(500) = ?, P_ORIGEM VARCHAR(160) = ?, P_DADOS VARCHAR(4000) = ?
-        ) AS
-        DECLARE VARIABLE V_DESTINO VARCHAR(512);
-        DECLARE VARIABLE V_USUARIO VARCHAR(63);
-        DECLARE VARIABLE V_SENHA VARCHAR(255);
-        DECLARE VARIABLE V_ORIGEM_ID VARCHAR(80);
-        BEGIN
-            SELECT DATA_SOURCE, USUARIO, SENHA, ORIGEM_ID
-            FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
-            INTO :V_DESTINO, :V_USUARIO, :V_SENHA, :V_ORIGEM_ID;
-            IF (V_DESTINO IS NULL) THEN
-                EXCEPTION EX_LOG_CONFIGURACAO;
-
-            EXECUTE STATEMENT (
-                'INSERT INTO AUDITORIA_EVENTO (
-                    ORIGEM_ID, ID_EVENTO_ORIGEM, EVENTO, TABELA_ORIGEM, OPERACAO,
-                    ID_REGISTRO, ID_USUARIO, ID_CONTA, VALOR, RESULTADO, MOTIVO,
-                    ORIGEM, DADOS_NOVOS, CRIADO_EM
-                ) VALUES (
-                    :origem_id, :id_evento, :evento, ''FLASK'', :operacao,
-                    :id_registro, :id_usuario, :id_conta, :valor, :resultado,
-                    :motivo, :origem, :dados, :criado_em
-                )'
-            ) (
-                origem_id := :V_ORIGEM_ID,
-                id_evento := NEXT VALUE FOR GEN_LOG_EVENTO,
-                evento := :P_EVENTO, operacao := :P_OPERACAO,
-                id_registro := :P_ID_REGISTRO, id_usuario := :P_ID_USUARIO,
-                id_conta := :P_ID_CONTA, valor := :P_VALOR, resultado := :P_RESULTADO,
-                motivo := :P_MOTIVO, origem := :P_ORIGEM, dados := :P_DADOS,
-                criado_em := CURRENT_TIMESTAMP
-            )
-            ON EXTERNAL DATA SOURCE :V_DESTINO
-            AS USER :V_USUARIO
-            PASSWORD :V_SENHA
-            WITH COMMON TRANSACTION;
-        END''', parametros)
-        return True
-
-    # Compatibilidade durante a publicação: antes da migração 011, usa o log atual.
-    cursor.execute("SELECT 1 FROM RDB$RELATIONS WHERE RDB$RELATION_NAME = 'AUDITORIA_EVENTO_OUTBOX'")
-    if not cursor.fetchone():
-        return False
-    cursor.execute('''INSERT INTO AUDITORIA_EVENTO_OUTBOX
-        (EVENTO, TABELA_ORIGEM, OPERACAO, ID_REGISTRO, ID_USUARIO, ID_CONTA,
-         VALOR, RESULTADO, MOTIVO, ORIGEM, DADOS_NOVOS)
-        VALUES (?, 'FLASK', ?, ?, ?, ?, ?, ?, ?, ?, ?)''', parametros)
-    return True
-
-
-def _inserir_evento_simples(cursor, evento, resultado, motivo, id_usuario,
-                           id_conta, valor, id_registro, origem, dados):
-    dados = dict(dados or {})
-    contexto = getattr(g, 'auditoria_contexto', {})
-    integracao = contexto.get('id_integracao') or dados.get('id_integracao')
-    usuario = str(id_usuario) if id_usuario else f'INTEGRACAO_API:{integracao}' if integracao else None
-    tabela = 'IA' if str(evento).startswith('MAURO_') else 'API' if dados.get('canal') in ('api','whatsapp') or integracao else 'SISTEMA'
-    if 'status_http' in dados:
-        dados = {'metodo':dados.get('metodo'),'status_http':dados['status_http'],**dados.get('ids',{})}
-    dados.pop('id_integracao',None)
-    if id_conta:
-        dados['id_conta'] = id_conta
-    if valor is not None:
-        dados['valor'] = str(valor)
-    if origem:
-        dados['rota'] = _rota_log() if request else str(origem)[:160]
-    if motivo and resultado not in ('SUCESSO','CONCLUIDO','REGISTRADO'):
-        dados['resumo'] = str(motivo)[:180]
-    # O resultado faz parte da ação; não exige colunas extras na tabela.
-    acao = f'{evento} / {resultado}'[:120]
-    novo = '; '.join(f'{chave.upper()}={"NULL" if conteudo is None else conteudo}' for chave,conteudo in dados.items())
-    if len(novo) > 4000:
-        raise ValueError('Dados do log excedem 4000 caracteres')
-    cursor.execute('''EXECUTE BLOCK (
-        P_USUARIO VARCHAR(100)=?, P_TABELA VARCHAR(64)=?, P_REGISTRO BIGINT=?,
-        P_ACAO VARCHAR(120)=?, P_NOVO VARCHAR(4000)=?
-    ) AS
-    DECLARE VARIABLE V_DESTINO VARCHAR(512);
-    DECLARE VARIABLE V_USUARIO VARCHAR(63);
-    DECLARE VARIABLE V_SENHA VARCHAR(255);
-    BEGIN
-        SELECT DATA_SOURCE,USUARIO,SENHA FROM CONFIGURACAO_LOG
-        WHERE ID_CONFIGURACAO=1 INTO :V_DESTINO,:V_USUARIO,:V_SENHA;
-        IF (V_DESTINO IS NULL) THEN EXCEPTION EX_LOG_CONFIGURACAO;
-        EXECUTE STATEMENT (
-            'INSERT INTO LOG (DATA_HORA,USUARIO,TABELA,ID_REGISTRO,ACAO,VALOR_NOVO)
-             VALUES (CURRENT_TIMESTAMP,:usuario,:tabela,:registro,:acao,:novo)'
-        ) (usuario:=:P_USUARIO,tabela:=:P_TABELA,registro:=:P_REGISTRO,
-           acao:=:P_ACAO,novo:=:P_NOVO)
-        ON EXTERNAL DATA SOURCE :V_DESTINO
-        AS USER :V_USUARIO PASSWORD :V_SENHA
-        WITH COMMON TRANSACTION;
-    END''',(usuario,tabela,id_registro,acao,novo))
-    return True
-
-
-def registrar_evento_flask(*, evento, resultado, motivo=None, id_usuario=None,
-                           id_conta=None, valor=None, id_registro=None,
-                           operacao='DENY', origem=None, dados=None, cursor=None,
-                           obrigatorio=True):
-    """Com cursor, o log participa do commit/rollback da própria operação."""
-    global _ULTIMO_AVISO_OUTBOX_HTTP
-    if cursor is not None:
-        if not _inserir_evento(cursor, evento, resultado, motivo, id_usuario, id_conta,
-                              valor, id_registro, operacao, origem, dados):
-            raise RuntimeError('Estrutura de log não instalada')
-        return True
-
-    conexao = cursor = None
+def registrar_log(*, usuario, tabela, acao, id_registro=None,
+                  valor_anterior=None, valor_novo=None, cursor=None):
+    """Grava os campos da LOG. Com cursor, usa a transação da operação."""
+    conexao = None
     try:
-        conexao = fdb.connect(
-            host=current_app.config['DB_HOST'], port=current_app.config['DB_PORT'],
-            database=current_app.config['DB_NAME'], user=current_app.config['DB_USER'],
-            password=current_app.config['DB_PASSWORD'], charset='UTF8',
-        )
-        cursor = conexao.cursor()
-        if not _inserir_evento(cursor, evento, resultado, motivo, id_usuario, id_conta,
-                              valor, id_registro, operacao, origem, dados):
-            agora = time.monotonic()
-            if agora - _ULTIMO_AVISO_OUTBOX_HTTP >= 60:
-                current_app.logger.warning('Outbox de auditoria ainda não está instalado; eventos Flask serão retomados após a migração.')
-                _ULTIMO_AVISO_OUTBOX_HTTP = agora
-            if obrigatorio:
-                raise RuntimeError('Estrutura de log não instalada')
-            return False
-        conexao.commit()
+        if cursor is None:
+            conexao = fdb.connect(
+                host=current_app.config['DB_HOST'], port=current_app.config['DB_PORT'],
+                database=current_app.config['DB_NAME'], user=current_app.config['DB_USER'],
+                password=current_app.config['DB_PASSWORD'], charset='UTF8',
+            )
+            cursor = conexao.cursor()
+
+        cursor.execute("""
+            SELECT DATA_SOURCE, USUARIO, SENHA
+            FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO = 1
+        """)
+        configuracao = cursor.fetchone()
+        if not configuracao or not configuracao[0]:
+            raise RuntimeError('Banco de log não configurado')
+        destino, login, senha = configuracao
+        if usuario is not None:
+            usuario = str(usuario)
+
+        cursor.execute("""EXECUTE BLOCK (
+            P_USUARIO VARCHAR(100) = ?, P_TABELA VARCHAR(64) = ?,
+            P_REGISTRO BIGINT = ?, P_ACAO VARCHAR(120) = ?,
+            P_ANTIGO VARCHAR(4000) = ?, P_NOVO VARCHAR(4000) = ?,
+            P_DESTINO VARCHAR(512) = ?, P_LOGIN VARCHAR(63) = ?, P_SENHA VARCHAR(255) = ?
+        ) AS
+        BEGIN
+            EXECUTE STATEMENT (
+                'INSERT INTO LOG (
+                    USUARIO, DATA_HORA, TABELA, ID_REGISTRO,
+                    ACAO, VALOR_ANTERIOR, VALOR_NOVO
+                ) VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?)'
+            ) (
+                :P_USUARIO, :P_TABELA, :P_REGISTRO,
+                :P_ACAO, :P_ANTIGO, :P_NOVO
+            )
+            ON EXTERNAL DATA SOURCE :P_DESTINO
+            AS USER :P_LOGIN PASSWORD :P_SENHA
+            WITH COMMON TRANSACTION;
+        END""", (
+            usuario, tabela, id_registro, acao, valor_anterior, valor_novo,
+            destino, login, senha,
+        ))
+        if conexao:
+            conexao.commit()
         return True
     except Exception:
         if conexao:
-            try:
-                conexao.rollback()
-            except Exception:
-                pass
-        try:
-            current_app.logger.exception('Não foi possível persistir o evento no LOG')
-        except RuntimeError:
-            logging.getLogger('arkhe.auditoria').exception('Falha ao persistir evento Flask')
-        if obrigatorio:
-            raise
-        return False
+            conexao.rollback()
+        raise
     finally:
-        if cursor:
-            cursor.close()
         if conexao:
+            if cursor:
+                cursor.close()
             conexao.close()
 
 
 def _registrar_acesso_detalhe(admin_id, recurso, identificador):
-    registrar_evento_flask(
-        evento='DADO_ADMINISTRATIVO_ACESSADO', resultado='SUCESSO',
-        motivo='Consulta administrativa autorizada', id_usuario=admin_id,
-        operacao='READ', origem=request.path,
-        dados={'recurso': recurso, 'identificador': int(identificador)},
+    registrar_log(
+        usuario=admin_id, tabela='SISTEMA',
+        acao='DADO_ADMINISTRATIVO_ACESSADO / SUCESSO',
+        valor_novo=f'RECURSO={recurso} - IDENTIFICADOR={int(identificador)} - ROTA={_rota_log()}',
     )
 
 
 def _preparar_contexto_trigger():
-    """Vincula ator e rota à conexão desta requisição; USER_SESSION sobrevive a commits."""
+    """Identifica o autor na conexão usada pelas triggers desta requisição."""
+    cursor = None
     try:
         id_usuario = descobre_id_usuario()
+        usuario = None
+        if id_usuario:
+            usuario = str(id_usuario)
         cursor = con.cursor()
-        try:
-            cursor.execute(
-                "SELECT RDB$SET_CONTEXT('USER_SESSION', 'ARKHE_ID_USUARIO', ?) FROM RDB$DATABASE",
-                (str(id_usuario) if id_usuario else None,),
-            )
+        for chave, valor in (
+            ('ARKHE_ID_USUARIO', usuario),
+            ('ARKHE_USUARIO_LOG', usuario),
+            ('ARKHE_ORIGEM', _rota_log()),
+        ):
+            cursor.execute("SELECT RDB$SET_CONTEXT('USER_SESSION', ?, ?) FROM RDB$DATABASE", (chave, valor))
             cursor.fetchone()
-            cursor.execute(
-                "SELECT RDB$SET_CONTEXT('USER_SESSION', 'ARKHE_USUARIO_LOG', ?) FROM RDB$DATABASE",
-                (str(id_usuario) if id_usuario else None,),
-            )
-            cursor.fetchone()
-            cursor.execute(
-                "SELECT RDB$SET_CONTEXT('USER_SESSION', 'ARKHE_ORIGEM', ?) FROM RDB$DATABASE",
-                (_rota_log(),),
-            )
-            cursor.fetchone()
-            con.commit()
-        finally:
-            cursor.close()
+        con.commit()
     except Exception:
-        # A instrumentação não deve impedir uma operação bancária preexistente.
-        try:
-            current_app.logger.exception('Não foi possível definir o contexto de auditoria Firebird')
-        except RuntimeError:
-            pass
+        con.rollback()
+        current_app.logger.exception('Não foi possível definir o autor do log')
+    finally:
+        if cursor:
+            cursor.close()
 
 
 def _rota_log():
@@ -325,65 +208,82 @@ def _registrar_resposta_relevante(response):
     assistente = caminho.startswith('/api/v1/assistente/') or caminho == '/api/v1/admin/banco/assistente'
     login = caminho in ('/login', '/login_usuario')
     escrita_recusada = request.method in ('POST', 'PUT', 'PATCH', 'DELETE') and response.status_code >= 400
-    login_recusado = login and response.status_code >= 400
-    # O próprio feed não produz eventos a cada atualização automática.
-    if request.method == 'OPTIONS' or caminho.startswith('/static/') or (
-        caminho in ('/api/v1/admin/auditoria', '/api/v1/admin/auditoria/status', '/api/v1/admin/auditoria/stream')
-        and response.status_code < 400
-    ):
+    feed = caminho in ('/api/v1/admin/auditoria', '/api/v1/admin/auditoria/status', '/api/v1/admin/auditoria/stream')
+    if request.method == 'OPTIONS' or caminho.startswith('/static/') or (feed and response.status_code < 400):
         return response
+
     contexto = getattr(g, 'auditoria_contexto', {})
-    id_usuario = contexto.get('id_usuario') if contexto else descobre_id_usuario()
-    id_conta = contexto.get('id_conta') if contexto else descobre_id_conta()
-    canal = contexto.get('origem', 'api' if caminho.startswith('/api/v1/') else 'sistema')
-    if not (id_usuario or contexto or assistente or login or escrita_recusada or caminho.startswith(('/api/v1/', '/internal/whatsapp/'))):
+    if contexto:
+        usuario = contexto.get('id_usuario')
+        conta = contexto.get('id_conta')
+    else:
+        usuario = descobre_id_usuario()
+        conta = descobre_id_conta()
+    integracao = contexto.get('id_integracao')
+    if not (usuario or contexto or assistente or login or escrita_recusada or caminho.startswith(('/api/v1/', '/internal/whatsapp/'))):
         return response
+
     try:
-        if login and not id_usuario:
+        if login and not usuario:
             cpf = (request.get_json(silent=True) or {}).get('cpf')
             if cpf:
                 cursor = con.cursor()
                 try:
                     cursor.execute('SELECT ID_USUARIO FROM USUARIO WHERE CPF = ?', (str(cpf),))
-                    usuario = cursor.fetchone()
-                    id_usuario = int(usuario[0]) if usuario else None
+                    registro = cursor.fetchone()
+                    if registro:
+                        usuario = int(registro[0])
                 finally:
                     cursor.close()
-        resultado = 'SUCESSO' if response.status_code < 400 else 'FALHA' if response.status_code >= 500 else 'RECUSADO'
-        motivo = f'Requisição HTTP {response.status_code}'
+        if not usuario and integracao:
+            usuario = f'INTEGRACAO_API:{integracao}'
+
+        resultado = 'SUCESSO'
+        if response.status_code >= 500:
+            resultado = 'FALHA'
+        elif response.status_code >= 400:
+            resultado = 'RECUSADO'
+        evento = 'SISTEMA_REQUISICAO'
+        tabela = 'SISTEMA'
+        if caminho.startswith(('/api/v1/', '/internal/whatsapp/')) or integracao:
+            tabela = 'API'
         if assistente:
+            tabela = 'IA'
             evento = 'MAURO_REQUISICAO'
-            motivo = f'Requisição do assistente (HTTP {response.status_code})'
         elif login:
-            cookie_autenticacao = any(cookie.startswith('access_token=') for cookie in response.headers.getlist('Set-Cookie'))
-            evento = ('TENTATIVA_LOGIN_RECUSADA' if login_recusado else
-                      'LOGIN_REALIZADO' if cookie_autenticacao else 'LOGIN_DESAFIO_INICIADO')
-            motivo = (f'Autenticação recusada (HTTP {response.status_code})' if login_recusado else
-                      'Sessão autenticada' if cookie_autenticacao else 'Etapa de autenticação iniciada')
-            resultado = 'RECUSADO' if login_recusado else 'SUCESSO' if cookie_autenticacao else 'PENDENTE'
-        else:
-            evento = 'OPERACAO_RECUSADA' if escrita_recusada else 'SISTEMA_REQUISICAO'
-        dados = {'metodo': request.method, 'status_http': response.status_code,
-                 'canal': canal, 'recurso': request.endpoint,
-                 'ids': {k:v for k,v in (request.view_args or {}).items() if isinstance(v, int)}}
-        if contexto.get('id_integracao'):
-            dados['id_integracao'] = contexto['id_integracao']
-        registrar_evento_flask(
-            evento=evento, resultado=resultado, motivo=motivo,
-            id_usuario=id_usuario, id_conta=id_conta,
-            operacao='DENY' if response.status_code >= 400 else {'POST':'INSERT', 'PUT':'UPDATE', 'PATCH':'UPDATE', 'DELETE':'DELETE'}.get(request.method, 'READ'),
-            origem=_rota_log(), dados=dados,
-        )
+            evento = 'LOGIN_DESAFIO_INICIADO'
+            resultado = 'PENDENTE'
+            if response.status_code >= 400:
+                evento = 'TENTATIVA_LOGIN_RECUSADA'
+                resultado = 'RECUSADO'
+            elif any(cookie.startswith('access_token=') for cookie in response.headers.getlist('Set-Cookie')):
+                evento = 'LOGIN_REALIZADO'
+                resultado = 'SUCESSO'
+        elif escrita_recusada:
+            evento = 'OPERACAO_RECUSADA'
+
+        resumo = f'METODO={request.method} - STATUS_HTTP={response.status_code}'
+        for chave, valor in (request.view_args or {}).items():
+            if isinstance(valor, int):
+                resumo += f' - {chave.upper()}={valor}'
+        if conta:
+            resumo += f' - ID_CONTA={conta}'
+        resumo += f' - ROTA={_rota_log()}'
+        registrar_log(usuario=usuario, tabela=tabela, acao=f'{evento} / {resultado}', valor_novo=resumo)
+
         if request.method in ('POST', 'PUT', 'PATCH', 'DELETE') and response.status_code < 400:
+            cliente = None
             try:
                 cliente = _redis()
                 cliente.publish(CANAL_AUDITORIA, json.dumps({'origem': _rota_log()}))
-                cliente.close()
             except Exception:
-                pass  # O feed também consulta o arquivo periodicamente.
+                pass  # A tela também consulta os logs periodicamente.
+            finally:
+                if cliente:
+                    cliente.close()
     except Exception:
         current_app.logger.exception('Falha ao registrar evento HTTP')
-        # Escritas já confirmadas mantêm a resposta; o log financeiro é transacional.
+        # Escritas já confirmadas mantêm a resposta; o log da operação usa seu cursor.
         if request.method == 'GET' and response.status_code < 400:
             return current_app.make_response((jsonify({'mensagem': 'Não foi possível registrar o log da operação.'}), 503))
     return response
@@ -401,11 +301,13 @@ def _consultar_log_simples(id_log=None):
         return jsonify({'mensagem':str(erro)}),400
     historico = request.args.get('historico') == '1'
     # O histórico original é apenas projetado nos oito campos, sem alterar seus dados.
-    fonte = '''(SELECT ID_AUDITORIA AS ID_LOG, CRIADO_EM AS DATA_HORA,
-        CAST(ID_USUARIO AS VARCHAR(100)) AS USUARIO, TABELA_ORIGEM AS TABELA,
-        ID_REGISTRO, EVENTO || ' / ' || RESULTADO AS ACAO,
-        DADOS_ANTERIORES AS VALOR_ANTERIOR, DADOS_NOVOS AS VALOR_NOVO
-        FROM AUDITORIA_EVENTO) H''' if historico else 'LOG'
+    fonte = 'LOG'
+    if historico:
+        fonte = '''(SELECT ID_AUDITORIA AS ID_LOG, CRIADO_EM AS DATA_HORA,
+            CAST(ID_USUARIO AS VARCHAR(100)) AS USUARIO, TABELA_ORIGEM AS TABELA,
+            ID_REGISTRO, EVENTO || ' / ' || RESULTADO AS ACAO,
+            DADOS_ANTERIORES AS VALOR_ANTERIOR, DADOS_NOVOS AS VALOR_NOVO
+            FROM AUDITORIA_EVENTO) H'''
     where,params = [],[]
     for campo,chave in (('USUARIO','usuario'),('TABELA','tabela'),('ACAO','acao')):
         valor = request.args.get(chave,'').strip()
@@ -421,15 +323,24 @@ def _consultar_log_simples(id_log=None):
     try:
         conexao = _conectar_banco_auditoria()
         cursor = conexao.cursor()
-        cursor.execute(f'''SELECT FIRST {limite} ID_LOG,DATA_HORA,USUARIO,TABELA,
-            ID_REGISTRO,ACAO,VALOR_ANTERIOR,VALOR_NOVO FROM {fonte}
-            {('WHERE '+' AND '.join(where)) if where else ''}
-            ORDER BY DATA_HORA DESC,ID_LOG DESC''',tuple(params))
-        registros = [{
-            'id_log':int(r[0]),'data_hora':_json_timestamp(r[1]),'usuario':r[2],
-            'tabela':r[3],'id_registro':r[4],'acao':r[5],
-            'valor_anterior':_json_data(r[6],texto_simples=True),'valor_novo':_json_data(r[7],texto_simples=True),
-        } for r in cursor.fetchall()]
+        sql = f'''SELECT FIRST {limite} ID_LOG, DATA_HORA, USUARIO, TABELA,
+            ID_REGISTRO, ACAO, VALOR_ANTERIOR, VALOR_NOVO FROM {fonte}'''
+        if where:
+            sql += ' WHERE ' + ' AND '.join(where)
+        sql += ' ORDER BY DATA_HORA DESC, ID_LOG DESC'
+        cursor.execute(sql, tuple(params))
+        registros = []
+        for row in cursor.fetchall():
+            registros.append({
+                'id_log': int(row[0]),
+                'data_hora': _json_timestamp(row[1]),
+                'usuario': row[2],
+                'tabela': row[3],
+                'id_registro': row[4],
+                'acao': row[5],
+                'valor_anterior': _json_data(row[6], texto_simples=True),
+                'valor_novo': _json_data(row[7], texto_simples=True),
+            })
         if id_log is not None:
             if not registros:
                 return jsonify({'mensagem':'Log não encontrado'}),404

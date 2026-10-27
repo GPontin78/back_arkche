@@ -30,7 +30,7 @@ def carregar_servico():
             jsonify=lambda dados: dados,
             request=types.SimpleNamespace(path='/test', get_json=lambda silent=True: {}),
         ),
-        'auditoria': types.SimpleNamespace(registrar_evento_flask=lambda **_kwargs: True),
+        'auditoria': types.SimpleNamespace(registrar_log=lambda **_kwargs: True),
         'banco': types.SimpleNamespace(con=object()),
         'funcao': types.SimpleNamespace(
             data_atual=lambda: datetime(2026, 10, 25, 12),
