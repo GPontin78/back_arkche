@@ -16,10 +16,11 @@ No Firebird separado, os novos registros vão para `LOG`:
 Cada uma das 11 tabelas principais mantém três triggers: TG_AI_<TABELA>_LOG para
 AFTER INSERT, TG_AU_<TABELA>_LOG para AFTER UPDATE e TG_AD_<TABELA>_LOG para AFTER
 DELETE. Cada trigger tem um único EXECUTE STATEMENT ON EXTERNAL DATA SOURCE. Os valores são resumos
-fixos em texto, como TIPO=0; STATUS=1; TENTATIVAS=0. No UPDATE, ficam o resumo anterior
+fixos em texto, como 44 - 0 - 1 - 0 - 1 para USUARIO. A ordem dos campos aparece em
+um comentário na trigger. No UPDATE, ficam o resumo anterior
 e o novo, inclusive os campos do resumo que não mudaram. INSERT tem apenas valor
-novo e DELETE apenas valor anterior. Não há comparação campo a campo nem montagem
-de JSON ou CASE nas triggers; a única verificação IF valida a configuração do destino. Os campos auditáveis seguem a seleção já
+novo e DELETE apenas valor anterior. Não há comparação campo a campo, montagem
+de JSON, IF ou CASE nas triggers. Os campos auditáveis seguem a seleção já
 usada pelo sistema, sem copiar credenciais, PIN, CVV ou dados pessoais protegidos.
 As duas regras financeiras existentes mantêm seus nomes, posições e comportamento.
 
@@ -81,7 +82,7 @@ fontes, faz backup dos dois bancos e salva o rollback antes da troca em um commi
 Não altera o marcador privado de versão, a estrutura da tabela ou os registros.
 A tela já aceita texto e continua abrindo os registros anteriores em JSON.
 
-## Três triggers por tabela (016, versão atual)
+## Três triggers por tabela (016)
 
 A migração 016 substitui as 11 triggers combinadas por 33 triggers de LOG nas mesmas
 11 tabelas principais. INSERT usa apenas NEW e grava VALOR_ANTERIOR nulo; DELETE usa
@@ -97,3 +98,28 @@ anteriores e faz backup dos dois bancos. A remoção das 11 combinadas e a cria�
 anteriores. O script de retorno remove as 33 e restaura as fontes anteriores sem
 apagar os registros. A conferência recusa misturas, alterações inesperadas ou
 triggers desativadas e a reaplicação da versão atual não faz alterações.
+
+## Modelo direto do exemplo (017, versão atual)
+
+As 33 triggers passam a declarar V_USUARIO e as variáveis V_ANTIGO/V_NOVO necessárias
+à operação, atribuir seus valores e executar o INSERT com parâmetros posicionais ?.
+Os resumos concatenam os campos auditáveis com ' - ', incluindo o ID, na ordem
+comentada na trigger. Usam VARCHAR(2000), sem cortar o resumo em 50 caracteres.
+INSERT grava o anterior nulo; DELETE grava o novo nulo; UPDATE grava ambos.
+
+O usuário continua sendo o autor autenticado ou a integração validada da API, com
+CURRENT_USER como alternativa para SQL direto. Usar o dono do registro como autor
+poderia atribuir uma alteração administrativa à pessoa errada.
+
+O destino, usuário e senha são lidos da configuração existente pelo aplicador e
+escritos diretamente no ON EXTERNAL DATA SOURCE das triggers, como no exemplo.
+A migração versionada contém marcadores para evitar publicar credenciais. Deve
+ser aplicada por `python scripts/aplicar_log_simples.py --modelo --apply`; sem
+--apply, a conferência é somente leitura. Alterar a configuração da conexão
+exige reaplicar o DDL correspondente; as triggers deixam de consultá-la a cada linha.
+
+Mantém os nomes TG_AI/TG_AU/TG_AD_<TABELA>_LOG para preservar as regras financeiras,
+inclusive TG_AI_COMPRA. WITH COMMON TRANSACTION acompanha commit/rollback da
+operação. O aplicador faz backup dos dois bancos e salva as fontes anteriores.
+A migração troca apenas as fontes na mesma transação, preservando a tabela de
+oito campos, os dados existentes, os logs de IA/API e as duas triggers financeiras.
