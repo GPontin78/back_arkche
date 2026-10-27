@@ -323,23 +323,15 @@ class LogExternoFirebird(unittest.TestCase):
             self.assertFalse(self.eventos(tabela,registro))
         self.assertEqual(self.sql('SELECT CONTEUDO FROM MAURO_MENSAGEM WHERE ID_MENSAGEM=2002')[0][0], 'texto confidencial 123456')
 
-    def test_log_python_usa_oito_campos_e_rollback_da_mesma_transacao(self):
-        cursor = self.con.cursor()
-        try:
-            for op in ('CREATE', 'EXECUTE'):
-                auditoria.registrar_log(cursor=cursor, usuario=44, tabela='IA',
-                    acao=f'MAURO_TESTE_{op} / SUCESSO', id_registro=3001,
-                    valor_novo='ID_CONTA=9')
-            self.con.commit()
-            ops = self.sql("SELECT ACAO FROM LOG WHERE ACAO STARTING WITH 'MAURO_TESTE_' ORDER BY ID_LOG", banco=self.audit)
-            self.assertEqual(ops, [('MAURO_TESTE_CREATE / SUCESSO',), ('MAURO_TESTE_EXECUTE / SUCESSO',)])
-            auditoria.registrar_log(cursor=cursor, usuario=44, tabela='IA',
-                acao='MAURO_TESTE_ROLLBACK / SUCESSO', id_registro=3002)
-            self.con.rollback()
-            self.audit.rollback()
-            self.assertFalse(self.sql("SELECT 1 FROM LOG WHERE ACAO='MAURO_TESTE_ROLLBACK / SUCESSO'", banco=self.audit))
-        finally:
-            cursor.close()
+    def test_log_python_usa_oito_campos_e_conexao_independente(self):
+        for op in ('CREATE', 'EXECUTE'):
+            auditoria.registrar_log(usuario=44, tabela='IA',
+                acao=f'MAURO_TESTE_{op} / SUCESSO', id_registro=3001,
+                valor_novo='ID_CONTA=9')
+        self.con.rollback()
+        self.audit.rollback()
+        ops = self.sql("SELECT ACAO FROM LOG WHERE ACAO STARTING WITH 'MAURO_TESTE_' ORDER BY ID_LOG", banco=self.audit)
+        self.assertEqual(ops, [('MAURO_TESTE_CREATE / SUCESSO',), ('MAURO_TESTE_EXECUTE / SUCESSO',)])
 
     def test_trigger_de_compra_preserva_parcelas_e_datas(self):
         self.sql('INSERT INTO CARTAO (ID_CARTAO,ID_CONTA) VALUES (4001,9)')
@@ -441,7 +433,7 @@ class LogExternoFirebird(unittest.TestCase):
             with patch.object(servico, 'registrar_log', side_effect=falhar_consulta), self.assertLogs(app.logger, level='ERROR'):
                 falhou = client.post(url,json={'mensagem':'Mostre meu saldo'})
             self.assertEqual(falhou.status_code,503)
-            self.assertEqual(self.sql('SELECT COUNT(*) FROM MAURO_MENSAGEM WHERE ID_CONVERSA=?',(conversa,))[0][0],2)
+            self.assertEqual(self.sql('SELECT COUNT(*) FROM MAURO_MENSAGEM WHERE ID_CONVERSA=?',(conversa,))[0][0],4)
             self.audit.rollback()
             self.assertTrue(self.sql("SELECT 1 FROM LOG WHERE ACAO='MAURO_CONSULTA / FALHA'",banco=self.audit))
 

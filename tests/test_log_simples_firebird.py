@@ -141,7 +141,8 @@ class LogSimplesFirebird(unittest.TestCase):
             self.assertEqual(cliente.post(url,json={'mensagem':'Qual é meu saldo privado?'}).status_code,200)
             with patch.object(servico,'registrar_log',side_effect=falhar),self.assertLogs(app.logger,level='ERROR'):
                 self.assertEqual(cliente.post(url,json={'mensagem':'Meu saldo privado'}).status_code,503)
-            self.assertEqual(self.sql('SELECT COUNT(*) FROM MAURO_MENSAGEM WHERE ID_CONVERSA=?',(conversa,))[0][0],2)
+            # O INSERT direto do log ocorre depois do commit das duas mensagens.
+            self.assertEqual(self.sql('SELECT COUNT(*) FROM MAURO_MENSAGEM WHERE ID_CONVERSA=?',(conversa,))[0][0],4)
         self.audit.rollback()
         linhas = self.sql("SELECT USUARIO,ACAO,VALOR_NOVO FROM LOG WHERE TABELA='IA'",banco=self.audit)
         self.assertTrue(any(r[1]=='MAURO_CONSULTA / SUCESSO' for r in linhas))
