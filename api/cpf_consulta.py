@@ -1,7 +1,7 @@
-"""Consulta restrita de existencia de conta por CPF para integracoes aprovadas.
+"""Consulta de existencia de conta por CPF para integracoes API autenticadas.
 
-Evita enumeracao publica: autenticar a credencial, exigir opt-in administrativo,
-validar CPF, limitar consultas no Redis e nao retornar cadastro pessoal.
+Exige credenciais ativas da API, CPF valido, limites Redis por integracao
+e por documento e responde somente a existencia da conta, sem dados pessoais.
 """
 import hashlib
 import os
@@ -20,16 +20,11 @@ local count1 = redis.call('INCR', KEYS[1])
 if count1 == 1 then redis.call('EXPIRE', KEYS[1], tonumber(ARGV[1])) end
 local count2 = redis.call('INCR', KEYS[2])
 if count2 == 1 then redis.call('EXPIRE', KEYS[2], tonumber(ARGV[3])) end
-if count1 > tonumber(ARGV[2]) or count2 > tonumber(ARGV[4]) then return 0 end
+local count3 = redis.call('INCR', KEYS[3])
+if count3 == 1 then redis.call('EXPIRE', KEYS[3], tonumber(ARGV[5])) end
+if count1 > tonumber(ARGV[2]) or count2 > tonumber(ARGV[4]) or count3 > tonumber(ARGV[6]) then return 0 end
 return 1
 """
-
-
-def _autorizar_consulta_cpf(integracao):
-    """Somente credenciais explicitamente liberadas podem testar CPF de terceiros."""
-    client_id = request.headers.get('X-Client-ID', '')
-    liberados = {i.strip() for i in os.getenv('ARKHE_API_CONSULTA_CPF_CLIENT_IDS', '').split(',') if i.strip()}
-    return bool(integracao and integracao.get('id_integracao') and client_id in liberados)
 
 
 def _limitar_consulta_cpf(id_integracao, cpf):
@@ -43,10 +38,11 @@ def _limitar_consulta_cpf(id_integracao, cpf):
         cliente_hash = hashlib.sha256(str(id_integracao).encode('utf-8')).hexdigest()
         cpf_hash = hashlib.sha256(cpf.encode('ascii')).hexdigest()
         permitido = cliente.eval(
-            _LUA_LIMITE_CPF, 2,
+            _LUA_LIMITE_CPF, 3,
             'arkhe:cpf:integracao:' + cliente_hash,
             'arkhe:cpf:documento:' + cpf_hash,
-            60, 10, 86400, 20,
+            'arkhe:cpf:integracao:dia:' + cliente_hash,
+            60, 10, 86400, 20, 86400, 100,
         )
         return bool(permitido)
     except (redis.RedisError, OSError, ValueError):
@@ -65,9 +61,8 @@ def api_verificar_cpf():
     contexto, erro = autenticar_integracao()
     if erro:
         return erro
-    if not _autorizar_consulta_cpf(contexto):
-        return jsonify({'mensagem': 'Integracao sem permissao para verificacao de CPF'}), 403
 
+    # A autenticacao convencional ja valida Client ID, Secret e status ATIVO.
     dados = request.get_json(silent=True)
     cpf_informado = dados.get('cpf') if isinstance(dados, dict) else None
     if not isinstance(cpf_informado, str) or len(cpf_informado) > 32 or not validar_cpf(cpf_informado):

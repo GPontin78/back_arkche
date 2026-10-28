@@ -242,9 +242,9 @@
       ]
     },
     {
-      "name": "Verificar CPF com permissao especial (restrito)",
+      "name": "Verificar CPF (credenciais comuns da API)",
       "request": {
-        "description": "Apenas Client IDs expressamente aprovados pelo administrador. Credenciais PJ comuns retornam 403. CPF nunca deve ser enviado por URL. Redis obrigatorio; 10 consultas/minuto por integracao, 20/dia por CPF. Exemplo apenas para ambiente de demonstracao.",
+        "description": "Disponivel para qualquer integracao API ativa com X-Client-ID e X-Client-Secret validos; sem allowlist especial. Consulta apenas no servidor e com finalidade legitima. CPF nunca por URL. Redis obrigatorio; 10 consultas/minuto e 100/dia por integracao, 20/dia por CPF em todas as integracoes. Exemplo apenas para demonstracao.",
         "method": "POST",
         "header": [
           {
