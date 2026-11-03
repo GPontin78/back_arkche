@@ -181,7 +181,7 @@ def _rota_log():
 
 def _registrar_resposta_relevante(response):
     caminho = request.path or ''
-    assistente = caminho.startswith('/api/v1/assistente/') or caminho == '/api/v1/admin/banco/assistente'
+    assistente = caminho.startswith(('/api/v1/assistente/', '/api/v1/admin/banco/assistente'))
     login = caminho in ('/login', '/login_usuario')
     escrita_recusada = request.method in ('POST', 'PUT', 'PATCH', 'DELETE') and response.status_code >= 400
     feed = caminho in ('/api/v1/admin/auditoria', '/api/v1/admin/auditoria/status', '/api/v1/admin/auditoria/stream')

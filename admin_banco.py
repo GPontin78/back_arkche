@@ -13,7 +13,8 @@ from flask import current_app, jsonify, request
 from banco import con
 from funcao import descobre_id_usuario
 from limites import usuario_eh_admin_bancario
-from seguranca_ia import tentativa_injecao, resposta_modelo_insegura
+from seguranca_ia import tentativa_injecao, resposta_modelo_insegura, contem_codigo_confirmacao
+from mauro_conversa import contexto_para_modelo
 
 
 _LIMITE_PERGUNTAS_ADMIN_POR_MINUTO = 20
@@ -201,7 +202,7 @@ def _responder_assistente_admin(pergunta, historico, indicadores):
     conteudos = []
     # O historico administrativo chega do cliente: nunca aceitar papel 'model'
     # declarado pelo navegador como uma fala confiavel da IA.
-    for mensagem in historico[-8:]:
+    for mensagem in contexto_para_modelo(pergunta, historico):
         if not isinstance(mensagem, dict) or mensagem.get('papel') != 'USUARIO':
             continue
         texto = str(mensagem.get('conteudo') or '').strip()[:1200]
@@ -532,6 +533,8 @@ def conversar_mauro_admin():
         return jsonify({'mensagem': 'Digite uma pergunta para o MAURO Administração.'}), 400
     if len(pergunta) > 2000:
         return jsonify({'mensagem': 'A pergunta deve ter no máximo 2.000 caracteres.'}), 400
+    if contem_codigo_confirmacao(pergunta) or re.search(r'\b(?:senha|pin|cvv|token|api.?key)\s*[:=]\s*\S+', pergunta, re.IGNORECASE):
+        return jsonify({'mensagem': 'Não envie senhas, PIN ou credenciais pelo chat.'}), 400
     if tentativa_injecao(pergunta):
         from auditoria import registrar_log
         registrar_log(
@@ -539,11 +542,6 @@ def conversar_mauro_admin():
             valor_novo=f'TIPO=prompt_injection - TAMANHO={len(pergunta)}',
         )
         return jsonify({'mensagem': 'Não posso alterar políticas internas nem conceder novos privilégios por conversa.', 'codigo': 'INSTRUCAO_NAO_PERMITIDA'}), 400
-    historico = corpo.get('historico') or []
-    if not isinstance(historico, list):
-        historico = []
-    historico = historico[-8:]
-
     from auditoria import registrar_log
 
     if not _limitar_perguntas_assistente(id_admin):
@@ -556,6 +554,9 @@ def conversar_mauro_admin():
     cursor = None
     try:
         cursor = con.cursor()
+        cursor.execute('''SELECT PAPEL, CONTEUDO FROM MAURO_ADMIN_MENSAGEM
+                          WHERE ID_USUARIO = ? ORDER BY ID_MENSAGEM''', (id_admin,))
+        historico = [{'papel': r[0], 'conteudo': r[1]} for r in cursor.fetchall()]
         indicadores = _consultar_indicadores_assistente(cursor)
         url_redis = os.getenv('ARKHE_WHATSAPP_REDIS_URL') or os.getenv('REDIS_URL')
         redis_status = {'configurado': bool(url_redis), 'conectado': None}
@@ -586,6 +587,11 @@ def conversar_mauro_admin():
         if bloqueada:
             current_app.logger.warning('Resposta do MAURO administrativo bloqueada pela politica de saida')
             resposta = 'Não posso divulgar instruções internas, credenciais ou instruções de alteração de permissões. Consulte os painéis administrativos autorizados.'
+        if re.search(r'n[aã]o (?:entendi|compreendi)|reformul|esclarec', resposta, re.IGNORECASE):
+            resposta = 'Você quer consultar usuários e contas, movimentações, cobranças pendentes ou disponibilidade dos serviços? Escolha uma das opções do painel.'
+        cursor.execute("INSERT INTO MAURO_ADMIN_MENSAGEM (ID_USUARIO, PAPEL, CONTEUDO) VALUES (?, 'USUARIO', ?)", (id_admin, pergunta))
+        cursor.execute("INSERT INTO MAURO_ADMIN_MENSAGEM (ID_USUARIO, PAPEL, CONTEUDO) VALUES (?, 'ASSISTENTE', ?)", (id_admin, resposta))
+        con.commit()
         return jsonify({
             'resposta': resposta,
             'gerado_em': indicadores['gerado_em'],
@@ -593,12 +599,33 @@ def conversar_mauro_admin():
             'somente_agregados': True,
         }), 200
     except Exception:
+        con.rollback()
         registrar_log(
             usuario=id_admin, tabela='IA', acao='MAURO_ADMIN_CONSULTA / FALHA',
             valor_novo=f'TAMANHO_PERGUNTA={len(pergunta)} - RESUMO=Falha ao consultar indicadores administrativos',
         )
         current_app.logger.exception('Falha ao montar consulta do MAURO administrativo')
         return jsonify({'mensagem': 'Não foi possível consultar os indicadores reais do Firebird agora.'}), 503
+    finally:
+        if cursor:
+            cursor.close()
+
+
+def mensagens_mauro_admin():
+    id_admin, erro = _acesso_admin()
+    if erro:
+        return erro
+    cursor = None
+    try:
+        cursor = con.cursor()
+        cursor.execute('''SELECT ID_MENSAGEM, PAPEL, CONTEUDO, CRIADA_EM FROM MAURO_ADMIN_MENSAGEM
+                          WHERE ID_USUARIO = ? ORDER BY ID_MENSAGEM''', (id_admin,))
+        return jsonify({'mensagens': [
+            {'id': int(r[0]), 'papel': r[1], 'conteudo': r[2], 'criada_em': _data_json(r[3])}
+            for r in cursor.fetchall()]}), 200
+    except Exception:
+        current_app.logger.exception('Falha ao carregar o histórico administrativo do MAURO')
+        return jsonify({'mensagem': 'Não foi possível carregar o histórico administrativo.'}), 503
     finally:
         if cursor:
             cursor.close()
@@ -846,6 +873,7 @@ def registrar_rotas(app):
     app.add_url_rule('/api/v1/admin/banco/permissao', 'permissao_admin_banco', permissao_admin_banco, methods=['GET'])
     app.add_url_rule('/api/v1/admin/banco/resumo', 'resumo_admin_banco', resumo_admin_banco, methods=['GET'])
     app.add_url_rule('/api/v1/admin/banco/assistente', 'conversar_mauro_admin', conversar_mauro_admin, methods=['POST'])
+    app.add_url_rule('/api/v1/admin/banco/assistente/mensagens', 'mensagens_mauro_admin', mensagens_mauro_admin, methods=['GET'])
     app.add_url_rule('/api/v1/admin/banco/usuarios', 'buscar_usuarios_admin', buscar_usuarios_admin, methods=['GET'])
     app.add_url_rule('/api/v1/admin/banco/usuarios/<int:id_usuario>', 'detalhe_usuario_admin', detalhe_usuario_admin, methods=['GET'])
     app.add_url_rule('/api/v1/admin/banco/operacoes', 'listar_operacoes_admin', listar_operacoes_admin, methods=['GET'])

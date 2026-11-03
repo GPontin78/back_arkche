@@ -50,6 +50,13 @@ def carregar_servico():
             obter_ultima_proposta=lambda *_: None,
             registrar_rotas=lambda *_: None,
         ),
+        'mauro_cadastros': types.SimpleNamespace(
+            ACOES=('EDITAR_PERFIL', 'CADASTRAR_CHAVE', 'EXCLUIR_CHAVE',
+                   'CADASTRAR_FAVORITO', 'EDITAR_FAVORITO', 'EXCLUIR_FAVORITO'),
+            processar_mensagem=lambda *_: None,
+            ultima_proposta=lambda *_: None,
+            registrar_rotas=lambda *_: None,
+        ),
     }
     anteriores = {nome: sys.modules.get(nome) for nome in substitutos}
     sys.modules.update(substitutos)

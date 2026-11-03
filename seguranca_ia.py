@@ -33,6 +33,11 @@ def tentativa_injecao(texto):
     return any(p.search(texto_normal) for p in _REGEX_INJECAO)
 
 
+def contem_codigo_confirmacao(texto):
+    normal = _normalizar(texto)
+    return bool(re.search(r'\bcodigo(?: de (?:verificacao|confirmacao|acesso))?\s*(?:[:=]|e)?\s*\d{6}\b', normal))
+
+
 def resposta_modelo_insegura(texto):
     """Impede que saidas evidentemente fora do contrato sejam exibidas."""
     if not isinstance(texto, str) or not texto.strip():
