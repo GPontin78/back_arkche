@@ -44,6 +44,7 @@ class LogExternoFirebird(unittest.TestCase):
         cls._aplicar(cls.arquivo, ROOT / 'migrations/auditoria_separada/001_estrutura.sql')
         # O Python atual sempre grava na LOG de oito campos, inclusive ao testar DDL antigo.
         cls._aplicar(cls.arquivo, ROOT / 'migrations/auditoria_separada/002_log_simples.sql')
+        cls._aplicar(cls.arquivo, ROOT / 'migrations/auditoria_separada/003_log_ip.sql')
         cls._legado()
         from scripts.aplicar_log_externo import aplicar_ddl
         aplicar_ddl(cls.con, f'{HOST}/{PORT}:{cls.arquivo}', 'SYSDBA', cls.senha, 'teste')

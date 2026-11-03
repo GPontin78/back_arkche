@@ -45,6 +45,11 @@ def sem_complementos(triggers):
                                         for r in triggers if r[0].endswith('_LOG'))
 
 
+def ip_ativo(triggers):
+    return tres_ativas(triggers) and all('DECLARE VARIABLE V_IP VARCHAR(45);' in r[5]
+                                        for r in triggers if r[0].endswith('_LOG'))
+
+
 def conferir(conexao):
     cursor = conexao.cursor()
     cursor.execute('SELECT ORIGEM_ID,DATA_SOURCE,USUARIO,SENHA FROM CONFIGURACAO_LOG WHERE ID_CONFIGURACAO=1')
@@ -64,12 +69,15 @@ def conferir(conexao):
     separadas = {nome:dados for nome,dados in esperadas.items() if not nome.endswith('_LOG')}
     modelo = dict(separadas)
     modelo_anterior = dict(separadas)
+    modelo_ip = dict(separadas)
     for tabela in TABELAS_PRINCIPAIS:
         for sigla,operacao,tipo in OPERACOES:
             corpo = 'AS\n'+gerar_trigger_separada(tabela,operacao).split('\nAS\n',1)[1].strip().removesuffix('^')
             separadas[f'TG_{sigla}_{tabela}_LOG'] = (tabela,tipo,32000,0,corpo)
             corpo_modelo = 'AS\n'+gerar_trigger_modelo(tabela,operacao,destino,usuario,senha).split('\nAS\n',1)[1].strip().removesuffix('^')
             modelo[f'TG_{sigla}_{tabela}_LOG'] = (tabela,tipo,0,0,corpo_modelo)
+            corpo_ip = 'AS\n'+gerar_trigger_modelo(tabela,operacao,destino,usuario,senha,com_ip=True).split('\nAS\n',1)[1].strip().removesuffix('^')
+            modelo_ip[f'TG_{sigla}_{tabela}_LOG'] = (tabela,tipo,0,0,corpo_ip)
             corpo_anterior = 'AS\n'+gerar_trigger_modelo(tabela,operacao,destino,usuario,senha,sem_complementos=False).split('\nAS\n',1)[1].strip().removesuffix('^')
             modelo_anterior[f'TG_{sigla}_{tabela}_LOG'] = (tabela,tipo,32000,0,corpo_anterior)
     try:
@@ -81,6 +89,8 @@ def conferir(conexao):
             esperadas_tres = modelo if modelo_ativo(atuais) else separadas
             if modelo_ativo(atuais) and not sem_complementos(atuais):
                 esperadas_tres = modelo_anterior
+            if ip_ativo(atuais):
+                esperadas_tres = modelo_ip
             for nome,*dados in atuais:
                 esperado = esperadas_tres[nome]
                 if tuple(dados[:4]) != esperado[:4] or re.sub(r'\s+',' ',dados[4]).strip() != re.sub(r'\s+',' ',esperado[4]).strip():
@@ -112,9 +122,12 @@ def conferir_log(arquivo):
             WHERE R.RDB$RELATION_NAME='LOG' ORDER BY R.RDB$FIELD_POSITION""")
         definicoes = cursor.fetchall()
         campos = [r[0] for r in definicoes]
-        if campos and campos != CAMPOS_LOG:
+        if campos and campos not in (CAMPOS_LOG, CAMPOS_LOG+['IP']):
             raise RuntimeError('Já existe uma LOG com estrutura diferente. Nenhuma tabela foi substituída.')
-        if campos and ([r[1] for r in definicoes] != [16,35,37,37,16,37,261,261] or definicoes[0][2] != 1):
+        tipos = [16,35,37,37,16,37,261,261]
+        if campos and campos[-1] == 'IP':
+            tipos.append(37)
+        if campos and ([r[1] for r in definicoes] != tipos or definicoes[0][2] != 1):
             raise RuntimeError('Tipos ou identidade da LOG diferentes da estrutura estudada')
         return bool(campos)
     finally:

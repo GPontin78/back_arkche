@@ -1,4 +1,4 @@
-# LOG com oito campos
+# LOG do sistema
 
 No Firebird separado, os novos registros vão para `LOG`:
 
@@ -12,6 +12,10 @@ No Firebird separado, os novos registros vão para `LOG`:
 | ACAO | INSERT, UPDATE, DELETE ou evento da aplicação com resultado |
 | VALOR_ANTERIOR | Valores anteriores relevantes |
 | VALOR_NOVO | Valores novos ou resumo da ação |
+| IP | IP do computador informado pelo componente local; nulo nos registros anteriores |
+
+A versão 019 acrescenta IP aos oito campos originais. Captura, instalação do atalho
+e aplicação estão em [LOG_IP_COMPUTADOR.md](LOG_IP_COMPUTADOR.md).
 
 Cada uma das 11 tabelas principais mantém três triggers: TG_AI_<TABELA>_LOG para
 AFTER INSERT, TG_AU_<TABELA>_LOG para AFTER UPDATE e TG_AD_<TABELA>_LOG para AFTER
@@ -41,7 +45,7 @@ para os detalhes legados completos. A LOG tem sua própria numeração; a opçã
 histórico seleciona a origem correta ao abrir um registro.
 
 A tela usa /api/v1/admin/auditoria?simples=1 e, para o histórico, historico=1.
-Listagem e detalhe retornam exatamente os oito campos em minúsculas. O acesso
+Listagem e detalhe retornam os nove campos em minúsculas. O acesso
 continua exclusivo do administrador; os demais endpoints e permissões da IA/API
 mantêm seus contratos.
 
@@ -125,7 +129,7 @@ operação. O aplicador faz backup dos dois bancos e salva as fontes anteriores.
 A migração troca apenas as fontes na mesma transação, preservando a tabela de
 oito campos, os dados existentes, os logs de IA/API e as duas triggers financeiras.
 
-## Sem complementos no cabeçalho (018, versão atual)
+## Sem complementos no cabeçalho (018)
 
 As 33 triggers usam apenas CREATE OR ALTER TRIGGER, FOR e AFTER INSERT/UPDATE/DELETE.
 Não escrevem ACTIVE, POSITION ou WITH COMMON TRANSACTION. O Firebird usa a transação
@@ -138,12 +142,14 @@ descrições. As duas triggers financeiras, os oito campos, a conexão e os dado
 continuam preservados. A conferência aceita a 017 anterior e a 018 completa, recusando
 misturas ou alterações inesperadas. A migração 017 permanece como histórico.
 
-## Python direto
+## Python direto e IP do computador (019, versão atual)
 
 `registrar_log(usuario=..., tabela=..., acao=..., id_registro=...,
 valor_anterior=..., valor_novo=...)` recebe os próprios campos da LOG.
 ID_LOG e DATA_HORA são gerados no banco. Cada chamada da IA, Pix e administração
 monta seu resumo em texto explicitamente; o hook HTTP faz o mesmo para API e sistema.
+O IP vem de `obter_ip_computador()`, com o valor informado pelo componente local e
+guardado na sessão assinada. O mesmo valor é passado ao contexto das triggers.
 Não há mais serialização JSON, detecção de versões ou escolha entre três gravadores
 a cada ação. Os endpoints, autenticação e regras financeiras mantêm seus contratos.
 

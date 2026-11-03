@@ -37,10 +37,10 @@ class LogSimplesFirebird(unittest.TestCase):
         self.audit.rollback()
         return self.sql('SELECT ACAO,VALOR_ANTERIOR,VALOR_NOVO FROM LOG WHERE TABELA=? AND ID_REGISTRO IS NOT DISTINCT FROM ? ORDER BY ID_LOG',(tabela,registro),self.audit)
 
-    def test_exatamente_oito_campos_e_historico_original_intacto(self):
+    def test_campos_originais_com_ip_e_historico_intacto(self):
         self.assertTrue(conferir_log(self.audit))
         campos = self.sql("SELECT TRIM(RDB$FIELD_NAME) FROM RDB$RELATION_FIELDS WHERE RDB$RELATION_NAME='LOG' ORDER BY RDB$FIELD_POSITION",banco=self.audit)
-        self.assertEqual([r[0] for r in campos],CAMPOS_LOG)
+        self.assertEqual([r[0] for r in campos],CAMPOS_LOG+['IP'])
         self.assertEqual(len(conferir(self.con)[0]),13)
         self.assertEqual(self.sql("SELECT COUNT(*) FROM AUDITORIA_EVENTO WHERE EVENTO='HISTORICO'",banco=self.audit),[(1,)])
         self.assertFalse(aplicar(self.con,self.audit))
@@ -159,7 +159,7 @@ class LogSimplesFirebird(unittest.TestCase):
                 resposta,status = auditoria.listar_eventos_admin()
                 self.assertEqual(status,200)
                 linha = resposta.get_json()['eventos'][0]
-                self.assertEqual(set(linha),{n.lower() for n in CAMPOS_LOG})
+                self.assertEqual(set(linha),{n.lower() for n in CAMPOS_LOG+['IP']})
             with self.app.test_request_context('/api/v1/admin/auditoria?simples=1&historico=1'):
                 resposta,status = auditoria.listar_eventos_admin()
                 self.assertEqual(status,200)

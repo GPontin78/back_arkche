@@ -15,7 +15,7 @@ def valores(tabela,registro):
     )
 
 
-def gerar_trigger(tabela,operacao,destino='__LOG_DATA_SOURCE__',usuario='__LOG_USUARIO__',senha='__LOG_SENHA__',sem_complementos=True):
+def gerar_trigger(tabela,operacao,destino='__LOG_DATA_SOURCE__',usuario='__LOG_USUARIO__',senha='__LOG_SENHA__',sem_complementos=True,com_ip=False):
     chave = CAMPOS[tabela].split()[0]
     if operacao == 'INSERT':
         sigla = 'AI'
@@ -43,7 +43,7 @@ def gerar_trigger(tabela,operacao,destino='__LOG_DATA_SOURCE__',usuario='__LOG_U
         # Somente para conferir a versão 017 já instalada.
         cabecalho = f'ACTIVE AFTER {operacao} POSITION 32000'
         transacao = '\n    WITH COMMON TRANSACTION'
-    return f'''CREATE OR ALTER TRIGGER TG_{sigla}_{tabela}_LOG
+    sql = f'''CREATE OR ALTER TRIGGER TG_{sigla}_{tabela}_LOG
 FOR {tabela}
 {cabecalho}
 AS
@@ -86,6 +86,15 @@ BEGIN
     PASSWORD {texto_sql(senha)}{transacao};
 END^
 '''
+    if com_ip:
+        sql = sql.replace('DECLARE VARIABLE V_USUARIO VARCHAR(100);',
+                          'DECLARE VARIABLE V_USUARIO VARCHAR(100);\nDECLARE VARIABLE V_IP VARCHAR(45);')
+        sql = sql.replace('    -- ', "    V_IP = RDB$GET_CONTEXT('USER_SESSION', 'ARKHE_IP_LOG');\n\n    -- ", 1)
+        sql = sql.replace('            VALOR_NOVO\n', '            VALOR_NOVO,\n            IP\n')
+        sql = sql.replace('VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?)',
+                          'VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?)')
+        sql = sql.replace(f'        {novo}\n    )', f'        {novo},\n        :V_IP\n    )')
+    return sql
 
 
 def main():
