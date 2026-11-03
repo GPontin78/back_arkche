@@ -131,12 +131,14 @@ class MauroCompletoFirebird(unittest.TestCase):
         self.patches = [
             patch.dict(os.environ, {'ARKHE_AUDIT_DB_NAME': str(self.arquivo), 'ARKHE_AUDIT_DB_HOST': self.host,
                                      'ARKHE_AUDIT_DB_PORT': str(self.porta), 'ARKHE_AUDIT_DB_USER': 'SYSDBA',
-                                     'ARKHE_AUDIT_DB_PASSWORD': self.senha}),
+                                     'ARKHE_AUDIT_DB_PASSWORD': self.senha, 'REDIS_URL': '',
+                                     'ARKHE_WHATSAPP_REDIS_URL': '', 'GEMINI_API_KEY': '', 'GOOGLE_API_KEY': ''}),
             patch.object(mauro, 'descobre_id_usuario', side_effect=lambda: self.usuario),
             patch.object(mauro, 'descobre_id_conta', side_effect=lambda: self.conta),
             patch.object(auditoria, 'descobre_id_usuario', side_effect=lambda: self.usuario),
             patch.object(auditoria, 'descobre_id_conta', side_effect=lambda: self.conta),
             patch.object(auditoria, '_redis', side_effect=RuntimeError('Sem Redis no teste')),
+            patch.object(mauro.requests, 'post', side_effect=AssertionError('Provedor externo não deve ser chamado neste teste')),
         ]
         for p in self.patches:
             p.start()
