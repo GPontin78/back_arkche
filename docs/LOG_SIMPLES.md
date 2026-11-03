@@ -12,10 +12,10 @@ No Firebird separado, os novos registros vão para `LOG`:
 | ACAO | INSERT, UPDATE, DELETE ou evento da aplicação com resultado |
 | VALOR_ANTERIOR | Valores anteriores relevantes |
 | VALOR_NOVO | Valores novos ou resumo da ação |
-| IP | IP do computador informado pelo componente local; nulo nos registros anteriores |
+| IP | IP da conexão recebido pelo backend; nulo nos registros anteriores |
 
-A versão 019 acrescenta IP aos oito campos originais. Captura, instalação do atalho
-e aplicação estão em [LOG_IP_COMPUTADOR.md](LOG_IP_COMPUTADOR.md).
+A versão 019 acrescenta IP aos oito campos originais. Captura e aplicação estão
+em [LOG_IP_COMPUTADOR.md](LOG_IP_COMPUTADOR.md).
 
 Cada uma das 11 tabelas principais mantém três triggers: TG_AI_<TABELA>_LOG para
 AFTER INSERT, TG_AU_<TABELA>_LOG para AFTER UPDATE e TG_AD_<TABELA>_LOG para AFTER
@@ -148,8 +148,8 @@ misturas ou alterações inesperadas. A migração 017 permanece como histórico
 valor_anterior=..., valor_novo=...)` recebe os próprios campos da LOG.
 ID_LOG e DATA_HORA são gerados no banco. Cada chamada da IA, Pix e administração
 monta seu resumo em texto explicitamente; o hook HTTP faz o mesmo para API e sistema.
-O IP vem de `obter_ip_computador()`, com o valor informado pelo componente local e
-guardado na sessão assinada. O mesmo valor é passado ao contexto das triggers.
+O IP vem de `obter_ip()`, usando `request.remote_addr`. O mesmo valor é passado
+ao contexto das triggers, sem cookies extras ou instalação no cliente.
 Não há mais serialização JSON, detecção de versões ou escolha entre três gravadores
 a cada ação. Os endpoints, autenticação e regras financeiras mantêm seus contratos.
 

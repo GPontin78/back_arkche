@@ -1,4 +1,4 @@
-/* IP informado pelo componente local, no contexto da sessão da aplicação. */
+/* IP da conexão HTTP, no contexto da sessão da aplicação. */
 SET BAIL ON;
 SET AUTODDL OFF;
 SET TERM ^;

@@ -1,4 +1,4 @@
-"""IP informado pelo componente local, em dois Firebirds descartáveis."""
+"""IP da conexão HTTP, em dois Firebirds descartáveis."""
 import unittest
 from unittest.mock import patch
 from flask import Flask
@@ -53,58 +53,51 @@ class LogIPFirebird(unittest.TestCase):
         self.assertEqual([r for r in atuais if not r[0].endswith('_LOG')],[r for r in self.antes if not r[0].endswith('_LOG')])
         self.assertFalse(aplicar_ip(self.con,self.audit))
 
-    def test_ip_do_componente_chega_a_ia_api_e_trigger(self):
+    def test_ip_da_conexao_chega_a_ia_api_e_trigger(self):
         app = self.aplicativo()
         with patch.object(auditoria,'con',self.con), \
              patch.object(auditoria,'descobre_id_usuario',return_value=44), \
              patch.object(auditoria,'descobre_id_conta',return_value=9), \
              patch.object(auditoria,'_redis',side_effect=RuntimeError('Redis dispensável')):
             cliente = app.test_client()
-            resposta = cliente.post('/ip_computador',json={'ip':'192.168.10.27'},headers={'Origin':'https://banco.test'})
-            self.assertEqual(resposta.status_code,200)
-            self.assertIn('HttpOnly',resposta.headers['Set-Cookie'])
-            self.assertEqual(cliente.post('/api/v1/teste-ip/17101',environ_overrides={'REMOTE_ADDR':'198.51.100.10'}).status_code,200)
+            self.assertEqual(cliente.post('/api/v1/teste-ip/17101',environ_overrides={'REMOTE_ADDR':'192.168.10.27'}).status_code,200)
         self.audit.rollback()
         linhas = self.sql("SELECT TABELA,IP FROM LOG WHERE ID_REGISTRO=17101 OR (TABELA='API' AND VALOR_NOVO CONTAINING 'REGISTRO=17101')",banco=self.audit)
         self.assertEqual({r[0] for r in linhas},{'IA','API','MOVIMENTACAO'})
         self.assertEqual({r[1] for r in linhas},{'192.168.10.27'})
 
-    def test_sem_cookie_assinado_nao_usa_header_publico_servidor_ou_ip_anterior(self):
+    def test_requisicao_seguinte_nao_reusa_ip_anterior_cookie_ou_header(self):
         app = self.aplicativo()
         with patch.object(auditoria,'con',self.con), \
              patch.object(auditoria,'descobre_id_usuario',return_value=44), \
              patch.object(auditoria,'descobre_id_conta',return_value=9), \
              patch.object(auditoria,'_redis',side_effect=RuntimeError('Redis dispensável')):
             primeiro = app.test_client()
-            primeiro.post('/ip_computador',json={'ip':'192.168.10.28'},headers={'Origin':'https://banco.test'})
-            primeiro.post('/api/v1/teste-ip/17102')
+            primeiro.post('/api/v1/teste-ip/17102',environ_overrides={'REMOTE_ADDR':'192.168.10.27'})
             outro = app.test_client()
             outro.set_cookie('session','cookie-alterado')
-            resposta = outro.post('/api/v1/teste-ip/17103',headers={'X-Forwarded-For':'203.0.113.10','X-IP-Computador':'192.168.10.99'},environ_overrides={'REMOTE_ADDR':'198.51.100.10'})
+            resposta = outro.post('/api/v1/teste-ip/17103',headers={'X-Forwarded-For':'203.0.113.10','X-IP-Computador':'192.168.10.99'},environ_overrides={'REMOTE_ADDR':'192.168.10.28'})
             self.assertEqual(resposta.status_code,200)
-            self.assertEqual(self.sql("SELECT RDB$GET_CONTEXT('USER_SESSION','ARKHE_IP_LOG') FROM RDB$DATABASE"),[(None,)])
+            self.assertEqual(self.sql("SELECT RDB$GET_CONTEXT('USER_SESSION','ARKHE_IP_LOG') FROM RDB$DATABASE"),[('192.168.10.28',)])
         self.audit.rollback()
-        self.assertEqual(self.sql('SELECT IP FROM LOG WHERE ID_REGISTRO=17103',banco=self.audit),[(None,),(None,)])
+        self.assertEqual(self.sql('SELECT IP FROM LOG WHERE ID_REGISTRO=17103',banco=self.audit),[('192.168.10.28',),('192.168.10.28',)])
 
-    def test_origem_e_ip_invalidos_sao_recusados(self):
-        app = self.aplicativo()
-        app.before_request_funcs[None] = []
-        app.after_request_funcs[None] = []
-        cliente = app.test_client()
-        self.assertEqual(cliente.post('/ip_computador',json={'ip':'192.168.1.2'},headers={'Origin':'https://outro.test'}).status_code,403)
-        for dados in ({'ip':'abc'},{'ip':'127.0.0.1'},{'ip':None},['192.168.1.2'],{'ip':'0.0.0.0'}):
-            self.assertEqual(cliente.post('/ip_computador',json=dados,headers={'Origin':'https://banco.test'}).status_code,400)
-        with cliente.session_transaction() as sessao:
-            self.assertNotIn('ip_computador',sessao)
+    def test_sem_requisicao_grava_ip_nulo(self):
+        self.assertIsNone(auditoria.obter_ip())
+        auditoria.registrar_log(44,'SISTEMA','TESTE_SEM_REQUISICAO',17105)
+        self.audit.rollback()
+        self.assertEqual(self.sql('SELECT IP FROM LOG WHERE ID_REGISTRO=17105',banco=self.audit),[(None,)])
 
     def test_ipv6_e_consulta_de_historico_com_ip_nulo(self):
         app = self.aplicativo()
         app.before_request_funcs[None] = []
         app.after_request_funcs[None] = []
         cliente = app.test_client()
-        self.assertEqual(cliente.post('/ip_computador',json={'ip':'fd12:3456:789a::1'},headers={'Origin':'https://banco.test'}).status_code,200)
-        with cliente.session_transaction() as sessao:
-            self.assertEqual(sessao['ip_computador'],'fd12:3456:789a::1')
+        with app.test_request_context('/teste',environ_overrides={'REMOTE_ADDR':'fd12:3456:789a::1'}):
+            self.assertEqual(auditoria.obter_ip(),'fd12:3456:789a::1')
+            auditoria.registrar_log(44,'SISTEMA','TESTE_IPV6',17106)
+        self.audit.rollback()
+        self.assertEqual(self.sql('SELECT IP FROM LOG WHERE ID_REGISTRO=17106',banco=self.audit),[('fd12:3456:789a::1',)])
         with patch.object(auditoria,'_admin',return_value=(44,None)):
             for query in ('?simples=1&historico=1','?simples=1&tabela=TESTE'):
                 resposta = cliente.get('/api/v1/admin/auditoria'+query)
