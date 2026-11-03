@@ -7,12 +7,11 @@ import math
 import os
 import time
 import uuid
-from ipaddress import ip_address
 from datetime import date, datetime
 
 import fdb
 import redis
-from flask import Response, current_app, g, has_request_context, jsonify, request, session, stream_with_context
+from flask import Response, current_app, g, has_request_context, jsonify, request, stream_with_context
 
 from banco import con
 from funcao import descobre_id_conta, descobre_id_usuario
@@ -103,26 +102,10 @@ def _origem_id():
     return os.getenv('ARKHE_AUDIT_SOURCE_ID') or ('arkhe-' + hashlib.sha256(base.encode('utf-8')).hexdigest()[:24])
 
 
-def obter_ip_computador():
+def obter_ip():
     if has_request_context():
-        return session.get('ip_computador')
+        return request.remote_addr
     return None
-
-
-def registrar_ip_computador():
-    if request.headers.get('Origin') != current_app.config['FRONTEND_URL'].rstrip('/'):
-        return jsonify({'mensagem': 'Origem não permitida.'}), 403
-    dados = request.get_json(silent=True) or {}
-    if not isinstance(dados, dict) or not isinstance(dados.get('ip'), str):
-        return jsonify({'mensagem': 'IP do computador inválido.'}), 400
-    try:
-        ip = ip_address(dados.get('ip', ''))
-    except ValueError:
-        return jsonify({'mensagem': 'IP do computador inválido.'}), 400
-    if ip.is_loopback or ip.is_unspecified or ip.is_multicast:
-        return jsonify({'mensagem': 'Informe o IP do adaptador do computador.'}), 400
-    session['ip_computador'] = str(ip)
-    return jsonify({'mensagem': 'IP do computador registrado.'}), 200
 
 
 def registrar_log(usuario, tabela, acao, id_registro=None,
@@ -146,7 +129,7 @@ def registrar_log(usuario, tabela, acao, id_registro=None,
             ) VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?)
         """, (
             usuario, tabela, id_registro, acao, valor_anterior, valor_novo,
-            obter_ip_computador(),
+            obter_ip(),
         ))
         conexao.commit()
         return True
@@ -176,7 +159,7 @@ def _preparar_contexto_trigger():
             ('ARKHE_ID_USUARIO', usuario),
             ('ARKHE_USUARIO_LOG', usuario),
             ('ARKHE_ORIGEM', _rota_log()),
-            ('ARKHE_IP_LOG', obter_ip_computador()),
+            ('ARKHE_IP_LOG', obter_ip()),
         ):
             cursor.execute("SELECT RDB$SET_CONTEXT('USER_SESSION', ?, ?) FROM RDB$DATABASE", (chave, valor))
             cursor.fetchone()
@@ -751,9 +734,6 @@ def processar_auditoria_pendente(limite=100):
 
 
 def registrar_rotas(app):
-    app.config['SESSION_COOKIE_SECURE'] = app.config.get('COOKIE_SECURE', False)
-    app.config['SESSION_COOKIE_SAMESITE'] = 'None' if app.config['SESSION_COOKIE_SECURE'] else 'Lax'
-    app.add_url_rule('/ip_computador', 'registrar_ip_computador', registrar_ip_computador, methods=['POST'])
     app.before_request(_preparar_contexto_trigger)
     app.after_request(_registrar_resposta_relevante)
     app.add_url_rule('/api/v1/admin/auditoria', 'listar_eventos_auditoria_admin', listar_eventos_admin, methods=['GET'])
