@@ -7,11 +7,12 @@ import math
 import os
 import time
 import uuid
+from ipaddress import ip_address
 from datetime import date, datetime
 
 import fdb
 import redis
-from flask import Response, current_app, g, jsonify, request, stream_with_context
+from flask import Response, current_app, g, has_request_context, jsonify, request, session, stream_with_context
 
 from banco import con
 from funcao import descobre_id_conta, descobre_id_usuario
@@ -102,6 +103,28 @@ def _origem_id():
     return os.getenv('ARKHE_AUDIT_SOURCE_ID') or ('arkhe-' + hashlib.sha256(base.encode('utf-8')).hexdigest()[:24])
 
 
+def obter_ip_computador():
+    if has_request_context():
+        return session.get('ip_computador')
+    return None
+
+
+def registrar_ip_computador():
+    if request.headers.get('Origin') != current_app.config['FRONTEND_URL'].rstrip('/'):
+        return jsonify({'mensagem': 'Origem não permitida.'}), 403
+    dados = request.get_json(silent=True) or {}
+    if not isinstance(dados, dict) or not isinstance(dados.get('ip'), str):
+        return jsonify({'mensagem': 'IP do computador inválido.'}), 400
+    try:
+        ip = ip_address(dados.get('ip', ''))
+    except ValueError:
+        return jsonify({'mensagem': 'IP do computador inválido.'}), 400
+    if ip.is_loopback or ip.is_unspecified or ip.is_multicast:
+        return jsonify({'mensagem': 'Informe o IP do adaptador do computador.'}), 400
+    session['ip_computador'] = str(ip)
+    return jsonify({'mensagem': 'IP do computador registrado.'}), 200
+
+
 def registrar_log(usuario, tabela, acao, id_registro=None,
                   valor_anterior=None, valor_novo=None):
     conexao = fdb.connect(
@@ -119,10 +142,11 @@ def registrar_log(usuario, tabela, acao, id_registro=None,
         cursor.execute("""
             INSERT INTO LOG (
                 USUARIO, DATA_HORA, TABELA, ID_REGISTRO,
-                ACAO, VALOR_ANTERIOR, VALOR_NOVO
-            ) VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?)
+                ACAO, VALOR_ANTERIOR, VALOR_NOVO, IP
+            ) VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?)
         """, (
             usuario, tabela, id_registro, acao, valor_anterior, valor_novo,
+            obter_ip_computador(),
         ))
         conexao.commit()
         return True
@@ -152,6 +176,7 @@ def _preparar_contexto_trigger():
             ('ARKHE_ID_USUARIO', usuario),
             ('ARKHE_USUARIO_LOG', usuario),
             ('ARKHE_ORIGEM', _rota_log()),
+            ('ARKHE_IP_LOG', obter_ip_computador()),
         ):
             cursor.execute("SELECT RDB$SET_CONTEXT('USER_SESSION', ?, ?) FROM RDB$DATABASE", (chave, valor))
             cursor.fetchone()
@@ -274,7 +299,8 @@ def _consultar_log_simples(id_log=None):
         fonte = '''(SELECT ID_AUDITORIA AS ID_LOG, CRIADO_EM AS DATA_HORA,
             CAST(ID_USUARIO AS VARCHAR(100)) AS USUARIO, TABELA_ORIGEM AS TABELA,
             ID_REGISTRO, EVENTO || ' / ' || RESULTADO AS ACAO,
-            DADOS_ANTERIORES AS VALOR_ANTERIOR, DADOS_NOVOS AS VALOR_NOVO
+            DADOS_ANTERIORES AS VALOR_ANTERIOR, DADOS_NOVOS AS VALOR_NOVO,
+            CAST(NULL AS VARCHAR(45)) AS IP
             FROM AUDITORIA_EVENTO) H'''
     where,params = [],[]
     for campo,chave in (('USUARIO','usuario'),('TABELA','tabela'),('ACAO','acao')):
@@ -292,7 +318,7 @@ def _consultar_log_simples(id_log=None):
         conexao = _conectar_banco_auditoria()
         cursor = conexao.cursor()
         sql = f'''SELECT FIRST {limite} ID_LOG, DATA_HORA, USUARIO, TABELA,
-            ID_REGISTRO, ACAO, VALOR_ANTERIOR, VALOR_NOVO FROM {fonte}'''
+            ID_REGISTRO, ACAO, VALOR_ANTERIOR, VALOR_NOVO, IP FROM {fonte}'''
         if where:
             sql += ' WHERE ' + ' AND '.join(where)
         sql += ' ORDER BY DATA_HORA DESC, ID_LOG DESC'
@@ -308,6 +334,7 @@ def _consultar_log_simples(id_log=None):
                 'acao': row[5],
                 'valor_anterior': _json_data(row[6], texto_simples=True),
                 'valor_novo': _json_data(row[7], texto_simples=True),
+                'ip': row[8],
             })
         if id_log is not None:
             if not registros:
@@ -724,6 +751,9 @@ def processar_auditoria_pendente(limite=100):
 
 
 def registrar_rotas(app):
+    app.config['SESSION_COOKIE_SECURE'] = app.config.get('COOKIE_SECURE', False)
+    app.config['SESSION_COOKIE_SAMESITE'] = 'None' if app.config['SESSION_COOKIE_SECURE'] else 'Lax'
+    app.add_url_rule('/ip_computador', 'registrar_ip_computador', registrar_ip_computador, methods=['POST'])
     app.before_request(_preparar_contexto_trigger)
     app.after_request(_registrar_resposta_relevante)
     app.add_url_rule('/api/v1/admin/auditoria', 'listar_eventos_auditoria_admin', listar_eventos_admin, methods=['GET'])
