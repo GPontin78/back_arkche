@@ -5,6 +5,7 @@ decide permissões, acessa outro usuário ou aceita ações oriundas do modelo.
 """
 import re
 import unicodedata
+import calendar
 from datetime import date, datetime, timedelta
 
 
@@ -39,15 +40,42 @@ def assunto_anterior(historico):
         return 'SALDO'
     if re.search(r'\b(carta\w*|fatura\w*)\b', anterior):
         return 'CARTAO'
+    if re.search(r'\b(resumo|balanco|panorama|situacao financeira)\b', anterior):
+        return 'RESUMO_FINANCEIRO'
+    for mensagem in reversed((historico or ())[:-1]):
+        if mensagem.get('papel') == 'USUARIO':
+            assunto = assunto_anterior([mensagem])
+            if assunto:
+                return assunto
     return None
 
 
 def intencao_especial(texto, historico=()):
     """Casos conversacionais e novas consultas que o roteador legado não cobre."""
     n = normalizar(texto)
+    comandos = re.findall(r'\b(?:cadastr\w*|cri[ae]\w*|edit\w*|alter\w*|exclu\w*|apag\w*|remov\w*|transfir\w*|envie|pague)\b', n)
+    if len(comandos) > 1 and re.search(r'\be\b', n):
+        return 'ESCLARECER'
+    if re.search(r'^(?:mauro[, ]+)?(?:como\b|(?:me explique|explique|quero saber|gostaria de saber|me diga)\b.*\bcomo\b)', n) and re.search(r'\b(favorit\w*|chave\w*|perfil|nome)\b', n):
+        return 'AJUDA_CADASTROS'
+    if re.search(r'\b(resum\w*|balanco|panorama|visao geral|situacao financeira)\b', n) and not re.search(r'\b(conversa|conversamos|falamos|falou)\b', n):
+        return 'RESUMO_FINANCEIRO'
+    if re.search(r'\b(favorit\w*)\b', n):
+        if re.search(r'\b(apag\w*|exclu\w*|remov\w*|delet\w*)\b', n):
+            return 'EXCLUIR_FAVORITO'
+        if re.search(r'\b(edit\w*|alter\w*|mud\w*|renome\w*|troqu\w*)\b', n):
+            return 'EDITAR_FAVORITO'
+        if re.search(r'\b(cadastr\w*|salv\w*|adicion\w*|cri[ae]\w*|favoritar)\b', n):
+            return 'CADASTRAR_FAVORITO'
+        return 'FAVORITOS'
+    if re.search(r'\bchave\w*\s+(?:pix|aleatori\w*|cpf|cnpj|email|telefone)\b|\bpix\s+(?:aleatori\w*|cpf|cnpj|email|telefone)\b', n):
+        if re.search(r'\b(cadastr\w*|cri[ae]\w*|ger\w*|adicion\w*)\b', n):
+            return 'CADASTRAR_CHAVE'
+        if re.search(r'\b(list\w*|quais|mostr\w*|consult\w*|ver)\b', n):
+            return 'CHAVES_PIX'
     if re.search(r'\b(?:alter\w*|edit\w*|modific\w*|aument\w*|diminu\w*|ajust\w*)\b.*\b(?:meu|minha|o)?\s*(?:saldo|slado|salfo)\b', n):
         return 'ALTERAR_SALDO'
-    if re.search(r'\b(?:edit\w*|alter\w*|mud\w*|troqu\w*)\b.*\b(?:meu )?nome\b', n):
+    if re.search(r'\b(?:edit\w*|alter\w*|atualiz\w*|mud\w*|troqu\w*)\b.*\b(?:meu )?nome\b', n):
         return 'EDITAR_PERFIL'
     if re.search(r'\b(?:apag\w*|exclu\w*|remov\w*|delet\w*)\b.*\bchave\w*\s+pix\b', n):
         return 'EXCLUIR_CHAVE'
@@ -57,7 +85,7 @@ def intencao_especial(texto, historico=()):
         return 'DESTINATARIOS_FREQUENTES'
     if re.search(r'\b(?:mais\s+envi\w*|mais\s+transfer\w*)\b', n) and re.search(r'\b(?:quem|pessoa|destinatari\w*)\b', n):
         return 'DESTINATARIOS_FREQUENTES'
-    if re.search(r'\b(?:quem sou eu|qual e o meu nome|qual meu nome|qual e minha conta|qual a minha conta)\b', n):
+    if re.search(r'\b(?:quem sou eu|qual (?:e )?(?:o )?meu nome|qual e minha conta|qual a minha conta)\b', n):
         return 'PERFIL'
     if re.search(r'\b(?:que dia e hoje|qual (?:e )?a data de hoje|qual a data atual|que data e hoje|que horas sao|qual (?:e )?a hora)\b', n):
         return 'DATA_ATUAL'
@@ -116,7 +144,19 @@ def periodo_solicitado(texto, historico=(), agora=None, padrao='mes'):
             if inicio <= fim_inclusivo and (fim_inclusivo-inicio).days <= 366:
                 return inicio, fim_inclusivo + timedelta(days=1), f'de {inicio:%d/%m/%Y} a {fim_inclusivo:%d/%m/%Y}'
         except (ValueError, IndexError, TypeError):
-            pass
+            raise ValueError('Informe um período válido no formato dia/mês/ano a dia/mês/ano.')
+        raise ValueError('A data final deve ser igual ou posterior à inicial e o período deve ter até um ano.')
+    meses = ('janeiro', 'fevereiro', 'marco', 'abril', 'maio', 'junho',
+             'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro')
+    for mes, nome in enumerate(meses, 1):
+        periodo = re.search(r'\b' + nome + r'(?:\s+(?:de\s+)?(\d{4}))?\b', n)
+        if periodo:
+            ano = int(periodo.group(1) or hoje.year)
+            if not 1900 <= ano <= 2100:
+                raise ValueError('Informe um ano entre 1900 e 2100.')
+            inicio = date(ano, mes, 1)
+            fim = date(ano, mes, calendar.monthrange(ano, mes)[1]) + timedelta(days=1)
+            return inicio, fim, f'em {nome} de {ano}'
     if re.search(r'\bontem\b', n):
         return hoje-timedelta(days=1), hoje, 'ontem'
     if re.search(r'\bhoje\b', n):
@@ -149,7 +189,8 @@ def periodo_solicitado(texto, historico=(), agora=None, padrao='mes'):
 
 def resumo_conversa(historico):
     rotulos = {'SALDO':'saldo', 'DESPESAS':'despesas', 'RECEITAS':'recebimentos',
-               'MOVIMENTACOES':'movimentações', 'PIX':'Pix', 'CARTAO':'cartões e faturas'}
+               'MOVIMENTACOES':'movimentações', 'PIX':'Pix', 'CARTAO':'cartões e faturas',
+               'RESUMO_FINANCEIRO':'resumo financeiro'}
     assuntos=[]
     for m in historico or ():
         if m.get('papel') != 'USUARIO':
@@ -158,5 +199,24 @@ def resumo_conversa(historico):
         if assunto in rotulos and rotulos[assunto] not in assuntos:
             assuntos.append(rotulos[assunto])
     if not assuntos:
-        return 'Pelas mensagens recentes que tenho aqui, ainda não conversamos sobre uma consulta específica do Arkhé.'
-    return 'Pelas mensagens recentes, falamos sobre ' + ', '.join(assuntos[:-1]) + (' e ' if len(assuntos)>1 else '') + assuntos[-1] + '. Posso retomar qualquer um desses assuntos.'
+        return 'Ainda não conversamos sobre uma consulta específica do Arkhé. Posso consultar saldo, extrato ou um resumo financeiro.'
+    return 'Nesta conversa, falamos sobre ' + ', '.join(assuntos[:-1]) + (' e ' if len(assuntos)>1 else '') + assuntos[-1] + '. Posso retomar qualquer um desses assuntos.'
+
+
+def contexto_para_modelo(pergunta, historico):
+    """Recupera mensagens antigas relevantes sem apagar o histórico persistido."""
+    mensagens = [m for m in historico if m.get('papel') in ('USUARIO', 'ASSISTENTE')]
+    if sum(len(str(m.get('conteudo') or '')) for m in mensagens) <= 60000:
+        return mensagens
+    palavras = set(re.findall(r'\b[a-z0-9]{4,}\b', normalizar(pergunta)))
+    recentes = set(range(max(0, len(mensagens) - 20), len(mensagens)))
+    relevantes = sorted(range(len(mensagens)), key=lambda i: (
+        len(palavras.intersection(normalizar(mensagens[i].get('conteudo', '')).split())), i), reverse=True)
+    selecionados = set(recentes)
+    tamanho = sum(len(str(mensagens[i].get('conteudo') or '')) for i in selecionados)
+    for indice in relevantes:
+        conteudo = str(mensagens[indice].get('conteudo') or '')
+        if indice not in selecionados and tamanho + len(conteudo) <= 60000:
+            selecionados.add(indice)
+            tamanho += len(conteudo)
+    return [mensagens[i] for i in sorted(selecionados)]

@@ -694,6 +694,12 @@ def confirmar_proposta(id_conversa, id_proposta, contexto_fn, conversa_fn):
             (contexto['id_usuario'], agora - timedelta(minutes=JANELA_TENTATIVAS_PIN_MINUTOS)),
         )
         tentativas = int((cursor.fetchone() or (0,))[0] or 0)
+        cursor.execute("SELECT COUNT(*) FROM RDB$RELATIONS WHERE RDB$RELATION_NAME = 'MAURO_CADASTRO_PIN_TENTATIVA'")
+        if cursor.fetchone()[0]:
+            cursor.execute('''SELECT COUNT(*) FROM MAURO_CADASTRO_PIN_TENTATIVA
+                              WHERE ID_USUARIO = ? AND VALIDO = 0 AND CRIADA_EM >= ?''',
+                           (contexto['id_usuario'], agora - timedelta(minutes=JANELA_TENTATIVAS_PIN_MINUTOS)))
+            tentativas += int(cursor.fetchone()[0])
         if tentativas >= LIMITE_TENTATIVAS_PIN:
             con.rollback()
             _auditar(id_proposta, contexto, 'MAURO_PIX_CONFIRMACAO_RECUSADA', 'BLOQUEADO', motivo='Limite de tentativas de PIN atingido.', valor=row[8])

@@ -1,0 +1,54 @@
+MAURO - conversa, consultas e cadastros
+
+O agente identifica pedidos de resumo antes dos pedidos de pagamento. O resumo
+consulta receitas, despesas, quantidade de movimentacoes e resultado do periodo
+na conta autenticada. O saldo atual vem da mesma conta. Esses valores nao dependem
+de resposta do modelo. Periodos por datas, mes nomeado, mes passado e semana sao
+interpretados pelo backend; datas invalidas geram uma pergunta de correcao.
+
+Cadastros atendidos pelo agente:
+- Criar chaves Pix usando os dados do titular (ou gerar uma chave aleatoria).
+- Excluir uma chave Pix do titular.
+- Cadastrar, renomear e remover favoritos do usuario na conta ativa.
+- Editar o nome do proprio usuario, preservando os demais campos do perfil.
+
+O fluxo pede os dados que faltam, persiste uma proposta e mostra o resumo.
+Apenas o endpoint de confirmacao recebe o PIN pessoal permanente. O texto da
+conversa nunca confirma operacoes. PIN, codigo de verificacao e credenciais nao
+sao enviados ao modelo nem registrados no historico. Confirmacoes repetidas
+consultam o resultado existente, sem repetir a escrita. Propostas expiram;
+permissoes e valores atuais sao conferidos novamente antes da alteracao.
+
+E-mail e telefone continuam usando a verificacao de posse do banco. A proposta
+fica VERIFICANDO depois do PIN; nao cria a chave antes do link/codigo existente.
+O campo de codigo fica separado do chat. Cancelar invalida verificacoes pendentes.
+
+O historico da conta e mantido integralmente no banco. A interface carrega 100
+mensagens por pagina e permite abrir as anteriores. A interpretacao consulta o
+historico completo, sem o corte anterior de dez mensagens. Para a chamada ao
+modelo, conversas longas usam recuperacao de mensagens relevantes e recentes,
+respeitando uma janela de texto de 60 mil caracteres. Isso nao apaga mensagens
+antigas nem equivale a prometer memoria ilimitada do modelo.
+
+O administrador passa a ter historico persistido no servidor por ID do usuario.
+O cliente nao fornece o historico usado para decidir contexto. O atendimento
+administrativo continua restrito aos indicadores autorizados.
+
+Uma intencao desconhecida apresenta opcoes clicaveis. Pedidos de explicacao
+nao executam cadastros. Pedidos com mais de uma operacao pedem esclarecimento.
+Saldo, permissoes e acesso a terceiros nunca sao alterados por texto ou modelo.
+
+Publicacao:
+1. Rodar scripts/aplicar_mauro_cadastros.py para conferir o esquema.
+2. Rodar scripts/aplicar_mauro_cadastros.py --apply. Ele faz backup do principal
+   antes de criar as tres tabelas da migracao 020. Nao altera o banco de LOG,
+   as 33 triggers de log, as duas financeiras ou registros anteriores.
+3. Publicar backend e frontend desta versao juntos.
+4. Para reverter o codigo, republicar a versao anterior. Manter as novas tabelas
+   preserva mensagens e propostas; nao e necessario apagar dados.
+
+Validacao:
+Os testes test_mauro_completo_firebird.py usam dois bancos novos e descartaveis,
+com IDs ficticios e PIN de teste. Cobrem SQL real, fluxo HTTP, isolamento,
+propostas, PIN, concorrencia, expiracao, historico antigo e logs separados.
+O modelo, e-mail e SMS nao sao servicos reais nos testes.

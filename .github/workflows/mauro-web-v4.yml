@@ -7,6 +7,10 @@ on:
       - 'assistente_mauro.py'
       - 'mauro_conversa.py'
       - 'mauro_pix.py'
+      - 'mauro_cadastros.py'
+      - 'migrations/020_mauro_cadastros_contexto.sql'
+      - 'tests/test_mauro_conversa_completa.py'
+      - 'tests/test_mauro_completo_firebird.py'
       - 'tests/test_assistente_mauro_intencoes.py'
       - 'tests/test_mauro_pix_seguro.py'
 jobs:
@@ -21,8 +25,9 @@ jobs:
           python-version: '3.12'
           cache: pip
       - run: pip install -r requirements.txt
-      - run: python -m py_compile assistente_mauro.py mauro_conversa.py mauro_pix.py
+      - run: python -m py_compile assistente_mauro.py mauro_conversa.py mauro_pix.py mauro_cadastros.py scripts/aplicar_mauro_cadastros.py
       - run: python -m unittest discover -s tests -p 'test_assistente_mauro_intencoes.py' -v
       - run: python -m unittest discover -s tests -p 'test_mauro_conversa_consultas.py' -v
+      - run: python -m unittest discover -s tests -p 'test_mauro_conversa_completa.py' -v
       - run: python -m unittest discover -s tests -p 'test_mauro_pix_seguro.py' -v
       - run: python -m unittest discover -s tests -p 'test_seguranca_ia_cpf.py' -v
